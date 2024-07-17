@@ -1,0 +1,38 @@
+{
+  "name": "dahua_camera_ui",
+  "version": "1.0.0",
+  "description": "Remote component for Dahua Cameras for Doover",
+  "main": "index.js",
+  "scripts": {
+    "build": "webpack --config webpack.config.js",
+    "start": "webpack --config webpack.config.js && serve -s ../assets -l 8001",
+    "watch": "webpack --config webpack.config.js --watch --mode development",
+    "serve": "serve -s ../assets -l 8001"
+  },
+  "author": "Doover Squad",
+  "license": "ISC",
+  "dependencies": {
+    "@babel/preset-env": "^7.21.5",
+    "@babel/preset-react": "^7.18.6",
+    "@emotion/react": "^11.11.0",
+    "@emotion/styled": "^11.11.0",
+    "@mui/icons-material": "^5.11.16",
+    "@mui/material": "^5.12.3",
+    "@mui/styled-engine": "^5.12.3",
+    "@mui/system": "^5.12.3",
+    "@ngrok/ngrok": "^0.5.2",
+    "babel-loader": "^9.1.2",
+    "external-remotes-plugin": "^1.0.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "serve": "^14.2.3",
+    "webpack": "^5.82.1"
+  },
+  "devDependencies": {
+    "css-loader": "^6.8.1",
+    "html-webpack-plugin": "^5.5.3",
+    "style-loader": "^3.3.3",
+    "webpack-cli": "^5.1.1",
+    "webpack-dev-server": "^4.15.2"
+  }
+}
