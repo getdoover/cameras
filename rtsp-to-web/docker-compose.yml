@@ -1,0 +1,15 @@
+version: '3'
+
+services:
+  rtsp_to_web:
+    image: ghcr.io/deepch/rtsptoweb:latest
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - ./config.json:/config/config.json
+
+  auth_server:
+    build: .
+    ports:
+      - "5000:5000"
+    restart: unless-stopped

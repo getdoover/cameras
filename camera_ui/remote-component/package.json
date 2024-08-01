@@ -17,16 +17,19 @@
     "@emotion/react": "^11.11.0",
     "@emotion/styled": "^11.11.0",
     "@mui/icons-material": "^5.11.16",
+    "@mui/lab": "^5.0.0-alpha.172",
     "@mui/material": "^5.12.3",
     "@mui/styled-engine": "^5.12.3",
     "@mui/system": "^5.12.3",
     "@ngrok/ngrok": "^0.5.2",
     "babel-loader": "^9.1.2",
     "external-remotes-plugin": "^1.0.0",
+    "hls.js": "^1.5.13",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "serve": "^14.2.3",
-    "webpack": "^5.82.1"
+    "webpack": "^5.82.1",
+    "webrtc-adapter": "^9.0.1"
   },
   "devDependencies": {
     "css-loader": "^6.8.1",
