@@ -1,10 +1,10 @@
 import RemoteAccess from 'doover_home/RemoteAccess'
-import { ThemeProvider } from '@mui/material/styles';
-import React, {useState, useEffect, Component} from 'react'
+import React from 'react'
 import { Joystick, JoystickShape } from 'react-joystick-component';
-import {Paper, Grid, Box, Card, Button, Slider, Switch, FormControlLabel} from '@mui/material'
-import LoadingButton from '@mui/lab/LoadingButton';
+import {Box, Button, Slider, Typography} from '@mui/material'
 import WebRPCVideoPlayer from "./WebRPCVideoPlayer";
+import Stack from '@mui/material/Stack';
+import {LoadingButton} from "@mui/lab";
 
 
 function getTunnelConfig(cameraUri) {
@@ -16,36 +16,6 @@ function getTunnelConfig(cameraUri) {
     }
 }
 
-async function configureRPCVideoPlayer(camera_uri, agent_id) {
-    // const url = "https://" + window.location.href.split('/')[2] + "/rtsp_playback/add";
-    const url = "https://rtsptoweb.u.doover.com/rtsp_playback/add"
-    console.log("fetching tunnel url", camera_uri, url);
-    let result = await fetch(url,
-        {
-            method: 'POST',
-            body: JSON.stringify({rtsp_uri: `rtsp://admin:19HandleyDrive@${camera_uri.replace("tcp://", "")}/live`, agent_id: agent_id}),
-            headers: {'Content-Type': 'application/json'}
-        });
-    let data = await result.json();
-    let urltoreturn = data.url + "?token=doover";
-    console.log("rpc url is ", urltoreturn);
-    return urltoreturn;
-
-    // return result.json().then(data => data.url);
-}
-
-async function fetchTunnelConfigureRTC(agent_id, token, cam_uri) {
-    let resp = await window.dooverDataAPIWrapper.get_channel_aggregate({
-        channel_name: "tunnels",
-        agent_id: agent_id,
-    }, token)
-    console.log(resp)
-    let tunnel = resp.aggregate.payload.open.find(tunnel => tunnel.address === cam_uri);
-    console.log("fetching tunnel url", tunnel?.url, tunnel)
-    let url = tunnel?.url;
-    this.tunnel_url = url;
-    return url;
-}
 
 export default class RemoteComponent extends RemoteAccess{
 
@@ -62,11 +32,14 @@ export default class RemoteComponent extends RemoteAccess{
             ptDirection: null,
             vehicleNotif: false,
             humanNotif: false,
+
+            cam_name: null,
+            cam_base: null,
+            cam_type: null,
+            rtsp_uri: null,
+
+            errorMessage: null,
         }
-        this.cam_uri = "rtsp://admin:19HandleyDrive@192.168.0.102:554/live";
-        this.cam_base = "192.168.0.102:554";
-        this.cam_address = this.get
-        this.cam_name = this.getName()
 
         this.handleGetLiveView = this.handleGetLiveView.bind(this);
         this.teardownLiveView = this.teardownLiveView.bind(this);
@@ -78,6 +51,9 @@ export default class RemoteComponent extends RemoteAccess{
 
         this.sendControlCommand = this.sendControlCommand.bind(this);
         this.sendPtCmd = this.sendPtCmd.bind(this);
+        this.fetchTunnelConfigureRTC = this.fetchTunnelConfigureRTC.bind(this);
+        this.configureRPCVideoPlayer = this.configureRPCVideoPlayer.bind(this);
+        this.showError = this.showError.bind(this);
 
         // this.handleHumanNotifChange = this.handleHumanNotifChange.bind(this);
         // this.handleVehicleNotifChange = this.handleVehicleNotifChange.bind(this);
@@ -85,47 +61,92 @@ export default class RemoteComponent extends RemoteAccess{
     }
 
     setupTunnel() {
-        let ui_cmds_payload = {"cmds": {}}
-        ui_cmds_payload["cmds"][`${this.cam_uri}_rtsp_enable`] = true;
-
-        window.dooverDataAPIWrapper.post_channel_aggregate({
-                channel_name: "ui_cmds",
-                agent_id: this.state.agent_id,
-            }, ui_cmds_payload, this.temp_token,
-        );
-
+        this.sendControlCommand("camera_control", "action", "rtsp_enable");
+        console.log(this.cam_base);
         window.dooverDataAPIWrapper.post_channel_aggregate({
                 channel_name: "tunnels",
                 agent_id: this.state.agent_id,
             }, {to_open: [getTunnelConfig(this.cam_base)]}, this.temp_token
         ).then(
-            setTimeout(() => fetchTunnelConfigureRTC(this.state.agent_id, this.temp_token, this.cam_base)
-                .then(tunnel_url => configureRPCVideoPlayer(tunnel_url, this.state.agent_id))
-                .then(url => this.setState({playerSource: url}))
-                .then(() => this.setState({ showLiveView: true }))
-                .then(() => this.setState({ loading: false }))
-                .then(() => console.log("done"))
-                    .then(() => this.forceUpdate())
+            setTimeout(() => this.fetchTunnelConfigureRTC(this.state.agent_id, this.temp_token, this.cam_base)
+                .then(tunnel_url => tunnel_url ? this.configureRPCVideoPlayer(tunnel_url) : this.showError("Failed to setup connection to camera. Try again later."))
             , 3000)
         );
-
     }
 
     teardownLiveView() {
         window.dooverDataAPIWrapper.post_channel_aggregate({
             channel_name: "tunnels",
             agent_id: this.state.agent_id,
-        }, {to_close: [this.tunnel_url]}, this.temp_token);
-        const url = "https://rtsptoweb.u.doover.com/rtsp_playback/remove"
+        }, {to_close: [{address: this.cam_base, url: this.tunnel_url}]}, this.temp_token);
+        const url =  "https://" + window.location.href.split('/')[2] + "/camera_streams/" + this.state.agent_id;
         fetch(url, {
-            method: 'POST',
+            method: 'DELETE',
             body: JSON.stringify({webrtc_uri: this.state.playerSource}),
-            headers: {'Content-Type': 'application/json'}
+            headers: {'Content-Type': 'application/json', 'Authorization': `Token ${this.temp_token}`}
         });
         this.setState({showLiveView: false});
     }
 
+    showError(errorMessage) {
+        this.setState({errorMessage: errorMessage});
+    }
+
+    async fetchTunnelConfigureRTC(agent_id, token, cam_uri) {
+        let resp = await window.dooverDataAPIWrapper.get_channel_aggregate({
+            channel_name: "tunnels",
+            agent_id: agent_id,
+        }, token)
+        let tunnel = resp.aggregate.payload.open.find(tunnel => tunnel.address === cam_uri);
+        console.log("fetching tunnel url", tunnel?.url, tunnel)
+        let url = tunnel?.url;
+        this.tunnel_url = url;
+        return url;
+    }
+
+    async configureRPCVideoPlayer(tunnel_url) {
+        const url =  "https://" + window.location.href.split('/')[2] + "/camera_streams/" + this.state.agent_id;
+        let rtsp_uri = this.rtsp_uri.replace(this.cam_base, tunnel_url.replace("tcp://", ""));
+        let result = await fetch(url,
+            {
+                method: 'POST',
+                body: JSON.stringify({
+                    cam_name: this.cam_name,
+                    rtsp_uri: rtsp_uri,
+                }),
+                headers: {'Content-Type': 'application/json', 'Authorization': `Token ${this.temp_token}`}
+            });
+        let data = await result.json();
+        if (!data.url) {
+            this.showError("Failed to setup connection to streaming relay. Try again later.");
+            return
+        }
+        let webrtc_url = data.url + "?token=" + this.temp_token;
+        console.log("rpc url is ", webrtc_url, "for rtsp uri", rtsp_uri);
+        this.setState({playerSource: webrtc_url});
+        this.setState({loading: false});
+        this.setState({showLiveView: true});
+        // this.forceUpdate();
+    }
+
+
     handleGetLiveView() {
+        // fixme: can we stop this from reloading every 5secs??
+        const state = this.getUiState();
+        const reported = state.reported;
+        console.log(reported);
+        console.log(state);
+        this.cam_base = reported.address + ":" + reported.port;
+        this.cam_name = reported.name;
+        this.rtsp_uri = reported.rtsp_uri;
+        this.cam_type = reported.cam_type;
+        // this.setState({
+        //     cam_base: reported.address + ":" + reported.port,
+        //     cam_name: reported.name,
+        //     rtsp_uri: reported.rtsp_uri,
+        //     cam_type: reported.cam_type
+        // });
+
         this.setState({loading: true});
         if (this.temp_token === undefined) {
             window.dooverDataAPIWrapper.get_temp_token()
@@ -190,87 +211,109 @@ export default class RemoteComponent extends RemoteAccess{
         }
     }
 
-    // sendNotifCmd() {
-    //     let fmt = (this.state.humanNotif ? "Human" : "") + ";" + (this.state.vehicleNotif ? "Vehicle" : "");
-    //     this.sendUiCmd("ui_cmds", `${this.cam_name}_notif`, fmt);
-    //     console.log("setting ptz notif to ", fmt);
-    // }
-    // handleHumanNotifChange = (event, enabled) => {
-    //     this.setState({humanNotif: enabled}, () => this.sendNotifCmd());
-    //     console.log("human new state:", enabled);
-    // }
-    //
-    // handleVehicleNotifChange = (event, enabled) => {
-    //     this.setState({vehicleNotif: enabled}, () => this.sendNotifCmd());
-    //     console.log("vehicle new state:", enabled);
-    // }
-
-
     render() {
-        // const [loading, setLoading] = React.useState(false);
-        // const [playerSource, setPlayerSource] = React.useState(null);
-        // const [showLiveView, setShowLiveView] = React.useState(null);
 
+        let ptzControl = (
+            <Stack direction="row" justifyContent="center">
+                <div style={{ paddingRight: "10px" }}>
+                    <Joystick
+                        size={100}
+                        baseColor="blue"
+                        stickColor="red"
+                        throttle={200}
+                        move={this.handlePtMove}
+                        stop={this.handlePtStop}
+                    />
+                    <Typography align="center">Pan/Tilt</Typography>
+                </div>
+                <div style={{ paddingLeft: "10px" }}>
+                    <Joystick
+                        size={100}
+                        baseColor={"green"}
+                        stickColor={"yellow"}
+                        throttle={200}
+                        controlPlaneShape={JoystickShape.AxisY}
+                        move={this.handleZoomMove}
+                        stop={this.handlePtStop}
+                    />
+                    <Typography align="center">Zoom</Typography>
+                </div>
+            </Stack>
+        );
+        let zoomSlider = (
+            <Slider
+                defaultValue={50}
+                aria-label="Zoom Control"
+                valueLabelDisplay="auto"
+                onChange={this.handleZoomChange}
+                onChangeCommitted={this.handleZoomSet}
+            >
+                Zoom Control
+            </Slider>
+        );
+
+        let liveView = (
+            <div>
+                <Box padding={"20px"}>
+                    <WebRPCVideoPlayer url={this.state.playerSource} />
+                </Box>
+                {this.cam_type && this.cam_type.includes('ptz') ? ptzControl : null}
+                {this.cam_type && this.cam_type.includes('fixed') ? zoomSlider : null}
+            </div>
+        )
+
+        let enableButton = (
+            <LoadingButton
+                variant="contained"
+                color="primary"
+                onClick={this.handleGetLiveView}
+                loading={this.state.loading}
+            >
+                Enable Live View
+            </LoadingButton>
+        );
+
+        let disableButton = (
+            <Button
+                variant="contained"
+                color="primary"
+                onClick={this.teardownLiveView}
+            >
+                Close Live View
+            </Button>
+        );
+
+        if (this.state.errorMessage) {
+            return (
+                <Box>
+                    <Box width = 'fit-content' margin = '4px' style={{
+                            'font': '400 1.2rem/1.5 "Roboto","Helvetica","Arial",sans-serif',
+                            color: 'rgb(0, 0 , 0, 0.54)',
+                            paddingTop: "30px",
+                            paddingBottom: "30px",
+                            margin: "auto",
+                        }}
+                    >
+                        {this.state.errorMessage}
+                    </Box>
+                    <LoadingButton
+                        variant="contained"
+                        color="primary"
+                        onClick={this.handleGetLiveView}
+                        loading={this.state.loading}
+                    >
+                        Try Again
+                    </LoadingButton>
+                </Box>
+            )
+        }
 
         return (
-            <Box
-              // height={200}
-              // width={200}
-              // my={4}
-              // display="flex"
-              // alignItems="center"
-              // gap={4}
-              // p={2}
-              // sx={{ border: '2px solid grey' }}
-            >
-                <div>{this.state.showLiveView}</div>
-                {this.state.showLiveView ?
-                    <Box padding={"20px"}>
-                        <WebRPCVideoPlayer url={this.state.playerSource} />
-                    </Box> : "test"
-                }
-                {/*<FormControlLabel control={<Switch defaultChecked />} label="Enable Live Recording"/>*/}
-                {/*<FormControlLabel control={<Switch checked={this.state.humanNotif} onChange={this.handleHumanNotifChange} />} label="Human Notifications"/>*/}
-                {/*<FormControlLabel control={<Switch checked={this.state.vehicleNotif} onChange={this.handleVehicleNotifChange} />} label="Vehicle Notifications"/>*/}
-                <Joystick
-                    size={100}
-                    baseColor="blue"
-                    stickColor="red"
-                    throttle={200}
-                    move={this.handlePtMove}
-                    stop={this.handlePtStop}
-                />
-                <Joystick
-                    size={100}
-                    baseColor={"green"}
-                    stickColor={"yellow"}
-                    throttle={200}
-                    controlPlaneShape={JoystickShape.AxisY}
-                    move={this.handleZoomMove}
-                    stop={this.handlePtStop}
-                />
-                <Slider
-                    defaultValue={50}
-                    aria-label="Zoom Control"
-                    valueLabelDisplay="auto"
-                    onChange={this.handleZoomChange}
-                    onChangeCommitted={this.handleZoomSet}
-                >
-                    Zoom Control
-                </Slider>
-                <LoadingButton
-                    variant="contained"
-                    color="primary"
-                    loading={this.state.loading}
-                    onClick={this.handleGetLiveView}
-                >
-                    Enable Live View
-                </LoadingButton>
-                <Button
-                    variant="contained"
-                    color="primary"
-                    onClick={this.teardownLiveView}
-                >Close Live View</Button>
+            <Box>
+                {this.state.showLiveView ? liveView : null}
+                <Box textAlign="center" padding={"20px"}>
+                    {this.state.showLiveView ? disableButton : enableButton}
+                </Box>
             </Box>
         );
     }
