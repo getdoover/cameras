@@ -17,7 +17,7 @@ var DahuaCameraUi;
   \***********************/
 /***/ ((__unused_webpack_module, exports, __webpack_require__) => {
 
-eval("var moduleMap = {\n\t\"./DahuaCameraUi\": () => {\n\t\treturn Promise.all([__webpack_require__.e(\"vendors-node_modules_mui_lab_LoadingButton_LoadingButton_js-node_modules_mui_material_Box_Box-925098\"), __webpack_require__.e(\"src_RemoteComponent_js-webpack_sharing_consume_default_react_react-webpack_sharing_consume_de-350436\")]).then(() => (() => ((__webpack_require__(/*! ./src/RemoteComponent */ \"./src/RemoteComponent.js\")))));\n\t}\n};\nvar get = (module, getScope) => {\n\t__webpack_require__.R = getScope;\n\tgetScope = (\n\t\t__webpack_require__.o(moduleMap, module)\n\t\t\t? moduleMap[module]()\n\t\t\t: Promise.resolve().then(() => {\n\t\t\t\tthrow new Error('Module \"' + module + '\" does not exist in container.');\n\t\t\t})\n\t);\n\t__webpack_require__.R = undefined;\n\treturn getScope;\n};\nvar init = (shareScope, initScope) => {\n\tif (!__webpack_require__.S) return;\n\tvar name = \"default\"\n\tvar oldScope = __webpack_require__.S[name];\n\tif(oldScope && oldScope !== shareScope) throw new Error(\"Container initialization failed as it has already been initialized with a different share scope\");\n\t__webpack_require__.S[name] = shareScope;\n\treturn __webpack_require__.I(name, initScope);\n};\n\n// This exports getters to disallow modifications\n__webpack_require__.d(exports, {\n\tget: () => (get),\n\tinit: () => (init)\n});\n\n//# sourceURL=webpack://dahua_camera_ui/container_entry?");
+eval("var moduleMap = {\n\t\"./DahuaCameraUi\": () => {\n\t\treturn Promise.all([__webpack_require__.e(\"vendors-node_modules_mui_icons-material_Add_js-node_modules_mui_icons-material_Delete_js-node-af8c61\"), __webpack_require__.e(\"src_RemoteComponent_js-webpack_sharing_consume_default_node_modules_react-dom_node_modules_re-576ba7\")]).then(() => (() => ((__webpack_require__(/*! ./src/RemoteComponent */ \"./src/RemoteComponent.js\")))));\n\t}\n};\nvar get = (module, getScope) => {\n\t__webpack_require__.R = getScope;\n\tgetScope = (\n\t\t__webpack_require__.o(moduleMap, module)\n\t\t\t? moduleMap[module]()\n\t\t\t: Promise.resolve().then(() => {\n\t\t\t\tthrow new Error('Module \"' + module + '\" does not exist in container.');\n\t\t\t})\n\t);\n\t__webpack_require__.R = undefined;\n\treturn getScope;\n};\nvar init = (shareScope, initScope) => {\n\tif (!__webpack_require__.S) return;\n\tvar name = \"default\"\n\tvar oldScope = __webpack_require__.S[name];\n\tif(oldScope && oldScope !== shareScope) throw new Error(\"Container initialization failed as it has already been initialized with a different share scope\");\n\t__webpack_require__.S[name] = shareScope;\n\treturn __webpack_require__.I(name, initScope);\n};\n\n// This exports getters to disallow modifications\n__webpack_require__.d(exports, {\n\tget: () => (get),\n\tinit: () => (init)\n});\n\n//# sourceURL=webpack://dahua_camera_ui/container_entry?");
 
 /***/ }),
 
@@ -212,7 +212,7 @@ module.exports = new Promise((resolve, reject) => {
 /******/ 	/* webpack/runtime/remotes loading */
 /******/ 	(() => {
 /******/ 		var chunkMapping = {
-/******/ 			"src_RemoteComponent_js-webpack_sharing_consume_default_react_react-webpack_sharing_consume_de-350436": [
+/******/ 			"src_RemoteComponent_js-webpack_sharing_consume_default_node_modules_react-dom_node_modules_re-576ba7": [
 /******/ 				"webpack/container/remote/doover_home/RemoteAccess"
 /******/ 			]
 /******/ 		};
@@ -475,20 +475,22 @@ module.exports = new Promise((resolve, reject) => {
 /******/ 			"webpack/sharing/consume/default/react/react?4a07": () => (loadSingleton("default", "react", false, () => (__webpack_require__.e("vendors-node_modules_react_index_js-_ab5b").then(() => (() => (__webpack_require__(/*! react */ "./node_modules/react/index.js"))))))),
 /******/ 			"webpack/sharing/consume/default/react/react?28ef": () => (loadSingletonVersion("default", "react", false, [0,16,8,0], () => (__webpack_require__.e("vendors-node_modules_react_index_js-_ab5b").then(() => (() => (__webpack_require__(/*! react */ "./node_modules/react/index.js"))))))),
 /******/ 			"webpack/sharing/consume/default/react/react?a82b": () => (loadSingletonVersion("default", "react", false, [,[1,18,0,0],[1,17,0,0],1], () => (__webpack_require__.e("vendors-node_modules_react_index_js-_ab5b").then(() => (() => (__webpack_require__(/*! react */ "./node_modules/react/index.js"))))))),
-/******/ 			"webpack/sharing/consume/default/react/react?a275": () => (loadSingletonVersion("default", "react", false, [0,16,6,0], () => (__webpack_require__.e("vendors-node_modules_react_index_js-_ab5b").then(() => (() => (__webpack_require__(/*! react */ "./node_modules/react/index.js")))))))
+/******/ 			"webpack/sharing/consume/default/react/react?a275": () => (loadSingletonVersion("default", "react", false, [0,16,6,0], () => (__webpack_require__.e("vendors-node_modules_react_index_js-_ab5b").then(() => (() => (__webpack_require__(/*! react */ "./node_modules/react/index.js"))))))),
+/******/ 			"webpack/sharing/consume/default/./node_modules/react-dom/./node_modules/react-dom": () => (loadSingleton("default", "./node_modules/react-dom", false, () => (Promise.all([__webpack_require__.e("vendors-node_modules_react-dom_index_js"), __webpack_require__.e("webpack_sharing_consume_default_react_react")]).then(() => (() => (__webpack_require__(/*! ./node_modules/react-dom */ "./node_modules/react-dom/index.js")))))))
 /******/ 		};
 /******/ 		// no consumes in initial chunks
 /******/ 		var chunkMapping = {
 /******/ 			"webpack_sharing_consume_default_react_react": [
 /******/ 				"webpack/sharing/consume/default/react/react?c673"
 /******/ 			],
-/******/ 			"src_RemoteComponent_js-webpack_sharing_consume_default_react_react-webpack_sharing_consume_de-350436": [
+/******/ 			"src_RemoteComponent_js-webpack_sharing_consume_default_node_modules_react-dom_node_modules_re-576ba7": [
 /******/ 				"webpack/sharing/consume/default/react/react?c217",
 /******/ 				"webpack/sharing/consume/default/react/react?fa5b",
 /******/ 				"webpack/sharing/consume/default/react/react?4a07",
 /******/ 				"webpack/sharing/consume/default/react/react?28ef",
 /******/ 				"webpack/sharing/consume/default/react/react?a82b",
-/******/ 				"webpack/sharing/consume/default/react/react?a275"
+/******/ 				"webpack/sharing/consume/default/react/react?a275",
+/******/ 				"webpack/sharing/consume/default/./node_modules/react-dom/./node_modules/react-dom"
 /******/ 			]
 /******/ 		};
 /******/ 		var startedInstallModules = {};
