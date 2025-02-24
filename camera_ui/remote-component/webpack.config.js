@@ -11,7 +11,7 @@ module.exports = {
   // mode: 'production',
 
   target: 'web',
-  
+
   output: {
     path: path.resolve(__dirname, 'dist'),
     filename: 'main.js',
