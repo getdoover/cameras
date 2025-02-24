@@ -1,15 +1,6 @@
 import asyncio
-import base64
-import json
-import logging
-import io
-import random
-import re
 import time
 
-import aiohttp
-
-from PIL import Image
 from pydoover.docker import app_base, run_app
 
 from pydoover import ui
@@ -31,12 +22,13 @@ class Application(app_base):
         self.ui_manager.add_children(ui.AlertStream("significantEvent", "Send me notifications"))
         super().setup()
         self.get_platform_iface()
+
         config = self.get_config("camera_config")
         for cam in config["CAMERAS"].values():
             comp = ui.RemoteComponent(
                 cam["NAME"],
                 cam["DISPLAY_NAME"],
-                component_url="https://2.dev.doover.ngrok.app/DahuaCameraUi.js",
+                component_url="https://raw.githubusercontent.com/getdoover/cameras/refs/heads/main/camera_ui/assets/DahuaCameraUi.js",
                 address=cam["ADDRESS"],
                 port=cam["RTSP_PORT"],
                 rtsp_uri=cam["URI"],

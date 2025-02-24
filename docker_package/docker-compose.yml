@@ -1,4 +1,3 @@
-version: '3'
 services:
   device_io_tester:
     build: .
