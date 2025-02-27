@@ -490,7 +490,7 @@ export default class RTSPtoWEBPlayer {
 					});
 					if (response.ok) {
 						const remoteDescription = await response.text();
-						console.log('here', remoteDescription);
+						// console.log('here', remoteDescription, this.options.source, response, formData);
 						this.webrtc.setRemoteDescription(
 							new RTCSessionDescription({
 								type: 'answer',

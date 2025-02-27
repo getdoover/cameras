@@ -4,12 +4,12 @@
     "on_demand": true
   },
   "server": {
-    "debug": false,
+    "debug": true,
     "http_debug": false,
     "http_demo": false,
     "http_dir": "",
-    "http_login": "doover",
-    "http_password": "doover",
+    "http_login": "secret",
+    "http_password": "secret",
     "http_port": ":8083",
     "https": false,
     "https_auto_tls": false,
@@ -25,11 +25,11 @@
     "log_level": "info",
     "rtsp_port": ":5541",
     "token": {
-      "backend": "http://127.0.0.1:5000/",
+      "backend": "https://my.doover.dev/camera_streams/validate_auth",
       "enable": true
     },
-    "webrtc_port_max": 0,
-    "webrtc_port_min": 0
+    "webrtc_port_max": 60000,
+    "webrtc_port_min": 61000
   },
   "streams": {
     "joshphone": {

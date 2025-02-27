@@ -8,8 +8,8 @@ services:
     volumes:
       - ./config.json:/config/config.json
 
-  auth_server:
-    build: .
-    ports:
-      - "5000:5000"
-    restart: unless-stopped
+#  auth_server:
+#    build: .
+#    ports:
+#      - "5000:5000"
+#    restart: unless-stopped
