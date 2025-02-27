@@ -432,10 +432,16 @@ export default class RTSPtoWEBPlayer {
 		this.webrtc.onconnectionstatechange = this.connectionstatechange;
 		this.webrtc.oniceconnectionstatechange = this.iceconnectionstatechange;
 		this.webrtc.ontrack = this.onTrack;
+
+		// console.log("adding transceivers");
+		this.webrtc.addTransceiver('video', { direction: 'recvonly' });
+		this.webrtc.addTransceiver('audio', { direction: 'recvonly' });
+
 		if (!this.webRtcSocket) {
 			/*
 			 * for older schema initiate connection create local description
 			 */
+
 			const offer = await this.webrtc.createOffer({
 				offerToReceiveAudio: false,
 				offerToReceiveVideo: true,
@@ -490,7 +496,9 @@ export default class RTSPtoWEBPlayer {
 					});
 					if (response.ok) {
 						const remoteDescription = await response.text();
-						// console.log('here', remoteDescription, this.options.source, response, formData);
+
+						console.log("yeeha");
+						console.log('here', remoteDescription, this.options.source, response, formData);
 						this.webrtc.setRemoteDescription(
 							new RTCSessionDescription({
 								type: 'answer',
