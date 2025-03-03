@@ -1,30 +1,41 @@
-import {useEffect, useState} from "react";
+import {useMemo, useState} from "react";
 import ApiClient from "./api";
 import React from 'react'
-import {Joystick, JoystickShape} from 'react-joystick-component';
 import {
-  Box,
-  Button, ButtonGroup, createMuiTheme,
-  Dialog, DialogActions,
-  DialogContent,
-  DialogContentText,
-  DialogTitle, FormControlLabel, IconButton, Radio, RadioGroup,
-  Slider,
-  TextField,
-  Typography
+  Button, Dialog,
 } from '@mui/material'
 import Stack from '@mui/material/Stack';
 import {LoadingButton} from "@mui/lab";
 import ReactHlsPlayer from "react-hls-player";
+import PresetMenu from "./PresetMenu";
 
+import {faUpRightFromSquare} from '@fortawesome/free-solid-svg-icons'
+import {Box} from "@mui/system";
+import {FontAwesomeIcon} from "@fortawesome/react-fontawesome";
+import GearIcon from '@mui/icons-material/Settings';
+import RestartAltIcon from '@mui/icons-material/RestartAlt';
 
-const CameraLiveView = ({agentId, camName, camType, rtspServerHost, rtspServerPort, camPresets}) => {
+const CameraLiveView = ({
+                          agentId,
+                          camName,
+                          camType,
+                          camHostname,
+                          camManagePort,
+                          rtspServerHost,
+                          rtspServerPort,
+                          camPresets,
+                          activePreset
+                        }) => {
   const [apiClient] = useState(() => new ApiClient());
 
   const [playerSource, setPlayerSource] = useState("");
   const [tunnel, setTunnel] = useState(null);
+  const [managementTunnel, setManagementTunnel] = useState(null);
+
+  const [managementPopup, setManagementPopup] = useState(false);
 
   const [loading, setLoading] = useState(false);
+  const [manageRedirectLoading, setManageRedirectLoading] = useState(false);
   const [showLiveView, setShowLiveView] = useState(false);
 
   rtspServerHost = rtspServerHost || "localhost";
@@ -32,7 +43,7 @@ const CameraLiveView = ({agentId, camName, camType, rtspServerHost, rtspServerPo
 
 
   const gotoPreset = async (preset) => {
-    await apiClient.sendControlCommand("camera_control", {"action": "goto_preset", "value": preset});
+    await apiClient.sendControlCommand("camera_control", camName, agentId, {"action": "goto_preset", "value": preset});
   }
 
   const setupTunnel = async () => {
@@ -40,8 +51,12 @@ const CameraLiveView = ({agentId, camName, camType, rtspServerHost, rtspServerPo
 
     let resp = await apiClient.getTunnelList(agentId, false);
     let tunnels = resp.tunnels;
-    console.log(tunnels);
     let tunnel = tunnels.find(tunnel => tunnel.hostname === rtspServerHost && tunnel.port === rtspServerPort);
+
+    // while we've fetched the tunnels, check for a management tunnel...
+    let managementTunnel = tunnels.find(tunnel => tunnel.hostname === camHostname && tunnel.port === camManagePort);
+    setManagementTunnel(managementTunnel);
+
     if (!tunnel) {
       tunnel = await apiClient.createTunnel(agentId, {
         name: `${camName} Live View`,
@@ -55,13 +70,43 @@ const CameraLiveView = ({agentId, camName, camType, rtspServerHost, rtspServerPo
     await apiClient.activateTunnel(tunnel.key);
     setTunnel(tunnel);
     // http://192.168.0.98:8083/stream/ptz_cam_1/channel/0/hls/live/index.m3u8
-    setPlayerSource(`https://${tunnel.endpoint}/stream/${camName}/channel/0/hls/live/index.m3u8`);
     setTimeout(() => {
+      setPlayerSource(`https://${tunnel.endpoint}/stream/${camName}/channel/0/hls/live/index.m3u8`);
       setShowLiveView(true);
       setLoading(false);
     }, 2_000);
     return tunnel;
   };
+
+  const setupManageCameraTunnel = async () => {
+    setManageRedirectLoading(true);
+
+    let tunnel = managementTunnel;
+    if (!managementTunnel) {
+      let tunnels = (await apiClient.getTunnelList(agentId, false)).tunnels;
+      tunnel = tunnels.find(tunnel => tunnel.hostname === camHostname && tunnel.port === camManagePort);
+      if (!tunnel) {
+        tunnel = await apiClient.createTunnel(agentId, {
+          name: `${camName} Management Page`,
+          hostname: camHostname,
+          port: camManagePort,
+          protocol: "http",
+          is_favourite: true,
+          timeout: 30,
+        });
+      }
+      setManagementTunnel(tunnel);
+    }
+    await apiClient.activateTunnel(tunnel.key);
+
+    setTimeout(() => {
+      setManageRedirectLoading(false);
+      let res = window.open(`https://${tunnel.endpoint}`, '_blank');
+      if (!res) {
+        setManagementPopup(true);
+      }
+    }, 2_000)
+  }
 
   const teardownLiveView = async () => {
     setShowLiveView(false);
@@ -70,111 +115,95 @@ const CameraLiveView = ({agentId, camName, camType, rtspServerHost, rtspServerPo
   }
 
   const resetPlayerUrl = () => {
-      let url = playerSource;
-      apiClient.sendControlCommand("camera_control", camName, {"action": "sync_ui"});
-      setPlayerSource(null);
-      setTimeout(() => setPlayerSource(url), 100);
+    let url = playerSource;
+    apiClient.sendControlCommand("camera_control", camName, agentId, {"action": "sync_ui", "value": 1});
+    setPlayerSource(null);
+    setTimeout(() => setPlayerSource(url), 100);
   }
 
-  let presetButtons = (
-    <Stack justifyContent="center" spacing={1} margin="auto">
-      {camPresets.map((preset, index) => (
-        <Button variant="outlined" key={index} aria-label="go to preset"
-                onClick={() => gotoPreset(preset)}>
-          {preset}
-        </Button>
-      ))}
-    </Stack>
-  );
+  const presetMenu = camPresets.length > 0 ?
+    <PresetMenu presets={camPresets} activePreset={activePreset} onSelect={gotoPreset}/> : null;
 
-  let liveView = (
-    <div>
-      <Stack spacing={2} direction="row" padding="20px">
-        <ReactHlsPlayer
-          src={playerSource}
-          autoPlay={true}
-          controls={true}
-          width={"100%"}
-          // hlsConfig={{
-          //   maxLoadingDelay: 4,
-          //   minAutoBitrate: 0,
-          //   lowLatencyMode: true,
-          // }}
-        />
-      </Stack>
-      {camType && camType.includes('ptz') ?
-        <Box display="flex">
-          {presetButtons}
-        </Box> : null
-      }
-    </div>
-  )
+  const liveView = useMemo(() => <ReactHlsPlayer
+    src={playerSource}
+    autoPlay={true}
+    controls={true}
+    width={"100%"}
+    hlsConfig={{
+      // see: https://github.com/video-dev/hls.js/issues/3077#issuecomment-704961806
+      "enableWorker": true,
+      "maxBufferLength": 1,
+      "liveBackBufferLength": 0,
+      "liveSyncDuration": 0,
+      "liveMaxLatencyDuration": 5,
+      "liveDurationInfinity": true,
+      "highBufferWatchdogPeriod": 1,
+    }}
+    // hlsConfig={{
+    //   maxLoadingDelay: 4,
+    //   minAutoBitrate: 0,
+    //   lowLatencyMode: true,
+    // }}
+  />, [playerSource]);
 
-  let enableButton = (
-    <LoadingButton
-      variant="contained"
-      color="secondary"
-      onClick={setupTunnel}
-      loading={loading}
-    >
-      Enable Live View
-    </LoadingButton>
-  );
+  const disableButton = (<Button variant="outlined" color="primary" onClick={teardownLiveView}>
+    Close Live View
+  </Button>);
 
-  let disableButton = (
+  let manageCamera = (
     <Button
-      variant="contained"
-      color="primary"
-      onClick={teardownLiveView}
+      loading={manageRedirectLoading}
+      variant="outlined"
+      onClick={setupManageCameraTunnel}
+      startIcon={<GearIcon/>}
     >
-      Close Live View
+      Settings
     </Button>
   );
-  
+
   let resetStream = (
-    <Button
-      variant="contained"
-      color="primary"
-      onClick={resetPlayerUrl}
-    >
+    <Button variant="outlined" color="primary" onClick={resetPlayerUrl} startIcon={<RestartAltIcon/>}>
       Reset Stream
     </Button>
   );
 
-  // if (this.state.errorMessage) {
-  //   return (
-  //     <Box textAlign="center" padding={"20px"}>
-  //       <Box width='fit-content' margin='4px' style={{
-  //         'font': '400 1.2rem/1.5 "Roboto","Helvetica","Arial",sans-serif',
-  //         color: 'rgb(0, 0 , 0, 0.54)',
-  //         paddingTop: "30px",
-  //         paddingBottom: "30px",
-  //         margin: "auto",
-  //       }}
-  //       >
-  //         {this.state.errorMessage}
-  //       </Box>
-  //       <LoadingButton
-  //         variant="contained"
-  //         color="primary"
-  //         onClick={this.handleGetLiveView}
-  //         loading={this.state.loading}
-  //       >
-  //         Try Again
-  //       </LoadingButton>
-  //     </Box>
-  //   )
-  // }
+  if (!showLiveView) {
+    return <Stack padding={"20px"} justifySelf={"center"} maxWidth={"sm"}>
+      <LoadingButton variant="outlined" onClick={setupTunnel} loading={loading}>
+        Enable Live View
+      </LoadingButton>
+    </Stack>
+  }
 
-  return (
-    <Box>
-      {showLiveView ? liveView : null}
-      <Stack direction="row" justifyContent="center" padding={"20px"} spacing={5}>
-        {showLiveView ? resetStream : null}
-        {showLiveView ? disableButton : enableButton}
-      </Stack>
+  const managementPopupElem = managementPopup ? (<Dialog
+    open={managementPopup}
+    onClose={() => setManagementPopup(false)}
+    aria-labelledby="alert-dialog-title"
+    aria-describedby="alert-dialog-description"
+  >
+    <Box padding={5}>
+      <Button endIcon={<FontAwesomeIcon icon={faUpRightFromSquare}/>} target="_blank"
+              href={`https://${managementTunnel.endpoint}`} color={"primary"} variant={"outlined"}
+              onClick={() => setManagementPopup(false)}
+      >
+        Open Camera Management Page
+      </Button>
     </Box>
-  );
+  </Dialog>) : null;
+
+
+  return (<React.Fragment>
+    {managementPopupElem}
+    <Stack spacing={2} direction="column" padding="20px">
+      {liveView}
+      {presetMenu}
+      <Stack direction="row" justifyContent="center" spacing={5}>
+        {resetStream}
+        {manageCamera}
+        {/*{disableButton}*/}
+      </Stack>
+    </Stack>
+  </React.Fragment>);
 }
 
 export default CameraLiveView;

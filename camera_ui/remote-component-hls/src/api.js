@@ -111,10 +111,10 @@ export default class ApiClient {
     return await this.post(`/ch/v1/tunnels/${tunnelId}/deactivate/`, {});
   }
 
-  async sendControlCommand(channel, camName, payload) {
+  async sendControlCommand(channel, camName, agentId, payload) {
     payload["task_id"] = window.crypto.randomUUID();
     let to_send = {[`${camName}`]: payload};
     await this.ensure_token();
-    return await this._request(`/ch/v1/agent/${this.agent_id}/${channel}/aggregate/`, "POST", to_send);
+    return await this._request(`/ch/v1/agent/${agentId}/${channel}/aggregate/`, "POST", to_send);
   }
 }
