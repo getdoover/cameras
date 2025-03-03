@@ -29,9 +29,29 @@ export default class RTSPtoWEBPlayer {
 		loop: false,
 		hlsjsconfig: {},
 		webrtcconfig: {
-			iceServers: [
+		iceServers: [
 				{
-					urls: ['stun:stun.l.google.com:19302'],
+					urls: "stun:stun.relay.metered.ca:80",
+				},
+				{
+					urls: "turn:global.relay.metered.ca:80",
+					username: "77a5639ecb653a1b63a8001c",
+					credential: "QT4bA+pNGVvlgkEG",
+				},
+				{
+					urls: "turn:global.relay.metered.ca:80?transport=tcp",
+					username: "77a5639ecb653a1b63a8001c",
+					credential: "QT4bA+pNGVvlgkEG",
+				},
+				{
+					urls: "turn:global.relay.metered.ca:443",
+					username: "77a5639ecb653a1b63a8001c",
+					credential: "QT4bA+pNGVvlgkEG",
+				},
+				{
+					urls: "turns:global.relay.metered.ca:443?transport=tcp",
+					username: "77a5639ecb653a1b63a8001c",
+					credential: "QT4bA+pNGVvlgkEG",
 				},
 			],
 			sdpSemantics: 'unified-plan',
