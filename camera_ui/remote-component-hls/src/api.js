@@ -63,7 +63,12 @@ export default class ApiClient {
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
-      return await response.json();
+      let text = await response.text();
+      try {
+        return JSON.parse(text);
+      } catch(err) {
+        return text;
+      }
     } catch (error) {
       console.error(`Fetch ${method} error:`, error);
       return undefined;
