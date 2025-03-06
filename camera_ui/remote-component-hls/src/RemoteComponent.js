@@ -10,7 +10,7 @@ export default class RemoteComponent extends RemoteAccess {
 
     const cam_name = reported.cam_name || reported.name
 
-    const cam_settings = this.getParam(cam_name)
+    const cam_settings = ui.desired[cam_name];
     const presets = cam_settings?.presets || []
     const activePreset = cam_settings?.active_preset
 
