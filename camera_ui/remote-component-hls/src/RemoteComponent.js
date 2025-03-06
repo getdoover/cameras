@@ -14,6 +14,12 @@ export default class RemoteComponent extends RemoteAccess {
     const presets = cam_settings?.presets || []
     const activePreset = cam_settings?.active_preset
 
+    console.log("cam settings", cam_settings);
+    console.log("presets", presets);
+    console.log("active preset", activePreset);
+    console.log("cam name", cam_name);
+    console.log("reported", reported);
+
     // console.log(reported);
     return <CameraLiveView
       agentId={agent_id}
