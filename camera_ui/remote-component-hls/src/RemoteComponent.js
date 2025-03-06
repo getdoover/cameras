@@ -10,7 +10,7 @@ export default class RemoteComponent extends RemoteAccess {
     // console.log(reported);
     return <CameraLiveView
       agentId={agent_id}
-      camName={reported.name}
+      camName={reported.cam_name || reported.name}
       camType={reported.cam_type}
       camHostname={reported.address}
       camManagePort={reported.managePort || 80}
