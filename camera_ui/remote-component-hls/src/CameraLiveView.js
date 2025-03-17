@@ -69,6 +69,7 @@ const CameraLiveView = ({
     }
     await apiClient.activateTunnel(tunnel.key);
     setTunnel(tunnel);
+    await apiClient.sendControlCommand("camera_control", camName, agentId, {"action": "power_on", "value": 1});
     await apiClient.sendControlCommand("camera_control", camName, agentId, {"action": "sync_ui", "value": 1});
     // http://192.168.0.98:8083/stream/ptz_cam_1/channel/0/hls/live/index.m3u8
     setTimeout(() => {
@@ -119,6 +120,7 @@ const CameraLiveView = ({
 
   const resetPlayerUrl = () => {
     let url = playerSource;
+    apiClient.sendControlCommand("camera_control", camName, agentId, {"action": "power_on", "value": 1});
     apiClient.sendControlCommand("camera_control", camName, agentId, {"action": "sync_ui", "value": 1});
     setPlayerSource(null);
     setTimeout(() => setPlayerSource(url), 100);
