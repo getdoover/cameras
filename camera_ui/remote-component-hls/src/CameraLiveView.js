@@ -43,6 +43,7 @@ const CameraLiveView = ({
 
 
   const gotoPreset = async (preset) => {
+    await apiClient.sendControlCommand("camera_control", camName, agentId, {"action": "power_on", "value": 1});
     await apiClient.sendControlCommand("camera_control", camName, agentId, {"action": "goto_preset", "value": preset});
   }
 
@@ -84,6 +85,7 @@ const CameraLiveView = ({
 
   const setupManageCameraTunnel = async () => {
     setManageRedirectLoading(true);
+    await apiClient.sendControlCommand("camera_control", camName, agentId, {"action": "power_on", "value": 1});
 
     let tunnel = managementTunnel;
     if (!managementTunnel) {
