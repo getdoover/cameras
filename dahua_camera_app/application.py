@@ -9,8 +9,8 @@ import aiohttp
 from pydoover.docker import app_base, run_app
 from pydoover.ui import SlimCommand
 
-from dahua_camera_app.camera_iface import DahuaPTZCamera, DahuaFixedCamera, GenericRTSPCamera, Camera, MessageTooLong
-from dahua_camera_app.power_management import CameraPowerManagement
+from camera_iface import DahuaPTZCamera, DahuaFixedCamera, GenericRTSPCamera, Camera, MessageTooLong
+from power_management import CameraPowerManagement
 
 log = logging.getLogger(__name__)
 HOST_MATCH = re.compile(r"rtsp://(.*:.*@)?(?P<host>.*):[0-9]*/.*")
