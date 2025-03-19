@@ -31,4 +31,4 @@ RUN PIP_USER=1 PIP_IGNORE_INSTALLED=1 pipenv install --system --deploy --ignore-
 
 WORKDIR /app
 COPY . /app
-ENTRYPOINT ["python3", "-u", "camera_iface.py"]
+ENTRYPOINT ["python3", "application.py"]

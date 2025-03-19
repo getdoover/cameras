@@ -5,3 +5,4 @@ services:
     restart: unless-stopped
     environment:
       - APP_KEY=dahua_camera_8
+    entrypoint: ["python3", "application.py"]
