@@ -8,6 +8,8 @@ FROM spaneng/doover_device_base:latest AS base_image
 RUN apt-get update && apt-get install -y python3-dev python3-setuptools libjpeg-dev zlib1g-dev gcc
 RUN apt-get update && apt-get install -y ffmpeg iputils-ping --no-install-recommends --no-install-suggests && rm -rf /var/lib/apt/lists/*
 
+# Install git for pre-release pydoover
+RUN apt update && apt install -y git
 RUN pip install pipenv --no-cache-dir
 COPY Pipfile .
 COPY Pipfile.lock .
