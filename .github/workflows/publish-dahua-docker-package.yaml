@@ -59,8 +59,8 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          build-args:
-            - PYDOOVER_GITHUB_PAT: ${{ secrets.PYDOOVER_GITHUB_PAT }}
+          build-args: |
+            PYDOOVER_GITHUB_PAT=${{ secrets.PYDOOVER_GITHUB_PAT }}
 
 
       - name: Generate artifact attestation
