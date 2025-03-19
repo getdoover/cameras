@@ -72,7 +72,7 @@ class DahuaCameraApplication(app_base):
         self.camera_snap_cmd_name = "camera_snapshots"
         self.last_snapshot_cmd_name = "last_cam_snapshot"
 
-        self.ui_manager.add_children(*self.fetch_ui_elements())
+        self.ui_manager.add_children(*self.camera.fetch_ui_elements())
         self.ui_manager._add_interaction(SlimCommand(self.camera_snap_cmd_name, callback=self.on_snapshot_command))
 
 
@@ -92,14 +92,14 @@ class DahuaCameraApplication(app_base):
     async def run_snapshot(self, retries=3, ping_wait=20):
 
         success = False
-        async with self.power_manager.acquire(self.camera.rtsp_uri):
+        async with self.power_manager.acquire(self.camera.config.rtsp_uri):
 
             # await a successful ping to the camera
             try:
-                match = HOST_MATCH.match(self.camera.rtsp_uri)
+                match = HOST_MATCH.match(self.camera.config.rtsp_uri)
                 hostname = match and match.group("host")
                 if not hostname:
-                    raise ValueError(f"Failed to extract hostname from RTSP URI: {self.camera.rtsp_uri}")
+                    raise ValueError(f"Failed to extract hostname from RTSP URI: {self.camera.config.rtsp_uri}")
 
                 start_time = time.time()
                 while time.time() - start_time < ping_wait:
@@ -173,6 +173,10 @@ class DahuaCameraApplication(app_base):
             assert resp.status == 200
 
     async def on_control_message(self, _, payload):
+        if not hasattr(self, "camera"):
+            # fixme: make a `.wait_until_ready()` function, or better yet don't invoke these until setup is complete.
+            return
+
         if payload in (None, "None"):
             return
 
