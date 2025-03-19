@@ -1,5 +1,7 @@
 services:
   camera_iface:
-    image: spaneng/doover_camera_iface
+    image: ghcr.io/getdoover/cameras:main
     network_mode: host
     restart: unless-stopped
+    environment:
+      - APP_KEY=dahua_camera_8
