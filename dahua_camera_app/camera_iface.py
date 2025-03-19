@@ -1,28 +1,22 @@
-import argparse
 import asyncio
 import base64
 import io
 import json
 import logging
 import uuid
-import os
-import time
 import pathlib
 import re
-from urllib.parse import quote
+from typing import Optional
 
 import aiohttp
-import grpc
 
 from PIL import Image
 
 from pydoover.docker import device_agent_iface
-from pydoover.docker.camera.grpc_stubs import camera_iface_pb2, camera_iface_pb2_grpc
-from pydoover.docker.camera import CameraPowerManagement
-from pydoover.docker.platform.platform import platform_iface
-from pydoover.docker.doover_docker import deployment_config_manager
+from pydoover import ui
 
 from dahua import DahuaClient
+from power_management import CameraPowerManagement
 
 
 OUTPUT_FILE_DIR = pathlib.Path("/tmp/camera")
@@ -42,14 +36,41 @@ EVENT_MATCH = re.compile(r"(?P<boundary>.*)\r\n"
 URI_MATCH = re.compile(r"rtsp://(?P<username>.*):(?P<password>.*)@(?P<address>.*):(?P<port>.*)/(?P<channel>.*)")
 
 
-def get_or_fallback_to_match(config, match, config_key, match_key):
-    try:
-        return config[config_key]
-    except KeyError:
+
+class CameraConfig:
+    def __init__(self, data):
+        self.name = data["NAME"]
+        self.display_name = data["DISPLAY_NAME"]
+        self.uri = data["URI"]
+        self.type = data.get("TYPE")
+
+        self.rtsp_uri = data.get("RTSP_URI")
+
+        match = URI_MATCH.match(data["URI"])
+        # prefer config, fallback to parsing the URI.
+        self.username = self.get_or_fallback_to_match(data, match, "USERNAME", "username")
+        self.password = self.get_or_fallback_to_match(data, match, "PASSWORD", "password")
+        self.address = self.get_or_fallback_to_match(data, match, "ADDRESS", "address")
+        self.rtsp_port = self.get_or_fallback_to_match(data, match, "RTSP_PORT", "port")
+
+        self.control_port = data.get("CONTROL_PORT", 80)
+        self.power_timeout = data.get("POWER_TIMEOUT", DEFAULT_POWER_TIMEOUT)
+
+        self.remote_component_url = data.get("REMOTE_COMPONENT_URL")
+        self.remote_component_name = data.get("REMOTE_COMPONENT_NAME")
+
+        self.object_detection = data.get("OBJECT_DETECTION")
+        self.control_enabled = data.get("CONTROL_ENABLED")
+
+    @staticmethod
+    def get_or_fallback_to_match(config, match, config_key, match_key):
         try:
-            return match.group(match_key)
-        except AttributeError:
-            return None
+            return config[config_key]
+        except KeyError:
+            try:
+                return match.group(match_key)
+            except AttributeError:
+                return None
 
 
 class MessageTooLong(Exception):
@@ -57,18 +78,16 @@ class MessageTooLong(Exception):
 
 
 class Camera:
-    def __init__(self, name, display_name, rtsp_uri, power_timeout, dda_iface, power_manager: CameraPowerManagement):
-        self.name = name
-        self.display_name = display_name
-        self.rtsp_uri = rtsp_uri
-        self.dda_iface = dda_iface
+    def __init__(self, config: CameraConfig, dda_iface, power_manager: CameraPowerManagement):
+        self.name = config.name
 
+        self.config = config
+        self.dda_iface = dda_iface
         self.power_manager = power_manager
-        self.camera_power_timeout = power_timeout  # 15 minutes
 
     @classmethod
     def from_config(cls, config, dda_iface, power_manager):
-        return cls(config["NAME"], config["DISPLAY_NAME"], config["URI"], config.get("POWER_TIMEOUT", DEFAULT_POWER_TIMEOUT), dda_iface, power_manager)
+        return cls(config, dda_iface, power_manager)
 
     async def setup(self):
         pass
@@ -102,14 +121,14 @@ class Camera:
         OUTPUT_FILE_DIR.mkdir(parents=True, exist_ok=True)
 
     async def run_still_snapshot(self, filepath):
-        cmd = f"ffmpeg -y -r 1 -i {self.rtsp_uri} -vf 'scale=720:-1' -vsync vfr -r 1 -vframes 1 {filepath}"
+        cmd = f"ffmpeg -y -r 1 -i {self.config.rtsp_uri} -vf 'scale=720:-1' -vsync vfr -r 1 -vframes 1 {filepath}"
         return await self.run_cmd(cmd)
 
     async def run_video_snapshot(self, filepath, snapshot_length, fps, scale):
         # possible alternative, allegedly h265 is the "new" best high-compression format.
         # ffmpeg -y -rtsp_transport tcp -i rtsp://10.144.239.221:554/s0 -vf
         # scale=420:-1 -r 10 -t 6 -vcodec libx265 -tag:v hvc1 -c:a aac output.mp4
-        cmd = f"ffmpeg -y -rtsp_transport tcp -i {self.rtsp_uri} -vf 'fps={fps},scale={scale}," \
+        cmd = f"ffmpeg -y -rtsp_transport tcp -i {self.config.rtsp_uri} -vf 'fps={fps},scale={scale}," \
               f"format=yuv420p,pad=ceil(iw/2)*2:ceil(ih/2)*2' -t {snapshot_length} -c:v libx264 -c:a aac {filepath}"
         return await self.run_cmd(cmd)
 
@@ -121,32 +140,44 @@ class Camera:
 
     async def on_control_message(self, data):
         if data.get("action") == "power_on":
-            await self.power_manager.acquire_for(self.rtsp_uri, self.camera_power_timeout)  # 15 minutes
+            await self.power_manager.acquire_for(self.config.rtsp_uri, self.config.power_timeout)  # 15 minutes
 
-    def close(self):
-        pass
+    def fetch_ui_elements(self):
+        if self.config.remote_component_url is None:
+            return ui.Camera(self.config.name, self.config.display_name, self.config.uri)
+
+        liveview_element_name = f"{self.name}_liveview"
+        liveview_display_name = f"{self.config.display_name} Liveview"
+        ui_liveview = ui.RemoteComponent(
+            name=liveview_element_name,
+            display_name=liveview_display_name,
+            cam_name=self.name,
+            component_url=self.config.remote_component_url,
+            address=self.config.address,
+            port=self.config.rtsp_port,
+            rtsp_uri=self.config.rtsp_uri,
+            cam_type=self.config.type,
+        )
+        # pretty hacky, but this basically tells the UI to never overwrite these fields since
+        # we manage them in the camera interface. Possibly not the right way of going about it?
+        # ui_liveview._retain_fields = ("presets", "active_preset", "cam_position", "allow_absolute_position")
+
+        ## Set the Dispaly Name to blank to avoid title in submodule
+        original_cam_history = ui.CameraHistory(self.config.name, "", self.config.uri)
+
+        return ui.Camera(self.config.name, self.config.display_name, self.config.uri, children=[ui_liveview, original_cam_history])
 
 
 class DahuaCamera(Camera):
     def __init__(
-            self, name, display_name, rtsp_uri, power_timeout, username, password, address, rtsp_port, control_port,
-            object_detection, control_enabled, dda_iface: device_agent_iface, power_manager
+            self, config, dda_iface: device_agent_iface, power_manager
     ):
-        super().__init__(name, display_name, rtsp_uri, power_timeout, dda_iface, power_manager)
-
-        self.object_detection = object_detection
-        self.control_enabled = control_enabled
-
-        self.username = username
-        self.password = password
-        self.address = address
-        self.rtsp_port = rtsp_port
-        self.control_port = control_port
+        super().__init__(config, dda_iface, power_manager)
 
         self.completed_tasks = []
 
         self.stream_events_task = None
-        self.client: DahuaClient = None
+        self.client: Optional[DahuaClient] = None
 
     def close(self):
         if self.stream_events_task:
@@ -182,11 +213,16 @@ class DahuaCamera(Camera):
         await self.dda_iface.publish_to_channel("ui_cmds", json.dumps(to_send))
 
     async def setup(self):
-        human = "human" in self.object_detection
-        vehicle = "vehicle" in self.object_detection
+        human = "human" in self.config.object_detection
+        vehicle = "vehicle" in self.config.object_detection
 
         self.client = DahuaClient(
-            self.username, self.password, self.address, self.control_port, self.rtsp_port, aiohttp.ClientSession()
+            self.config.username,
+            self.config.password,
+            self.config.address,
+            self.config.control_port,
+            self.config.rtsp_port,
+            aiohttp.ClientSession()
         )
         status = await self.client.get_status()
         if not status:
@@ -205,39 +241,12 @@ class DahuaCamera(Camera):
         await self.sync_ui()  # sync ui_state
 
         if human or vehicle:
-            log.info(f"Starting motion detection for camera {self.name}: {self.object_detection}")
+            log.info(f"Starting motion detection for camera {self.name}: {self.config.object_detection}")
             await self.client.enable_smart_motion_detection(human=human, vehicle=vehicle)
             events = ["SmartMotionHuman", "SmartMotionVehicle"]
             self.stream_events_task = asyncio.create_task(self.client.stream_events(self.on_cam_event, events))
 
         return True
-
-    @classmethod
-    def from_config(cls, config, dda_iface, power_manager):
-        match = URI_MATCH.match(config["URI"])
-        # prefer config, fallback to parsing the URI.
-        username = get_or_fallback_to_match(config, match, "USERNAME", "username")
-        password = get_or_fallback_to_match(config, match, "PASSWORD", "password")
-        address = get_or_fallback_to_match(config, match, "ADDRESS", "address")
-        rtsp_port = get_or_fallback_to_match(config, match, "RTSP_PORT", "port")
-        control_port = config.get("CONTROL_PORT", 80)
-        power_timeout = config.get("POWER_TIMEOUT", DEFAULT_POWER_TIMEOUT)
-
-        return cls(
-            config["NAME"],
-            config["DISPLAY_NAME"],
-            config["URI"],
-            power_timeout,
-            username,
-            password,
-            address,
-            rtsp_port,
-            control_port,
-            config.get("OBJECT_DETECTION"),
-            config.get("CONTROL_ENABLED"),
-            dda_iface,
-            power_manager,
-        )
 
     async def get_snapshot(self, snapshot_type, length: int = 4, fps: int = DEFAULT_FPS, scale: str = DEFAULT_SCALE):
         log.info(f"Getting snapshot for camera {self.name}, type: {snapshot_type}, length: {length}")
@@ -293,14 +302,14 @@ class DahuaCamera(Camera):
 
         print(data, match.group("code"), match.group("action"))
         if match.group("code") == "SmartMotionHuman" and ui_cmds["cmds"].get(f"{self.name}_human_detect") is True:
-            await self.dda_iface.publish_to_channel("significantEvent", f"{self.display_name} has detected a person.")
+            await self.dda_iface.publish_to_channel("significantEvent", f"{self.config.display_name} has detected a person.")
             log.info(f"Human Detected, {data}")
         elif match.group("code") == "SmartMotionVehicle" and ui_cmds["cmds"].get(f"{self.name}_vehicle_detect") is True:
-            await self.dda_iface.publish_to_channel("significantEvent", f"{self.display_name} has detected a vehicle.")
+            await self.dda_iface.publish_to_channel("significantEvent", f"{self.config.display_name} has detected a vehicle.")
             log.info(f"Vehicle Detected, {data}")
 
     def check_control_message(self, data):
-        if not (self.control_enabled or self.client):
+        if not (self.config.control_enabled or self.client):
             return False
 
         try:

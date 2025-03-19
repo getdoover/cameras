@@ -7,6 +7,7 @@ from urllib.parse import quote
 
 import aiohttp
 from pydoover.docker import app_base, run_app
+from pydoover.ui import SlimCommand
 
 from dahua_camera_app.camera_iface import DahuaPTZCamera, DahuaFixedCamera, GenericRTSPCamera, Camera, MessageTooLong
 from dahua_camera_app.power_management import CameraPowerManagement
@@ -70,6 +71,10 @@ class DahuaCameraApplication(app_base):
 
         self.camera_snap_cmd_name = "camera_snapshots"
         self.last_snapshot_cmd_name = "last_cam_snapshot"
+
+        self.ui_manager.add_children(*self.fetch_ui_elements())
+        self.ui_manager._add_interaction(SlimCommand(self.camera_snap_cmd_name, callback=self.on_snapshot_command))
+
 
     async def main_loop(self):
         if not self.snapshot_running and time.time() - self.last_camera_snapshot > self.snapshot_period:
