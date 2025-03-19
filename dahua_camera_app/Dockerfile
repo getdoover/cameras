@@ -13,6 +13,8 @@ RUN apt update && apt install -y git
 RUN pip install pipenv --no-cache-dir
 COPY Pipfile .
 COPY Pipfile.lock .
+
+ARG PYDOOVER_GITHUB_PAT
 RUN PIP_USER=1 PIP_IGNORE_INSTALLED=1 pipenv install --system --deploy --ignore-pipfile --clear
 
 #FROM base_image as final_image

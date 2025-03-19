@@ -23,8 +23,6 @@ jobs:
       contents: read
       attestations: write
       id-token: write
-    env:
-      PYDOOVER_GITHUB_PAT: ${{ secrets.PYDOOVER_GITHUB_PAT }}
     steps:
       - name: Check out the repo
         uses: actions/checkout@v4
@@ -61,6 +59,9 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args:
+            - PYDOOVER_GITHUB_PAT: ${{ secrets.PYDOOVER_GITHUB_PAT }}
+
 
       - name: Generate artifact attestation
         uses: actions/attest-build-provenance@v2
