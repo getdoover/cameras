@@ -1,0 +1,4 @@
+{
+    "deployment_package_dir": "dahua_camera_app/",
+    "depends_on": ["platform_iface", "rtsp_to_web_app"]
+}

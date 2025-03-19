@@ -1,0 +1,7 @@
+services:
+  camera_iface:
+    image: spaneng/doover_camera_iface
+    network_mode: host
+    restart: unless-stopped
+    depends_on:
+      - rtsp_to_web
