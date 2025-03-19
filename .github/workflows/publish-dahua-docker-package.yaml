@@ -24,7 +24,7 @@ jobs:
       attestations: write
       id-token: write
     env:
-      GITHUB_PYDOOVER_PAT: ${{ secrets.GITHUB_PYDOOVER_PAT }}
+      PYDOOVER_GITHUB_PAT: ${{ secrets.PYDOOVER_GITHUB_PAT }}
     steps:
       - name: Check out the repo
         uses: actions/checkout@v4
