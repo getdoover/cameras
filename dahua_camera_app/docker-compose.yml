@@ -4,5 +4,4 @@ services:
     network_mode: host
     restart: unless-stopped
     environment:
-      - APP_KEY=dahua_camera_8
-    entrypoint: ["python3", "application.py"]
+      - APP_KEY=dahua_camera_10
