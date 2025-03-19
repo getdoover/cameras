@@ -71,6 +71,9 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             PYDOOVER_GITHUB_PAT=${{ secrets.PYDOOVER_GITHUB_PAT }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
 
 
       - name: Generate artifact attestation
