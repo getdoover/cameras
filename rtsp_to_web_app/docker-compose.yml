@@ -3,3 +3,5 @@ services:
     image: ghcr.io/deepch/rtsptoweb:latest
     network_mode: host
     restart: unless-stopped
+    volumes:
+      - /var/lib/dds/rtsp_to_web:/config
