@@ -85,7 +85,7 @@ class DahuaCameraApplication(app_base):
     async def run_snapshot(self, retries=3, ping_wait=20):
 
         success = False
-        async with self.power_manager.acquire(self.camera.config.rtsp_uri):
+        async with self.power_management.acquire(self.camera.config.rtsp_uri):
 
             # await a successful ping to the camera
             try:

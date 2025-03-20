@@ -172,7 +172,7 @@ class Camera:
         ## Set the Dispaly Name to blank to avoid title in submodule
         original_cam_history = ui.CameraHistory(self.config.name, "", self.config.uri)
 
-        yield ui.Camera(self.config.name, self.config.display_name, self.config.uri, children=[ui_liveview, original_cam_history])
+        yield ui.Camera(self.config.name, self.config.display_name, self.config.uri, children=[original_cam_history, ui_liveview])
 
 
 class DahuaCamera(Camera):
