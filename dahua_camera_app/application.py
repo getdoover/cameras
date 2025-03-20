@@ -37,7 +37,7 @@ class DahuaCameraApplication(app_base):
         self.subscribe_to_channel("camera_control", self.on_control_message)
 
         config_manager = self.get_config_manager()
-        await config_manager.get_config([])
+        await config_manager.get_config_async([])
         config = config_manager.last_deployment_config
 
         self.power_management = CameraPowerManagement(self.platform_iface, config_manager)
