@@ -4,4 +4,4 @@ services:
     network_mode: host
     restart: unless-stopped
     environment:
-      - APP_KEY=dahua_camera_10
+      - APP_KEY=${APP_KEY}
