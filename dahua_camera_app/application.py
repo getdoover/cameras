@@ -3,13 +3,14 @@ import logging
 import os
 import re
 import time
+from typing import Any
 from urllib.parse import quote
 
 import aiohttp
 from pydoover.docker import app_base, run_app
 from pydoover.ui import SlimCommand
 
-from camera_iface import DahuaPTZCamera, DahuaFixedCamera, GenericRTSPCamera, Camera, MessageTooLong
+from camera_iface import DahuaPTZCamera, DahuaFixedCamera, GenericRTSPCamera, Camera, MessageTooLong, CameraConfig
 from power_management import CameraPowerManagement
 
 log = logging.getLogger(__name__)
@@ -19,15 +20,11 @@ HOST_MATCH = re.compile(r"rtsp://(.*:.*@)?(?P<host>.*):[0-9]*/.*")
 class DahuaCameraApplication(app_base):
     camera: Camera
     power_management: CameraPowerManagement
+    
+    config: CameraConfig
 
     snapshot_running: bool
     last_camera_snapshot: float = 0
-
-    snapshot_period: int
-    snapshot_mode: str
-    snapshot_secs: int | float
-    snapshot_fps: int
-    snapshot_scale: str
 
     camera_snap_cmd_name: str = "camera_snapshots"
     last_snapshot_cmd_name: str = "last_cam_snapshot"
@@ -38,36 +35,32 @@ class DahuaCameraApplication(app_base):
 
         config_manager = self.get_config_manager()
         await config_manager.get_config_async([])
-        config = config_manager.last_deployment_config
+        config: dict[str, Any] = config_manager.last_deployment_config
+        
+        self.config = CameraConfig(config)
 
         self.power_management = CameraPowerManagement(self.platform_iface, config_manager)
 
-        cam_type = config.get("TYPE", "generic")
-        if cam_type == "dahua_ptz":
-            self.camera = DahuaPTZCamera.from_config(config, agent_iface, self.power_management)
-        elif cam_type == "dahua_fixed":
-            self.camera = DahuaFixedCamera.from_config(config, agent_iface, self.power_management)
+        if self.config.type == "dahua_ptz":
+            self.camera = DahuaPTZCamera.from_config(self.config, agent_iface, self.power_management)
+        elif self.config.type == "dahua_fixed":
+            self.camera = DahuaFixedCamera.from_config(self.config, agent_iface, self.power_management)
         else:
             # this is two-fold - matches generic (and unknown) camera types, but also
             # falls back to a generic camera if some of the config is missing (username, etc.)
             # and one of the the above matches fails
-            self.camera = GenericRTSPCamera.from_config(config, agent_iface, self.power_management)
+            self.camera = GenericRTSPCamera.from_config(self.config, agent_iface, self.power_management)
 
         await self.camera.setup()
 
         # dunno what this is transforming from, but just make it a very basic {name: uri} dict.
         try:
-            await self.setup_rtsp_server_config(config["NAME"], config["URI"])
+            await self.setup_rtsp_server_config(self.config.name, self.config.rtsp_uri)
         except Exception as e:
             # we don't really care if this fails but just let us know anyway...
             log.error("Failed to setup rtsp server config.", exc_info=e)
 
         self.snapshot_running = False
-        self.snapshot_period = self.get_config("SNAPSHOT_PERIOD")
-        self.snapshot_mode = self.get_config("SNAPSHOT_MODE") or "mp4"
-        self.snapshot_secs = self.get_config("SNAPSHOT_SECS") or 6
-        self.snapshot_fps = self.get_config("SNAPSHOT_FPS")
-        self.snapshot_scale = self.get_config("SNAPSHOT_SCALE")
 
         self.camera_snap_cmd_name = "camera_snapshots"
         self.last_snapshot_cmd_name = "last_cam_snapshot"
@@ -77,7 +70,7 @@ class DahuaCameraApplication(app_base):
 
 
     async def main_loop(self):
-        if not self.snapshot_running and time.time() - self.last_camera_snapshot > self.snapshot_period:
+        if not self.snapshot_running and time.time() - self.last_camera_snapshot > self.config.snapshot_period:
             await self._lock_snapshot_and_run()
 
     async def _lock_snapshot_and_run(self):
@@ -116,19 +109,17 @@ class DahuaCameraApplication(app_base):
             ## attempt to take a snapshot
             error_count = 0
             while not success and error_count < retries:
-                data = await self.camera.get_snapshot(
-                    self.snapshot_mode, self.snapshot_secs, self.snapshot_fps, self.snapshot_scale
-                )
+                data = await self.camera.get_snapshot()
                 if not data:
                     error_count += 1
                     continue
 
                 try:
-                    result = await self.camera.publish_snapshot(data, self.snapshot_mode)
+                    result = await self.camera.publish_snapshot(data, self.config.snapshot_mode)
                 except MessageTooLong:
-                    if self.snapshot_secs is not None and isinstance(self.snapshot_secs, (int, float)):
-                        log.info(f"Reducing snapshot length from {self.snapshot_secs} to {self.snapshot_secs * 0.7}")
-                        self.snapshot_secs = self.snapshot_secs * 0.7
+                    if self.config.snapshot_secs is not None and isinstance(self.config.snapshot_secs, (int, float)):
+                        log.info(f"Reducing snapshot length from {self.config.snapshot_secs} to {self.config.snapshot_secs * 0.7}")
+                        self.config.snapshot_secs = self.config.snapshot_secs * 0.7
 
                     result = None
 

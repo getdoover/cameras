@@ -42,7 +42,7 @@ class CameraConfig:
         self.name = data["NAME"]
         self.display_name = data["DISPLAY_NAME"]
         self.uri = data["URI"]
-        self.type = data.get("TYPE")
+        self.type = data.get("TYPE", "generic")
 
         self.rtsp_uri = data.get("RTSP_URI")
 
@@ -61,6 +61,13 @@ class CameraConfig:
 
         self.object_detection = data.get("OBJECT_DETECTION")
         self.control_enabled = data.get("CONTROL_ENABLED")
+
+        self.snapshot_period = data.get("SNAPSHOT_PERIOD")
+        self.snapshot_mode = data.get("SNAPSHOT_MODE") or "mp4"
+        self.snapshot_secs = data.get("SNAPSHOT_SECS") or 6
+        self.snapshot_fps = data.get("SNAPSHOT_FPS")
+        self.snapshot_scale = data.get("SNAPSHOT_SCALE")
+
 
     @staticmethod
     def get_or_fallback_to_match(config, match, config_key, match_key):
@@ -92,7 +99,7 @@ class Camera:
     async def setup(self):
         pass
 
-    async def get_snapshot(self, snapshot_type, length, fps, scale):
+    async def get_snapshot(self, mode: str = None):
         raise NotImplementedError
 
     async def publish_snapshot(self, output_b64, snapshot_type):
@@ -124,12 +131,12 @@ class Camera:
         cmd = f"ffmpeg -y -r 1 -i {self.config.rtsp_uri} -vf 'scale=720:-1' -vsync vfr -r 1 -vframes 1 {filepath}"
         return await self.run_cmd(cmd)
 
-    async def run_video_snapshot(self, filepath, snapshot_length, fps, scale):
+    async def run_video_snapshot(self, filepath):
         # possible alternative, allegedly h265 is the "new" best high-compression format.
         # ffmpeg -y -rtsp_transport tcp -i rtsp://10.144.239.221:554/s0 -vf
         # scale=420:-1 -r 10 -t 6 -vcodec libx265 -tag:v hvc1 -c:a aac output.mp4
-        cmd = f"ffmpeg -y -rtsp_transport tcp -i {self.config.rtsp_uri} -vf 'fps={fps},scale={scale}," \
-              f"format=yuv420p,pad=ceil(iw/2)*2:ceil(ih/2)*2' -t {snapshot_length} -c:v libx264 -c:a aac {filepath}"
+        cmd = f"ffmpeg -y -rtsp_transport tcp -i {self.config.rtsp_uri} -vf 'fps={self.config.snapshot_fps},scale={self.config.snapshot_scale}," \
+              f"format=yuv420p,pad=ceil(iw/2)*2:ceil(ih/2)*2' -t {self.config.snapshot_secs} -c:v libx264 -c:a aac {filepath}"
         return await self.run_cmd(cmd)
 
     async def run_cmd(self, cmd):
@@ -248,16 +255,16 @@ class DahuaCamera(Camera):
 
         return True
 
-    async def get_snapshot(self, snapshot_type, length: int = 4, fps: int = DEFAULT_FPS, scale: str = DEFAULT_SCALE):
-        log.info(f"Getting snapshot for camera {self.name}, type: {snapshot_type}, length: {length}")
-        if snapshot_type == "mp4":
+    async def get_snapshot(self, mode: str = None):
+        mode = mode or self.config.snapshot_mode
+
+        log.info(f"Getting snapshot for camera {self.name}, type: {mode}, length: {self.config.snapshot_secs}")
+        if mode == "mp4":
             # todo: use the in-built recording of camera...
             task_id = str(uuid.uuid4())
-            fp = self.get_output_filepath(task_id, snapshot_type)
+            fp = self.get_output_filepath(task_id, mode)
 
-            fps = fps or DEFAULT_FPS
-            scale = scale or DEFAULT_SCALE
-            await self.run_video_snapshot(fp, length, fps, scale)
+            await self.run_video_snapshot(fp)
 
             try:
                 with open(fp, 'rb') as f:
@@ -523,14 +530,14 @@ class DahuaFixedCamera(DahuaCamera):
 
 class GenericRTSPCamera(Camera):
 
-    async def get_snapshot(self, snapshot_type, length, fps: int = DEFAULT_FPS, scale: str = DEFAULT_SCALE):
-        task_id = str(uuid.uuid4())
-        filepath = self.get_output_filepath(task_id, snapshot_type)
+    async def get_snapshot(self, mode: str = None):
+        mode = mode or self.config.snapshot_mode
 
-        if snapshot_type == 'mp4':
-            fps = fps or DEFAULT_FPS
-            scale = scale or DEFAULT_SCALE
-            await self.run_video_snapshot(filepath, length, fps, scale)
+        task_id = str(uuid.uuid4())
+        filepath = self.get_output_filepath(task_id, mode)
+
+        if mode == 'mp4':
+            await self.run_video_snapshot(filepath)
         else:
             await self.run_still_snapshot(filepath)
 
