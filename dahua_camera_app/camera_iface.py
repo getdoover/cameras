@@ -92,6 +92,8 @@ class Camera:
         self.dda_iface = dda_iface
         self.power_manager = power_manager
 
+        self.ensure_output_dir()
+
     @classmethod
     def from_config(cls, config, dda_iface, power_manager):
         return cls(config, dda_iface, power_manager)

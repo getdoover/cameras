@@ -184,6 +184,7 @@ class DahuaCameraApplication(app_base):
         # await asyncio.gather(*tasks)
 
     async def on_snapshot_command(self, new_value: str):
+        print("running snapshot command")
         if new_value != "get_immediate_snapshot":
             return
 
