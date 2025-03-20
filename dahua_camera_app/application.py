@@ -89,22 +89,21 @@ class DahuaCameraApplication(app_base):
 
             # await a successful ping to the camera
             try:
-                match = HOST_MATCH.match(self.camera.config.rtsp_uri)
-                hostname = match and match.group("host")
+                hostname = self.camera.config.address
                 if not hostname:
-                    raise ValueError(f"Failed to extract hostname from RTSP URI: {self.camera.config.rtsp_uri}")
+                    raise ValueError(f"Failed to extract hostname config: {self.camera.config.address}")
 
                 start_time = time.time()
                 while time.time() - start_time < ping_wait:
-                    response = os.system("ping -c 1 " + hostname)
+                    response = os.system(f"ping -c 1 {hostname}")
                     if response == 0:
                         break
                     else:
-                        log.debug("Awaiting ping from camera " + str(hostname))
+                        log.debug(f"Awaiting ping from camera {hostname}")
                         await asyncio.sleep(1)
 
             except Exception as e:
-                log.warning(f"Failed to ping camera: {str(e)}")
+                log.exception(f"Failed to ping camera: {str(e)}")
 
             ## attempt to take a snapshot
             error_count = 0

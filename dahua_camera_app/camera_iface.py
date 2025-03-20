@@ -6,7 +6,7 @@ import logging
 import uuid
 import pathlib
 import re
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 import aiohttp
 
@@ -18,12 +18,12 @@ from pydoover import ui
 from dahua import DahuaClient
 from power_management import CameraPowerManagement
 
+if TYPE_CHECKING:
+    from config import CameraConfig
+
 
 OUTPUT_FILE_DIR = pathlib.Path("/tmp/camera")
-DEFAULT_FPS = 5
-DEFAULT_SCALE = "360:-1"
 MAX_MESSAGE_SIZE = 125_000
-DEFAULT_POWER_TIMEOUT = 60 * 15  # 15 minutes
 
 log = logging.getLogger(__name__)
 
@@ -33,59 +33,13 @@ EVENT_MATCH = re.compile(r"(?P<boundary>.*)\r\n"
                          r"Content-Length: (?P<content_length>\d*)\r\n\r\n"
                          r"Code=(?P<code>.*);action=(?P<action>.*);index=(?P<index>.*);data=(?P<data>.*)", re.DOTALL)
 
-URI_MATCH = re.compile(r"rtsp://(?P<username>.*):(?P<password>.*)@(?P<address>.*):(?P<port>.*)/(?P<channel>.*)")
-
-
-
-class CameraConfig:
-    def __init__(self, data):
-        self.name = data["NAME"]
-        self.display_name = data["DISPLAY_NAME"]
-        self.uri = data["URI"]
-        self.type = data.get("TYPE", "generic")
-
-        self.rtsp_uri = data.get("RTSP_URI")
-
-        match = URI_MATCH.match(data["URI"])
-        # prefer config, fallback to parsing the URI.
-        self.username = self.get_or_fallback_to_match(data, match, "USERNAME", "username")
-        self.password = self.get_or_fallback_to_match(data, match, "PASSWORD", "password")
-        self.address = self.get_or_fallback_to_match(data, match, "ADDRESS", "address")
-        self.rtsp_port = self.get_or_fallback_to_match(data, match, "RTSP_PORT", "port")
-
-        self.control_port = data.get("CONTROL_PORT", 80)
-        self.power_timeout = data.get("POWER_TIMEOUT", DEFAULT_POWER_TIMEOUT)
-
-        self.remote_component_url = data.get("REMOTE_COMPONENT_URL")
-        self.remote_component_name = data.get("REMOTE_COMPONENT_NAME")
-
-        self.object_detection = data.get("OBJECT_DETECTION")
-        self.control_enabled = data.get("CONTROL_ENABLED")
-
-        self.snapshot_period = data.get("SNAPSHOT_PERIOD")
-        self.snapshot_mode = data.get("SNAPSHOT_MODE") or "mp4"
-        self.snapshot_secs = data.get("SNAPSHOT_SECS") or 6
-        self.snapshot_fps = data.get("SNAPSHOT_FPS")
-        self.snapshot_scale = data.get("SNAPSHOT_SCALE")
-
-
-    @staticmethod
-    def get_or_fallback_to_match(config, match, config_key, match_key):
-        try:
-            return config[config_key]
-        except KeyError:
-            try:
-                return match.group(match_key)
-            except AttributeError:
-                return None
-
 
 class MessageTooLong(Exception):
     pass
 
 
 class Camera:
-    def __init__(self, config: CameraConfig, dda_iface, power_manager: CameraPowerManagement):
+    def __init__(self, config: "CameraConfig", dda_iface, power_manager: CameraPowerManagement):
         self.name = config.name
 
         self.config = config

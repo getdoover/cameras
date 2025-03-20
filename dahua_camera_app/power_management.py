@@ -1,15 +1,13 @@
 import asyncio
-import json
 import logging
 import time
 
-from typing import Optional, Any, TYPE_CHECKING
+from typing import TYPE_CHECKING
+
 
 if TYPE_CHECKING:
+    from camera_iface import CameraConfig
     from pydoover.docker import PlatformInterface
-
-DEFAULT_WAKE_DELAY = 5
-DEFAULT_CAMERA_ON_DELAY = 60 * 15
 
 log = logging.getLogger(__name__)
 
@@ -32,7 +30,7 @@ class PowerContext:
         if not self.manager.is_powered:
             return  # something went wrong with trying to turn the power on...
 
-        wake_delay = await self.manager.get_wake_delay(self.camera)
+        wake_delay = self.manager.config.wake_delay
         to_sleep = wake_delay - (time.time() - self.manager.start_powered)
         if to_sleep > 0:
             await asyncio.sleep(to_sleep)
@@ -45,10 +43,9 @@ class PowerContext:
 
 
 class CameraPowerManagement:
-    def __init__(self, plt_iface: "PlatformInterface" = None, config_manager=None, default_config=None):
+    def __init__(self, plt_iface: "PlatformInterface", config: "CameraConfig"):
         self.plt_iface = plt_iface
-        self.config_manager = config_manager
-        self.default_config = default_config
+        self.config = config
 
         self.is_powered: bool = False
         self.start_powered = None
@@ -56,59 +53,16 @@ class CameraPowerManagement:
         self.active_cameras = set()
         self.delayed_poweroff_tasks: dict[str, asyncio.Task] = dict()
 
-    async def get_config(self) -> Optional[dict[str, Any]]:
-        if not self.config_manager and not self.default_config:
-            logging.warning("No config_manager or default_config supplied.")
-            return
-        elif not self.config_manager:
-            config = self.default_config
-        else:
-            config = await self.config_manager.get_config_async('camera_config')
-
-        if not config:
-            logging.warning("No camera config found.")
-            return
-
-        if isinstance(config, str):
-            try:
-                config = json.loads(config)
-            except json.JSONDecodeError:
-                logging.warning("Unable to parse camera config as valid JSON from config manager")
-                return config  # might still be a valid string?
-
-        return config
-
-    async def get_power_pin(self) -> Optional[int]:
-        config = await self.get_config()
-        if not config:
-            return
-
-        try:
-            return config['POWER_PIN']
-        except KeyError:
-            logging.warning("Unable to parse camera power pin from config")
-
-        return None
-
-    async def get_wake_delay(self, rtsp_uri) -> Optional[int]:
-        config = await self.get_config()
-        if not config:
-            return DEFAULT_WAKE_DELAY
-
-        try:
-            return [c["WAKE_DELAY"] for c in config["CAMERAS"].values() if c["URI"] == rtsp_uri][0]
-        except (TypeError, KeyError, IndexError):
-            return DEFAULT_WAKE_DELAY
 
     async def schedule_power_off(self):
         # this is a worst-case scenario something breaks and the camera won't get turned off.
-        pin = await self.get_power_pin()
+        pin = self.config.power_pin
         if pin is None:
             log.debug("No power pin found, cannot schedule power off")
             return
 
-        log.debug(f"Scheduling power off in {DEFAULT_CAMERA_ON_DELAY} seconds")
-        await self.plt_iface.schedule_do_async(pin, False, DEFAULT_CAMERA_ON_DELAY)
+        log.debug(f"Scheduling power off in {self.config.power_timeout} seconds")
+        await self.plt_iface.schedule_do_async(pin, False, self.config.power_timeout)
 
     async def power_on(self):
         log.debug("Powering on cameras")
@@ -119,7 +73,7 @@ class CameraPowerManagement:
             log.debug("Cameras are already powered on")
             return
 
-        pin = await self.get_power_pin()
+        pin = self.config.power_pin
         if pin is None:
             log.debug("No power pin found, cannot power on")
             return
@@ -135,7 +89,7 @@ class CameraPowerManagement:
             log.debug("Cameras are already powered off")
             return
 
-        pin = await self.get_power_pin()
+        pin = self.config.power_pin
         if pin is None:
             log.debug("No power pin found, cannot power off")
             return
@@ -168,7 +122,7 @@ class CameraPowerManagement:
         log.debug(f"Handling delayed camera done task for {cam}")
         await self.handle_cam_done(cam)
 
-    async def acquire_for(self, camera_to_manage: str, delay: int = DEFAULT_CAMERA_ON_DELAY):
+    async def acquire_for(self, camera_to_manage: str, delay: int):
         await PowerContext(camera_to_manage, self)
         self.active_cameras.add(camera_to_manage)
 
