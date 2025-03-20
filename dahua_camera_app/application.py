@@ -10,7 +10,8 @@ import aiohttp
 from pydoover.docker import app_base, run_app
 from pydoover.ui import SlimCommand
 
-from camera_iface import DahuaPTZCamera, DahuaFixedCamera, GenericRTSPCamera, Camera, MessageTooLong, CameraConfig
+from camera_iface import DahuaPTZCamera, DahuaFixedCamera, GenericRTSPCamera, Camera, MessageTooLong
+from config import CameraConfig
 from power_management import CameraPowerManagement
 
 log = logging.getLogger(__name__)
@@ -38,8 +39,7 @@ class DahuaCameraApplication(app_base):
         config: dict[str, Any] = config_manager.last_deployment_config
         
         self.config = CameraConfig(config)
-
-        self.power_management = CameraPowerManagement(self.platform_iface, config_manager)
+        self.power_management = CameraPowerManagement(self.platform_iface, self.config)
 
         if self.config.type == "dahua_ptz":
             self.camera = DahuaPTZCamera.from_config(self.config, agent_iface, self.power_management)
