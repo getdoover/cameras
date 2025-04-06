@@ -6,7 +6,7 @@ from pydoover import config
 class CameraConfig(config.Schema):
     def __init__(self):
         self.display_name = config.String("Camera Name", description="User friendly name for camera")
-        self.name = config.String("cam_name", default=self.display_name.default.lower().replace(" ", "_"))
+        self.name = config.String("cam_name", description="Internal name for camera.")
         # self.uri = config.String("Camera URI", description="Camera URI in form of rtsp://username:password@address:port/channelName")
         self.type = config.Option("Camera Type", default="dahua_ptz", choices=["dahua_ptz", "dahua_fixed", "dahua_generic"])
 
