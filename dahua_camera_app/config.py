@@ -1,54 +1,45 @@
-import re
+from pathlib import Path
+
+from pydoover import config
 
 
-URI_MATCH = re.compile(r"rtsp://(?P<username>.*):(?P<password>.*)@(?P<address>.*):(?P<port>.*)/(?P<channel>.*)")
-DEFAULT_WAKE_DELAY = 5
-DEFAULT_POWER_TIMEOUT = 60 * 15  # 15 minutes
-DEFAULT_FPS = 5
-DEFAULT_SCALE = "360:-1"
+class CameraConfig(config.Schema):
+    def __init__(self):
+        self.display_name = config.String("Camera Name", description="User friendly name for camera")
+        self.name = config.String("cam_name", default=self.display_name.default.lower().replace(" ", "_"))
+        # self.uri = config.String("Camera URI", description="Camera URI in form of rtsp://username:password@address:port/channelName")
+        self.type = config.Option("Camera Type", default="dahua_ptz", choices=["dahua_ptz", "dahua_fixed", "dahua_generic"])
+
+        self.username = config.String("Camera Username", description="Username to login to camera control")
+        self.password = config.String("Camera Password", description="Password to login to camera control")
+        self.address = config.String("IP address", description="IP address of camera (e.g. 192.168.50.100)")
+        self.rtsp_port = config.Integer("RTSP Port", description="Port of RTSP feed on camera", default=554)
+        self.rtsp_channel = config.String("RTSP Channel", description="RTSP channel name. On Dahua cameras this is usually 'live'.", default="live")
+        self.control_port = config.Integer("Control Port", description="Port of control page on camera", default=80)
+
+        self.power_pin = config.Integer("Power Pin", description="Digital Output pin that controls power to camera circuit. Defaults to -1 (no power control).", default=-1)
+        self.power_timeout = config.Integer("Power Timeout", description="Power Timeout in seconds", default=60 * 15)
+        self.wake_delay = config.Integer("Wake Delay", description="Seconds for camera to boot before requesting a snapshot.", default=5)
+
+        self.remote_component_url = config.String("Remote Component URL", description="URL for live view component. Leave blank to disable live view.", default="https://getdoover.github.io/cameras/HLSLiveView.js")
+        self.remote_component_name = config.String("Remote Component Name", description="Name of live view component", default="Live View")
+
+        self.object_detection = config.Option("Object Detection", default=[], choices=["Human", "Vehicle"], select_many=True)
+        self.control_enabled = config.Boolean("Control Enabled", description="Allow control (movement) of PTZ cameras.", default=True)
+
+        self.snapshot_period = config.Integer("Snapshot Period", description="Snapshot period in seconds", default=60 * 60 * 4)
+        self.snapshot_mode = config.Option("Snapshot Mode", description="Video format", default="mp4", choices=["mp4", "jpg"])
+        self.snapshot_secs = config.Integer("Snapshot Duration", description="Duration of snapshot", default=6)
+        self.snapshot_fps = config.Integer("Snapshot FPS", description="FPS of snapshot", default=5)
+        self.snapshot_scale = config.String("Snapshot Scale", description="Scale of snapshot", default="360:-1")
+
+    @property
+    def rtsp_uri(self):
+        if self.username or self.password:
+            return f"rtsp://{self.username}:{self.password}@{self.address}:{self.rtsp_port}/{self.rtsp_channel}"
+        return f"rtsp://{self.address}:{self.rtsp_port}/{self.rtsp_channel}"
 
 
-class CameraConfig:
-    def __init__(self, data):
-        self.name = data["NAME"]
-        self.display_name = data["DISPLAY_NAME"]
-        self.uri = data["URI"]
-        self.type = data.get("TYPE", "generic")
-
-        self.rtsp_uri = self.uri
-
-        match = URI_MATCH.match(data["URI"])
-        # prefer config, fallback to parsing the URI.
-        self.username = self.get_or_fallback_to_match(data, match, "USERNAME", "username")
-        self.password = self.get_or_fallback_to_match(data, match, "PASSWORD", "password")
-        self.address = self.get_or_fallback_to_match(data, match, "ADDRESS", "address")
-        self.rtsp_port = self.get_or_fallback_to_match(data, match, "RTSP_PORT", "port")
-
-        self.control_port = data.get("CONTROL_PORT", 80)
-        self.power_timeout = data.get("POWER_TIMEOUT", DEFAULT_POWER_TIMEOUT)
-        self.power_pin = data.get("POWER_PIN")
-        self.wake_delay = data.get("WAKE_DELAY", DEFAULT_WAKE_DELAY)
-
-        self.remote_component_url = data.get("REMOTE_COMPONENT_URL")
-        self.remote_component_name = data.get("REMOTE_COMPONENT_NAME")
-
-        self.object_detection = data.get("OBJECT_DETECTION")
-        self.control_enabled = data.get("CONTROL_ENABLED")
-
-        self.snapshot_period = data.get("SNAPSHOT_PERIOD")
-        self.snapshot_mode = data.get("SNAPSHOT_MODE") or "mp4"
-        self.snapshot_secs = data.get("SNAPSHOT_SECS") or 6
-        self.snapshot_fps = data.get("SNAPSHOT_FPS") or DEFAULT_FPS
-        self.snapshot_scale = data.get("SNAPSHOT_SCALE") or DEFAULT_SCALE
-
-
-    @staticmethod
-    def get_or_fallback_to_match(config, match, config_key, match_key):
-        try:
-            return config[config_key]
-        except KeyError:
-            try:
-                return match.group(match_key)
-            except AttributeError:
-                return None
-
+if __name__ == "__main__":
+    config = CameraConfig()
+    config.export(Path("config_schema.json"))

@@ -3,7 +3,6 @@ import logging
 import os
 import re
 import time
-from typing import Any
 from urllib.parse import quote
 
 import aiohttp
@@ -31,25 +30,19 @@ class DahuaCameraApplication(app_base):
     last_snapshot_cmd_name: str = "last_cam_snapshot"
 
     async def setup(self):
-        agent_iface = self.get_agent_iface()
         self.subscribe_to_channel("camera_control", self.on_control_message)
 
-        config_manager = self.get_config_manager()
-        await config_manager.get_config_async([])
-        config: dict[str, Any] = config_manager.last_deployment_config
-        
-        self.config = CameraConfig(config)
         self.power_management = CameraPowerManagement(self.platform_iface, self.config)
 
         if self.config.type == "dahua_ptz":
-            self.camera = DahuaPTZCamera.from_config(self.config, agent_iface, self.power_management)
+            self.camera = DahuaPTZCamera.from_config(self.config, self.device_agent, self.power_management)
         elif self.config.type == "dahua_fixed":
-            self.camera = DahuaFixedCamera.from_config(self.config, agent_iface, self.power_management)
+            self.camera = DahuaFixedCamera.from_config(self.config, self.device_agent, self.power_management)
         else:
             # this is two-fold - matches generic (and unknown) camera types, but also
             # falls back to a generic camera if some of the config is missing (username, etc.)
             # and one of the the above matches fails
-            self.camera = GenericRTSPCamera.from_config(self.config, agent_iface, self.power_management)
+            self.camera = GenericRTSPCamera.from_config(self.config, self.device_agent, self.power_management)
 
         await self.camera.setup()
 
@@ -202,4 +195,4 @@ class DahuaCameraApplication(app_base):
 
 
 if __name__ == "__main__":
-    run_app(DahuaCameraApplication())
+    run_app(DahuaCameraApplication(config=CameraConfig()))

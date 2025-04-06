@@ -107,7 +107,7 @@ class Camera:
 
     def fetch_ui_elements(self):
         if self.config.remote_component_url is None:
-            return ui.Camera(self.config.name, self.config.display_name, self.config.uri)
+            return ui.Camera(self.config.name, self.config.display_name, self.config.rtsp_uri)
 
         liveview_element_name = f"{self.name}_liveview"
         liveview_display_name = f"{self.config.display_name} Liveview"
@@ -126,9 +126,9 @@ class Camera:
         # ui_liveview._retain_fields = ("presets", "active_preset", "cam_position", "allow_absolute_position")
 
         ## Set the Dispaly Name to blank to avoid title in submodule
-        original_cam_history = ui.CameraHistory(self.config.name, "", self.config.uri)
+        original_cam_history = ui.CameraHistory(self.config.name, "", self.config.rtsp_uri)
 
-        yield ui.Camera(self.config.name, self.config.display_name, self.config.uri, children=[original_cam_history, ui_liveview])
+        yield ui.Camera(self.config.name, self.config.display_name, self.config.rtsp_uri, children=[original_cam_history, ui_liveview])
 
 
 class DahuaCamera(Camera):
