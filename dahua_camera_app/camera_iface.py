@@ -40,7 +40,7 @@ class MessageTooLong(Exception):
 
 class Camera:
     def __init__(self, config: "CameraConfig", dda_iface, power_manager: CameraPowerManagement):
-        self.name = config.name
+        self.name = config.name.value
 
         self.config = config
         self.dda_iface = dda_iface
