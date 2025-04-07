@@ -84,14 +84,14 @@ class Camera:
         OUTPUT_FILE_DIR.mkdir(parents=True, exist_ok=True)
 
     async def run_still_snapshot(self, filepath):
-        cmd = f"ffmpeg -y -r 1 -i {self.config.rtsp_uri.value} -vf 'scale=720:-1' -vsync vfr -r 1 -vframes 1 {filepath}"
+        cmd = f"ffmpeg -y -r 1 -i {self.config.rtsp_uri} -vf 'scale=720:-1' -vsync vfr -r 1 -vframes 1 {filepath}"
         return await self.run_cmd(cmd)
 
     async def run_video_snapshot(self, filepath):
         # possible alternative, allegedly h265 is the "new" best high-compression format.
         # ffmpeg -y -rtsp_transport tcp -i rtsp://10.144.239.221:554/s0 -vf
         # scale=420:-1 -r 10 -t 6 -vcodec libx265 -tag:v hvc1 -c:a aac output.mp4
-        cmd = f"ffmpeg -y -rtsp_transport tcp -i {self.config.rtsp_uri.value} -vf 'fps={self.config.snapshot_fps.value},scale={self.config.snapshot_scale.value}," \
+        cmd = f"ffmpeg -y -rtsp_transport tcp -i {self.config.rtsp_uri} -vf 'fps={self.config.snapshot_fps.value},scale={self.config.snapshot_scale.value}," \
               f"format=yuv420p,pad=ceil(iw/2)*2:ceil(ih/2)*2' -t {self.config.snapshot_secs.value} -c:v libx264 -c:a aac {filepath}"
         return await self.run_cmd(cmd)
 
@@ -103,11 +103,11 @@ class Camera:
 
     async def on_control_message(self, data):
         if data.get("action") == "power_on":
-            await self.power_manager.acquire_for(self.config.rtsp_uri.value, self.config.power_timeout.value)  # 15 minutes
+            await self.power_manager.acquire_for(self.config.rtsp_uri, self.config.power_timeout.value)  # 15 minutes
 
     def fetch_ui_elements(self):
         if self.config.remote_component_url.value is None:
-            return ui.Camera(self.config.name.value, self.config.display_name.value, self.config.rtsp_uri.value)
+            return ui.Camera(self.config.name.value, self.config.display_name.value, self.config.rtsp_uri)
 
         liveview_element_name = f"{self.name}_liveview"
         liveview_display_name = f"{self.config.display_name.value} Liveview"
@@ -118,7 +118,7 @@ class Camera:
             component_url=self.config.remote_component_url.value,
             address=self.config.address.value,
             port=self.config.rtsp_port.value,
-            rtsp_uri=self.config.rtsp_uri.value,
+            rtsp_uri=self.config.rtsp_uri,
             cam_type=self.config.type.value,
         )
         # pretty hacky, but this basically tells the UI to never overwrite these fields since
@@ -126,9 +126,9 @@ class Camera:
         # ui_liveview._retain_fields = ("presets", "active_preset", "cam_position", "allow_absolute_position")
 
         ## Set the Dispaly Name to blank to avoid title in submodule
-        original_cam_history = ui.CameraHistory(self.config.name.value, "", self.config.rtsp_uri.value)
+        original_cam_history = ui.CameraHistory(self.config.name.value, "", self.config.rtsp_uri)
 
-        yield ui.Camera(self.config.name.value, self.config.display_name.value, self.config.rtsp_uri.value, children=[original_cam_history, ui_liveview])
+        yield ui.Camera(self.config.name.value, self.config.display_name.value, self.config.rtsp_uri, children=[original_cam_history, ui_liveview])
 
 
 class DahuaCamera(Camera):

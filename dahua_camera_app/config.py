@@ -34,7 +34,7 @@ class CameraConfig(config.Schema):
         self.snapshot_scale = config.String("Snapshot Scale", description="Scale of snapshot", default="360:-1")
 
     @property
-    def rtsp_uri(self):
+    def rtsp_uri(self) -> str:
         if self.username or self.password:
             return f"rtsp://{self.username}:{self.password}@{self.address}:{self.rtsp_port}/{self.rtsp_channel}"
         return f"rtsp://{self.address}:{self.rtsp_port}/{self.rtsp_channel}"
