@@ -181,7 +181,6 @@ class DahuaCameraApplication(app_base):
         if new_value != "get_immediate_snapshot":
             return
 
-        self.ui_manager.coerce_command(self.camera_snap_cmd_name, "completed")
         if self.snapshot_running:
             log.info("Skipping trigger snapshot request, snapshot task already running")
             return
@@ -193,6 +192,7 @@ class DahuaCameraApplication(app_base):
 
         self.last_camera_snapshot = ts
         self.ui_manager.coerce_command(self.last_snapshot_cmd_name, ts)
+        self.ui_manager.coerce_command(self.camera_snap_cmd_name, "completed")
 
 
 if __name__ == "__main__":
