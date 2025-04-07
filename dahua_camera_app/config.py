@@ -17,7 +17,7 @@ class CameraConfig(config.Schema):
         self.rtsp_channel = config.String("RTSP Channel", description="RTSP channel name. On Dahua cameras this is usually 'live'.", default="live")
         self.control_port = config.Integer("Control Port", description="Port of control page on camera", default=80)
 
-        self.power_pin = config.Integer("Power Pin", description="Digital Output pin that controls power to camera circuit. Defaults to -1 (no power control).", default=-1)
+        self.power_pin = config.Integer("Power Pin", description="Digital Output pin that controls power to camera circuit. Defaults to None (no power control).", default=None)
         self.power_timeout = config.Integer("Power Timeout", description="Power Timeout in seconds", default=60 * 15)
         self.wake_delay = config.Integer("Wake Delay", description="Seconds for camera to boot before requesting a snapshot.", default=5)
 
@@ -35,9 +35,9 @@ class CameraConfig(config.Schema):
 
     @property
     def rtsp_uri(self) -> str:
-        if self.username or self.password:
-            return f"rtsp://{self.username}:{self.password}@{self.address}:{self.rtsp_port}/{self.rtsp_channel}"
-        return f"rtsp://{self.address}:{self.rtsp_port}/{self.rtsp_channel}"
+        if self.username.value or self.password.value:
+            return f"rtsp://{self.username.value}:{self.password.value}@{self.address.value}:{self.rtsp_port.value}/{self.rtsp_channel.value}"
+        return f"rtsp://{self.address.value}:{self.rtsp_port.value}/{self.rtsp_channel.value}"
 
 
 if __name__ == "__main__":

@@ -61,7 +61,7 @@ class CameraPowerManagement:
     async def schedule_power_off(self):
         # this is a worst-case scenario something breaks and the camera won't get turned off.
         pin = self.config.power_pin.value
-        if pin is None:
+        if pin is None or pin == -1:
             log.debug("No power pin found, cannot schedule power off")
             return
 
@@ -78,7 +78,7 @@ class CameraPowerManagement:
             return
 
         pin = self.config.power_pin.value
-        if pin is None:
+        if pin is None or pin == -1:
             log.debug("No power pin found, cannot power on")
             return
 
@@ -94,7 +94,7 @@ class CameraPowerManagement:
             return
 
         pin = self.config.power_pin.value
-        if pin is None:
+        if pin is None or pin == -1:
             log.debug("No power pin found, cannot power off")
             return
 

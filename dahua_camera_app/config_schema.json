@@ -1,0 +1,158 @@
+{
+    "camera_name": {
+        "name": "camera_name",
+        "displayName": "Camera Name",
+        "type": "str"
+    },
+    "cam_name": {
+        "name": "cam_name",
+        "displayName": "cam_name",
+        "type": "str"
+    },
+    "camera_type": {
+        "choices": [
+            "dahua_ptz",
+            "dahua_fixed",
+            "dahua_generic"
+        ],
+        "elementType": null,
+        "selectMany": false,
+        "name": "camera_type",
+        "displayName": "Camera Type",
+        "type": "option",
+        "default": "dahua_ptz"
+    },
+    "camera_username": {
+        "name": "camera_username",
+        "displayName": "Camera Username",
+        "type": "str"
+    },
+    "camera_password": {
+        "name": "camera_password",
+        "displayName": "Camera Password",
+        "type": "str"
+    },
+    "ip_address": {
+        "name": "ip_address",
+        "displayName": "IP address",
+        "type": "str"
+    },
+    "rtsp_port": {
+        "min": null,
+        "max": null,
+        "name": "rtsp_port",
+        "displayName": "RTSP Port",
+        "type": "int",
+        "default": 554
+    },
+    "rtsp_channel": {
+        "name": "rtsp_channel",
+        "displayName": "RTSP Channel",
+        "type": "str",
+        "default": "live"
+    },
+    "control_port": {
+        "min": null,
+        "max": null,
+        "name": "control_port",
+        "displayName": "Control Port",
+        "type": "int",
+        "default": 80
+    },
+    "power_pin": {
+        "min": null,
+        "max": null,
+        "name": "power_pin",
+        "displayName": "Power Pin",
+        "type": "int",
+        "default": null
+    },
+    "power_timeout": {
+        "min": null,
+        "max": null,
+        "name": "power_timeout",
+        "displayName": "Power Timeout",
+        "type": "int",
+        "default": 900
+    },
+    "wake_delay": {
+        "min": null,
+        "max": null,
+        "name": "wake_delay",
+        "displayName": "Wake Delay",
+        "type": "int",
+        "default": 5
+    },
+    "remote_component_url": {
+        "name": "remote_component_url",
+        "displayName": "Remote Component URL",
+        "type": "str",
+        "default": "https://getdoover.github.io/cameras/HLSLiveView.js"
+    },
+    "remote_component_name": {
+        "name": "remote_component_name",
+        "displayName": "Remote Component Name",
+        "type": "str",
+        "default": "Live View"
+    },
+    "object_detection": {
+        "choices": [
+            "Human",
+            "Vehicle"
+        ],
+        "elementType": null,
+        "selectMany": true,
+        "name": "object_detection",
+        "displayName": "Object Detection",
+        "type": "option",
+        "default": []
+    },
+    "control_enabled": {
+        "name": "control_enabled",
+        "displayName": "Control Enabled",
+        "type": "bool",
+        "default": true
+    },
+    "snapshot_period": {
+        "min": null,
+        "max": null,
+        "name": "snapshot_period",
+        "displayName": "Snapshot Period",
+        "type": "int",
+        "default": 14400
+    },
+    "snapshot_mode": {
+        "choices": [
+            "mp4",
+            "jpg"
+        ],
+        "elementType": null,
+        "selectMany": false,
+        "name": "snapshot_mode",
+        "displayName": "Snapshot Mode",
+        "type": "option",
+        "default": "mp4"
+    },
+    "snapshot_duration": {
+        "min": null,
+        "max": null,
+        "name": "snapshot_duration",
+        "displayName": "Snapshot Duration",
+        "type": "int",
+        "default": 6
+    },
+    "snapshot_fps": {
+        "min": null,
+        "max": null,
+        "name": "snapshot_fps",
+        "displayName": "Snapshot FPS",
+        "type": "int",
+        "default": 5
+    },
+    "snapshot_scale": {
+        "name": "snapshot_scale",
+        "displayName": "Snapshot Scale",
+        "type": "str",
+        "default": "360:-1"
+    }
+}
