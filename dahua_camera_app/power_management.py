@@ -34,7 +34,7 @@ class PowerContext:
         if not self.manager.is_powered:
             return  # something went wrong with trying to turn the power on...
 
-        wake_delay = self.manager.config.wake_delay
+        wake_delay = self.manager.config.wake_delay.value
         to_sleep = wake_delay - (time.time() - self.manager.start_powered)
         if to_sleep > 0:
             await asyncio.sleep(to_sleep)
