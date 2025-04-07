@@ -7,6 +7,7 @@ import uuid
 import pathlib
 import re
 from typing import Optional, TYPE_CHECKING
+from urllib.parse import quote
 
 import aiohttp
 
@@ -53,7 +54,11 @@ class Camera:
         return cls(config, dda_iface, power_manager)
 
     async def setup(self):
-        pass
+        try:
+            # just do this here again, no harm in duplicating this...
+            await self.setup_rtsp_server_config()
+        except Exception as e:
+            log.error(f"setup_rtsp_server_config failed: {e}")
 
     async def get_snapshot(self, mode: str = None):
         raise NotImplementedError
@@ -104,6 +109,11 @@ class Camera:
     async def on_control_message(self, data):
         if data.get("action") == "power_on":
             await self.power_manager.acquire_for(self.config.rtsp_uri, self.config.power_timeout.value)  # 15 minutes
+            try:
+                # just do this here again, no harm in duplicating this...
+                await self.setup_rtsp_server_config()
+            except Exception as e:
+                log.error(f"setup_rtsp_server_config failed: {e}")
 
     def fetch_ui_elements(self):
         if self.config.remote_component_url.value is None:
@@ -129,6 +139,20 @@ class Camera:
         original_cam_history = ui.CameraHistory(self.config.name.value, "", self.config.rtsp_uri)
 
         yield ui.Camera(self.config.name.value, self.config.display_name.value, self.config.rtsp_uri, children=[original_cam_history, ui_liveview])
+
+    async def setup_rtsp_server_config(self):
+        base = "http://localhost:8083"
+        auth = aiohttp.BasicAuth("demo", "demo")
+
+        async with aiohttp.request("GET", "http://localhost:8083/streams", auth=auth) as resp:
+            data = await resp.json()
+
+        if self.name in data.get("payload"):
+            return  # already exists
+
+        body = {"name": self.name, "channels": {"0": {"name": self.name, "url": self.config.rtsp_uri, "on_demand": True, "debug": False}}}
+        async with aiohttp.request("POST", f"{base}/stream/{quote(self.name)}/add", json=body, auth=auth) as resp:
+            assert resp.status == 200
 
 
 class DahuaCamera(Camera):
@@ -176,6 +200,7 @@ class DahuaCamera(Camera):
         await self.dda_iface.publish_to_channel("ui_cmds", json.dumps(to_send))
 
     async def setup(self):
+        await super().setup()
         human = "human" in self.config.object_detection.value
         vehicle = "vehicle" in self.config.object_detection.value
 

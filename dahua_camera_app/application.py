@@ -3,9 +3,7 @@ import logging
 import os
 import re
 import time
-from urllib.parse import quote
 
-import aiohttp
 from pydoover.docker import app_base, run_app
 from pydoover.ui import SlimCommand
 
@@ -45,13 +43,6 @@ class DahuaCameraApplication(app_base):
             self.camera = GenericRTSPCamera.from_config(self.config, self.device_agent, self.power_management)
 
         await self.camera.setup()
-
-        # dunno what this is transforming from, but just make it a very basic {name: uri} dict.
-        try:
-            await self.setup_rtsp_server_config(self.config.name.value, self.config.rtsp_uri)
-        except Exception as e:
-            # we don't really care if this fails but just let us know anyway...
-            log.error("Failed to setup rtsp server config.", exc_info=e)
 
         self.snapshot_running = False
 
@@ -140,21 +131,6 @@ class DahuaCameraApplication(app_base):
         # send the message to the DDA
         response = await self.publish_to_channel("ui_state", msg)
         log.info(f"snapshot complete response is {response}")
-
-    @staticmethod
-    async def setup_rtsp_server_config(name, uri):
-        base = "http://localhost:8083"
-        auth = aiohttp.BasicAuth("demo", "demo")
-
-        async with aiohttp.request("GET", "http://localhost:8083/streams", auth=auth) as resp:
-            data = await resp.json()
-
-        if name in data.get("payload"):
-            return  # already exists
-
-        body = {"name": name, "channels": {"0": {"name": name, "url": uri, "on_demand": True, "debug": False}}}
-        async with aiohttp.request("POST", f"{base}/stream/{quote(name)}/add", json=body, auth=auth) as resp:
-            assert resp.status == 200
 
     async def on_control_message(self, _, payload):
         if not hasattr(self, "camera"):
