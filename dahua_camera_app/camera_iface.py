@@ -84,15 +84,15 @@ class Camera:
         OUTPUT_FILE_DIR.mkdir(parents=True, exist_ok=True)
 
     async def run_still_snapshot(self, filepath):
-        cmd = f"ffmpeg -y -r 1 -i {self.config.rtsp_uri} -vf 'scale=720:-1' -vsync vfr -r 1 -vframes 1 {filepath}"
+        cmd = f"ffmpeg -y -r 1 -i {self.config.rtsp_uri.value} -vf 'scale=720:-1' -vsync vfr -r 1 -vframes 1 {filepath}"
         return await self.run_cmd(cmd)
 
     async def run_video_snapshot(self, filepath):
         # possible alternative, allegedly h265 is the "new" best high-compression format.
         # ffmpeg -y -rtsp_transport tcp -i rtsp://10.144.239.221:554/s0 -vf
         # scale=420:-1 -r 10 -t 6 -vcodec libx265 -tag:v hvc1 -c:a aac output.mp4
-        cmd = f"ffmpeg -y -rtsp_transport tcp -i {self.config.rtsp_uri} -vf 'fps={self.config.snapshot_fps},scale={self.config.snapshot_scale}," \
-              f"format=yuv420p,pad=ceil(iw/2)*2:ceil(ih/2)*2' -t {self.config.snapshot_secs} -c:v libx264 -c:a aac {filepath}"
+        cmd = f"ffmpeg -y -rtsp_transport tcp -i {self.config.rtsp_uri.value} -vf 'fps={self.config.snapshot_fps.value},scale={self.config.snapshot_scale.value}," \
+              f"format=yuv420p,pad=ceil(iw/2)*2:ceil(ih/2)*2' -t {self.config.snapshot_secs.value} -c:v libx264 -c:a aac {filepath}"
         return await self.run_cmd(cmd)
 
     async def run_cmd(self, cmd):
@@ -103,32 +103,32 @@ class Camera:
 
     async def on_control_message(self, data):
         if data.get("action") == "power_on":
-            await self.power_manager.acquire_for(self.config.rtsp_uri, self.config.power_timeout)  # 15 minutes
+            await self.power_manager.acquire_for(self.config.rtsp_uri.value, self.config.power_timeout.value)  # 15 minutes
 
     def fetch_ui_elements(self):
-        if self.config.remote_component_url is None:
-            return ui.Camera(self.config.name, self.config.display_name, self.config.rtsp_uri)
+        if self.config.remote_component_url.value is None:
+            return ui.Camera(self.config.name.value, self.config.display_name.value, self.config.rtsp_uri.value)
 
         liveview_element_name = f"{self.name}_liveview"
-        liveview_display_name = f"{self.config.display_name} Liveview"
+        liveview_display_name = f"{self.config.display_name.value} Liveview"
         ui_liveview = ui.RemoteComponent(
             name=liveview_element_name,
             display_name=liveview_display_name,
             cam_name=self.name,
-            component_url=self.config.remote_component_url,
-            address=self.config.address,
-            port=self.config.rtsp_port,
-            rtsp_uri=self.config.rtsp_uri,
-            cam_type=self.config.type,
+            component_url=self.config.remote_component_url.value,
+            address=self.config.address.value,
+            port=self.config.rtsp_port.value,
+            rtsp_uri=self.config.rtsp_uri.value,
+            cam_type=self.config.type.value,
         )
         # pretty hacky, but this basically tells the UI to never overwrite these fields since
         # we manage them in the camera interface. Possibly not the right way of going about it?
         # ui_liveview._retain_fields = ("presets", "active_preset", "cam_position", "allow_absolute_position")
 
         ## Set the Dispaly Name to blank to avoid title in submodule
-        original_cam_history = ui.CameraHistory(self.config.name, "", self.config.rtsp_uri)
+        original_cam_history = ui.CameraHistory(self.config.name.value, "", self.config.rtsp_uri.value)
 
-        yield ui.Camera(self.config.name, self.config.display_name, self.config.rtsp_uri, children=[original_cam_history, ui_liveview])
+        yield ui.Camera(self.config.name.value, self.config.display_name.value, self.config.rtsp_uri.value, children=[original_cam_history, ui_liveview])
 
 
 class DahuaCamera(Camera):
@@ -176,15 +176,15 @@ class DahuaCamera(Camera):
         await self.dda_iface.publish_to_channel("ui_cmds", json.dumps(to_send))
 
     async def setup(self):
-        human = "human" in self.config.object_detection
-        vehicle = "vehicle" in self.config.object_detection
+        human = "human" in self.config.object_detection.value
+        vehicle = "vehicle" in self.config.object_detection.value
 
         self.client = DahuaClient(
-            self.config.username,
-            self.config.password,
-            self.config.address,
-            self.config.control_port,
-            self.config.rtsp_port,
+            self.config.username.value,
+            self.config.password.value,
+            self.config.address.value,
+            self.config.control_port.value,
+            self.config.rtsp_port.value,
             aiohttp.ClientSession()
         )
         status = await self.client.get_status()
@@ -204,7 +204,7 @@ class DahuaCamera(Camera):
         await self.sync_ui()  # sync ui_state
 
         if human or vehicle:
-            log.info(f"Starting motion detection for camera {self.name}: {self.config.object_detection}")
+            log.info(f"Starting motion detection for camera {self.name}: {self.config.object_detection.value}")
             await self.client.enable_smart_motion_detection(human=human, vehicle=vehicle)
             events = ["SmartMotionHuman", "SmartMotionVehicle"]
             self.stream_events_task = asyncio.create_task(self.client.stream_events(self.on_cam_event, events))
@@ -212,9 +212,9 @@ class DahuaCamera(Camera):
         return True
 
     async def get_snapshot(self, mode: str = None):
-        mode = mode or self.config.snapshot_mode
+        mode = mode or self.config.snapshot_mode.value
 
-        log.info(f"Getting snapshot for camera {self.name}, type: {mode}, length: {self.config.snapshot_secs}")
+        log.info(f"Getting snapshot for camera {self.name}, type: {mode}, length: {self.config.snapshot_secs.value}")
         if mode == "mp4":
             # todo: use the in-built recording of camera...
             task_id = str(uuid.uuid4())
@@ -265,14 +265,14 @@ class DahuaCamera(Camera):
 
         print(data, match.group("code"), match.group("action"))
         if match.group("code") == "SmartMotionHuman" and ui_cmds["cmds"].get(f"{self.name}_human_detect") is True:
-            await self.dda_iface.publish_to_channel("significantEvent", f"{self.config.display_name} has detected a person.")
+            await self.dda_iface.publish_to_channel("significantEvent", f"{self.config.display_name.value} has detected a person.")
             log.info(f"Human Detected, {data}")
         elif match.group("code") == "SmartMotionVehicle" and ui_cmds["cmds"].get(f"{self.name}_vehicle_detect") is True:
-            await self.dda_iface.publish_to_channel("significantEvent", f"{self.config.display_name} has detected a vehicle.")
+            await self.dda_iface.publish_to_channel("significantEvent", f"{self.config.display_name.value} has detected a vehicle.")
             log.info(f"Vehicle Detected, {data}")
 
     def check_control_message(self, data):
-        if not (self.config.control_enabled or self.client):
+        if not (self.config.control_enabled.value or self.client):
             return False
 
         try:
@@ -487,7 +487,7 @@ class DahuaFixedCamera(DahuaCamera):
 class GenericRTSPCamera(Camera):
 
     async def get_snapshot(self, mode: str = None):
-        mode = mode or self.config.snapshot_mode
+        mode = mode or self.config.snapshot_mode.value
 
         task_id = str(uuid.uuid4())
         filepath = self.get_output_filepath(task_id, mode)

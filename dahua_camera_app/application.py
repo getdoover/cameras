@@ -34,9 +34,9 @@ class DahuaCameraApplication(app_base):
 
         self.power_management = CameraPowerManagement(self.platform_iface, self.config)
 
-        if self.config.type == "dahua_ptz":
+        if self.config.type.value == "dahua_ptz":
             self.camera = DahuaPTZCamera.from_config(self.config, self.device_agent, self.power_management)
-        elif self.config.type == "dahua_fixed":
+        elif self.config.type.value == "dahua_fixed":
             self.camera = DahuaFixedCamera.from_config(self.config, self.device_agent, self.power_management)
         else:
             # this is two-fold - matches generic (and unknown) camera types, but also
@@ -48,7 +48,7 @@ class DahuaCameraApplication(app_base):
 
         # dunno what this is transforming from, but just make it a very basic {name: uri} dict.
         try:
-            await self.setup_rtsp_server_config(self.config.name, self.config.rtsp_uri)
+            await self.setup_rtsp_server_config(self.config.name.value, self.config.rtsp_uri)
         except Exception as e:
             # we don't really care if this fails but just let us know anyway...
             log.error("Failed to setup rtsp server config.", exc_info=e)
@@ -63,7 +63,7 @@ class DahuaCameraApplication(app_base):
 
 
     async def main_loop(self):
-        if not self.snapshot_running and time.time() - self.last_camera_snapshot > self.config.snapshot_period:
+        if not self.snapshot_running and time.time() - self.last_camera_snapshot > self.config.snapshot_period.value:
             await self._lock_snapshot_and_run()
 
     async def _lock_snapshot_and_run(self):
@@ -107,11 +107,11 @@ class DahuaCameraApplication(app_base):
                     continue
 
                 try:
-                    result = await self.camera.publish_snapshot(data, self.config.snapshot_mode)
+                    result = await self.camera.publish_snapshot(data, self.config.snapshot_mode.value)
                 except MessageTooLong:
-                    if self.config.snapshot_secs is not None and isinstance(self.config.snapshot_secs, (int, float)):
-                        log.info(f"Reducing snapshot length from {self.config.snapshot_secs} to {self.config.snapshot_secs * 0.7}")
-                        self.config.snapshot_secs = self.config.snapshot_secs * 0.7
+                    if self.config.snapshot_secs.value is not None and isinstance(self.config.snapshot_secs.value, (int, float)):
+                        log.info(f"Reducing snapshot length from {self.config.snapshot_secs.value} to {self.config.snapshot_secs.value * 0.7}")
+                        self.config.snapshot_secs.value = self.config.snapshot_secs.value * 0.7
 
                     result = None
 
