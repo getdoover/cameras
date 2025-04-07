@@ -7,7 +7,7 @@ name = "pypi"
 aiohttp = "==3.10.0"
 async-timeout = "==4.0.3"
 pillow = "==10.4.0"
-pydoover = {ref = "0c8a3dc", git = "git+https://spaneng:${PYDOOVER_GITHUB_PAT}@github.com/spaneng/pydoover.git"}
+pydoover = {ref = "2fbff9c", git = "git+https://spaneng:${PYDOOVER_GITHUB_PAT}@github.com/spaneng/pydoover.git"}
 
 [dev-packages]
 grpcio = "==1.65.1"
