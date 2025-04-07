@@ -60,6 +60,7 @@ class DahuaCameraApplication(app_base):
 
         self.ui_manager.add_children(*self.camera.fetch_ui_elements())
         self.ui_manager._add_interaction(SlimCommand(self.camera_snap_cmd_name, callback=self.on_snapshot_command))
+        self.ui_manager._add_interaction(SlimCommand(self.last_snapshot_cmd_name))
 
 
     async def main_loop(self):
