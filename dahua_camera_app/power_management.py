@@ -26,7 +26,11 @@ class PowerContext:
             # early exit if we don't define the platform interface (testing, etc.)
             return
 
-        await self.manager.power_on()
+        try:
+            await self.manager.power_on()
+        except Exception as e:
+            log.error(f"Failed to power on camera {e}")
+
         if not self.manager.is_powered:
             return  # something went wrong with trying to turn the power on...
 
@@ -56,13 +60,13 @@ class CameraPowerManagement:
 
     async def schedule_power_off(self):
         # this is a worst-case scenario something breaks and the camera won't get turned off.
-        pin = self.config.power_pin
+        pin = self.config.power_pin.value
         if pin is None:
             log.debug("No power pin found, cannot schedule power off")
             return
 
-        log.debug(f"Scheduling power off in {self.config.power_timeout} seconds")
-        await self.plt_iface.schedule_do_async(pin, False, self.config.power_timeout)
+        log.debug(f"Scheduling power off in {self.config.power_timeout.value} seconds")
+        await self.plt_iface.schedule_do_async(pin, False, self.config.power_timeout.value)
 
     async def power_on(self):
         log.debug("Powering on cameras")
@@ -73,7 +77,7 @@ class CameraPowerManagement:
             log.debug("Cameras are already powered on")
             return
 
-        pin = self.config.power_pin
+        pin = self.config.power_pin.value
         if pin is None:
             log.debug("No power pin found, cannot power on")
             return
@@ -89,7 +93,7 @@ class CameraPowerManagement:
             log.debug("Cameras are already powered off")
             return
 
-        pin = self.config.power_pin
+        pin = self.config.power_pin.value
         if pin is None:
             log.debug("No power pin found, cannot power off")
             return

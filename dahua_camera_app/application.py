@@ -78,13 +78,13 @@ class DahuaCameraApplication(app_base):
     async def run_snapshot(self, retries=3, ping_wait=20):
 
         success = False
-        async with self.power_management.acquire(self.camera.config.rtsp_uri):
+        async with self.power_management.acquire(self.config.rtsp_uri):
 
             # await a successful ping to the camera
             try:
-                hostname = self.camera.config.address
+                hostname = self.config.address.value
                 if not hostname:
-                    raise ValueError(f"Failed to extract hostname config: {self.camera.config.address}")
+                    raise ValueError(f"Failed to extract hostname config: {self.config.address.value}")
 
                 start_time = time.time()
                 while time.time() - start_time < ping_wait:
