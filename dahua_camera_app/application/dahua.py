@@ -14,7 +14,7 @@ from typing import Any
 import aiohttp
 import async_timeout
 
-from dahua_digest_auth import DigestAuth
+from .dahua_digest_auth import DigestAuth
 from hashlib import md5
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)

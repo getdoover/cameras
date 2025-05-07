@@ -4,10 +4,10 @@ verify_ssl = true
 name = "pypi"
 
 [packages]
-aiohttp = "==3.10.0"
+aiohttp = "3.10.11"
 async-timeout = "==4.0.3"
 pillow = "==10.4.0"
-pydoover = {ref = "2fbff9c", git = "git+https://spaneng:${PYDOOVER_GITHUB_PAT}@github.com/spaneng/pydoover.git"}
+pydoover = {ref = "2db62d13", git = "git+https://spaneng:${PYDOOVER_GITHUB_PAT}@github.com/spaneng/pydoover.git"}
 
 [dev-packages]
 grpcio = "==1.65.1"

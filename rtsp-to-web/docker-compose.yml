@@ -1,5 +1,3 @@
-version: '3'
-
 services:
   rtsp_to_web:
     image: ghcr.io/deepch/rtsptoweb:latest

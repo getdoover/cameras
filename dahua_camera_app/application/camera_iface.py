@@ -16,11 +16,11 @@ from PIL import Image
 from pydoover.docker import device_agent_iface
 from pydoover import ui
 
-from dahua import DahuaClient
-from power_management import CameraPowerManagement
+from .dahua import DahuaClient
+from .power_management import CameraPowerManagement
 
 if TYPE_CHECKING:
-    from config import CameraConfig
+    from .app_config import CameraConfig
 
 
 OUTPUT_FILE_DIR = pathlib.Path("/tmp/camera")
@@ -157,7 +157,7 @@ class Camera:
 
 class DahuaCamera(Camera):
     def __init__(
-            self, config, dda_iface: device_agent_iface, power_manager
+        self, config, dda_iface: device_agent_iface, power_manager
     ):
         super().__init__(config, dda_iface, power_manager)
 
@@ -201,8 +201,9 @@ class DahuaCamera(Camera):
 
     async def setup(self):
         await super().setup()
-        human = "human" in self.config.object_detection.value
-        vehicle = "vehicle" in self.config.object_detection.value
+        tags = [x.value.lower() for x in self.config.object_detection.elements]
+        human = "human" in tags
+        vehicle = "vehicle" in tags
 
         self.client = DahuaClient(
             self.config.username.value,

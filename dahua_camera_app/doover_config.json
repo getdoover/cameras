@@ -1,4 +1,206 @@
 {
     "deployment_package_dir": "dahua_camera_app/deployment/",
-    "depends_on": ["platform_iface", "rtsp_to_web_app"]
+    "depends_on": [
+        "platform_iface",
+        "rtsp_to_web_app"
+    ],
+    "dahua_camera": {
+        "config_schema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$id": "",
+            "title": "Application Config",
+            "type": "object",
+            "properties": {
+                "camera_name": {
+                    "title": "Camera Name",
+                    "x-name": "camera_name",
+                    "x-hidden": false,
+                    "type": "string",
+                    "description": "User friendly name for camera"
+                },
+                "cam_name": {
+                    "title": "cam_name",
+                    "x-name": "cam_name",
+                    "x-hidden": false,
+                    "type": "string",
+                    "description": "Internal name for camera."
+                },
+                "camera_type": {
+                    "enum": [
+                        "dahua_ptz",
+                        "dahua_fixed",
+                        "dahua_generic"
+                    ],
+                    "title": "Camera Type",
+                    "x-name": "camera_type",
+                    "x-hidden": false,
+                    "type": "string",
+                    "default": "dahua_ptz"
+                },
+                "camera_username": {
+                    "title": "Camera Username",
+                    "x-name": "camera_username",
+                    "x-hidden": false,
+                    "type": "string",
+                    "description": "Username to login to camera control"
+                },
+                "camera_password": {
+                    "title": "Camera Password",
+                    "x-name": "camera_password",
+                    "x-hidden": false,
+                    "type": "string",
+                    "description": "Password to login to camera control"
+                },
+                "ip_address": {
+                    "title": "IP address",
+                    "x-name": "ip_address",
+                    "x-hidden": false,
+                    "type": "string",
+                    "description": "IP address of camera (e.g. 192.168.50.100)"
+                },
+                "rtsp_port": {
+                    "title": "RTSP Port",
+                    "x-name": "rtsp_port",
+                    "x-hidden": false,
+                    "type": "integer",
+                    "description": "Port of RTSP feed on camera",
+                    "default": 554
+                },
+                "rtsp_channel": {
+                    "title": "RTSP Channel",
+                    "x-name": "rtsp_channel",
+                    "x-hidden": false,
+                    "type": "string",
+                    "description": "RTSP channel name. On Dahua cameras this is usually 'live'.",
+                    "default": "live"
+                },
+                "control_port": {
+                    "title": "Control Port",
+                    "x-name": "control_port",
+                    "x-hidden": false,
+                    "type": "integer",
+                    "description": "Port of control page on camera",
+                    "default": 80
+                },
+                "power_pin": {
+                    "title": "Power Pin",
+                    "x-name": "power_pin",
+                    "x-hidden": false,
+                    "type": "integer",
+                    "description": "Digital Output pin that controls power to camera circuit. Defaults to None (no power control).",
+                    "default": null
+                },
+                "power_timeout": {
+                    "title": "Power Timeout",
+                    "x-name": "power_timeout",
+                    "x-hidden": false,
+                    "type": "integer",
+                    "description": "Power Timeout in seconds",
+                    "default": 900
+                },
+                "wake_delay": {
+                    "title": "Wake Delay",
+                    "x-name": "wake_delay",
+                    "x-hidden": false,
+                    "type": "integer",
+                    "description": "Seconds for camera to boot before requesting a snapshot.",
+                    "default": 5
+                },
+                "remote_component_url": {
+                    "title": "Remote Component URL",
+                    "x-name": "remote_component_url",
+                    "x-hidden": false,
+                    "type": "string",
+                    "description": "URL for live view component. Leave blank to disable live view.",
+                    "default": "https://getdoover.github.io/cameras/HLSLiveView.js"
+                },
+                "remote_component_name": {
+                    "title": "Remote Component Name",
+                    "x-name": "remote_component_name",
+                    "x-hidden": false,
+                    "type": "string",
+                    "description": "Name of live view component",
+                    "default": "Live View"
+                },
+                "object_detection": {
+                    "title": "Object Detection",
+                    "x-name": "object_detection",
+                    "x-hidden": false,
+                    "type": "array",
+                    "description": "Objects to detect. Leave blank to disable object detection.",
+                    "items": {
+                        "enum": [
+                            "Person",
+                            "Vehicle"
+                        ],
+                        "title": "Object",
+                        "x-name": "object",
+                        "x-hidden": false,
+                        "type": "string"
+                    }
+                },
+                "control_enabled": {
+                    "title": "Control Enabled",
+                    "x-name": "control_enabled",
+                    "x-hidden": false,
+                    "type": "boolean",
+                    "description": "Allow control (movement) of PTZ cameras.",
+                    "default": true
+                },
+                "snapshot_period": {
+                    "title": "Snapshot Period",
+                    "x-name": "snapshot_period",
+                    "x-hidden": false,
+                    "type": "integer",
+                    "description": "Snapshot period in seconds",
+                    "default": 14400
+                },
+                "snapshot_mode": {
+                    "enum": [
+                        "mp4",
+                        "jpg"
+                    ],
+                    "title": "Snapshot Mode",
+                    "x-name": "snapshot_mode",
+                    "x-hidden": false,
+                    "type": "string",
+                    "description": "Video format",
+                    "default": "mp4"
+                },
+                "snapshot_duration": {
+                    "title": "Snapshot Duration",
+                    "x-name": "snapshot_duration",
+                    "x-hidden": false,
+                    "type": "integer",
+                    "description": "Duration of snapshot",
+                    "default": 6
+                },
+                "snapshot_fps": {
+                    "title": "Snapshot FPS",
+                    "x-name": "snapshot_fps",
+                    "x-hidden": false,
+                    "type": "integer",
+                    "description": "FPS of snapshot",
+                    "default": 5
+                },
+                "snapshot_scale": {
+                    "title": "Snapshot Scale",
+                    "x-name": "snapshot_scale",
+                    "x-hidden": false,
+                    "type": "string",
+                    "description": "Scale of snapshot",
+                    "default": "360:-1"
+                }
+            },
+            "additionalElements": true,
+            "required": [
+                "camera_name",
+                "cam_name",
+                "camera_username",
+                "camera_password",
+                "ip_address",
+                "object_detection"
+            ]
+        }
+    }
 }

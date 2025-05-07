@@ -4,18 +4,18 @@ import os
 import re
 import time
 
-from pydoover.docker import app_base, run_app
+from pydoover.docker import Application, run_app
 from pydoover.ui import SlimCommand
 
-from camera_iface import DahuaPTZCamera, DahuaFixedCamera, GenericRTSPCamera, Camera, MessageTooLong
-from config import CameraConfig
-from power_management import CameraPowerManagement
+from .camera_iface import DahuaPTZCamera, DahuaFixedCamera, GenericRTSPCamera, Camera, MessageTooLong
+from .app_config import CameraConfig
+from .power_management import CameraPowerManagement
 
 log = logging.getLogger(__name__)
 HOST_MATCH = re.compile(r"rtsp://(.*:.*@)?(?P<host>.*):[0-9]*/.*")
 
 
-class DahuaCameraApplication(app_base):
+class DahuaCameraApplication(Application):
     camera: Camera
     power_management: CameraPowerManagement
     
@@ -169,7 +169,3 @@ class DahuaCameraApplication(app_base):
         self.last_camera_snapshot = ts
         self.ui_manager.coerce_command(self.last_snapshot_cmd_name, ts)
         self.ui_manager.coerce_command(self.camera_snap_cmd_name, "completed")
-
-
-if __name__ == "__main__":
-    run_app(DahuaCameraApplication(config=CameraConfig()))

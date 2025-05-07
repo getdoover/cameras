@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 
 if TYPE_CHECKING:
-    from camera_iface import CameraConfig
+    from .camera_iface import CameraConfig
     from pydoover.docker import PlatformInterface
 
 log = logging.getLogger(__name__)

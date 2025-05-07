@@ -1,0 +1,14 @@
+services:
+  rtsp_to_web:
+    image: ghcr.io/deepch/rtsptoweb:latest
+    network_mode: host
+
+  camera_iface:
+    build: ../
+    network_mode: host
+    environment:
+      - APP_KEY=ptz_cam
+      - CONFIG_FP=/app_config.json
+      - DDA_URI=192.168.0.117:50051
+    volumes:
+      - ./app_config.json:/app_config.json

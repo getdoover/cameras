@@ -1,7 +1,0 @@
-services:
-  camera_iface:
-    image: ghcr.io/getdoover/cameras:main
-    network_mode: host
-    restart: unless-stopped
-    environment:
-      - APP_KEY=${APP_KEY}
