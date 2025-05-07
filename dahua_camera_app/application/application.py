@@ -53,6 +53,9 @@ class DahuaCameraApplication(Application):
         self.ui_manager._add_interaction(SlimCommand(self.camera_snap_cmd_name, callback=self.on_snapshot_command))
         self.ui_manager._add_interaction(SlimCommand(self.last_snapshot_cmd_name))
 
+        # we don't want a submodule view for cameras since the UI
+        # renders it as a submodule anyway (and we'd end up with double submodules).
+        self.ui_manager.set_variant("stacked")
 
     async def main_loop(self):
         if not self.snapshot_running and time.time() - self.last_camera_snapshot > self.config.snapshot_period.value:
