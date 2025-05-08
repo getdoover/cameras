@@ -190,6 +190,14 @@
                     "type": "string",
                     "description": "Scale of snapshot",
                     "default": "360:-1"
+                },
+                "position": {
+                    "title": "Position",
+                    "x-name": "position",
+                    "x-hidden": true,
+                    "type": "integer",
+                    "description": "Position of the application in the UI",
+                    "default": 50
                 }
             },
             "additionalElements": true,

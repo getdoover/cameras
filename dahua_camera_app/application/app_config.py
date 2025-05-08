@@ -93,6 +93,12 @@ class CameraConfig(config.Schema):
         self.snapshot_scale = config.String(
             "Snapshot Scale", description="Scale of snapshot", default="360:-1"
         )
+        self.position = config.Integer(
+            "Position",
+            description="Position of the application in the UI",
+            default=50,
+            hidden=True,
+        )
 
     @property
     def rtsp_uri(self) -> str:
