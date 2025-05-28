@@ -9,6 +9,9 @@ import {LoadingButton} from "@mui/lab";
 import ReactHlsPlayer from "react-hls-player";
 import PresetMenu from "./PresetMenu";
 
+import { Alert } from "@mui/material";
+import { useEffect, useRef } from "react";
+
 import {faUpRightFromSquare} from '@fortawesome/free-solid-svg-icons'
 import {Box} from "@mui/system";
 import {FontAwesomeIcon} from "@fortawesome/react-fontawesome";
@@ -38,6 +41,12 @@ const CameraLiveView = ({
   const [manageRedirectLoading, setManageRedirectLoading] = useState(false);
   const [showLiveView, setShowLiveView] = useState(false);
 
+  const [countdown, setCountdown] = useState(null);
+  const [showAlert, setShowAlert] = useState(false);
+
+  const playerRef = useRef(null);
+
+
   rtspServerHost = rtspServerHost || "localhost";
   rtspServerPort = rtspServerPort || 8083;
 
@@ -49,6 +58,25 @@ const CameraLiveView = ({
 
   const setupTunnel = async () => {
     setLoading(true);
+    setCountdown(90);
+    setShowAlert(true);
+
+    let countdownInterval;
+
+    const startCountdown = () => {
+      countdownInterval = setInterval(() => {
+        setCountdown(prev => {
+          if (prev <= 5) {
+            clearInterval(countdownInterval);
+            setShowAlert(false);
+            return null;
+          }
+          return prev - 5;
+        });
+      }, 5000);
+    };
+
+    startCountdown();
 
     let resp = await apiClient.getTunnelList(agentId, false);
     let tunnels = resp.tunnels;
@@ -121,17 +149,21 @@ const CameraLiveView = ({
   }
 
   const resetPlayerUrl = () => {
-    let url = playerSource;
-    apiClient.sendControlCommand("camera_control", camName, agentId, {"action": "power_on", "value": 1});
-    apiClient.sendControlCommand("camera_control", camName, agentId, {"action": "sync_ui", "value": 1});
-    setPlayerSource(null);
-    setTimeout(() => setPlayerSource(url), 100);
-  }
+    const baseUrl = playerSource.split("?")[0];
+    const refreshedUrl = `${baseUrl}?t=${Date.now()}`;
+  
+    apiClient.sendControlCommand("camera_control", camName, agentId, { "action": "power_on", "value": 1 });
+    apiClient.sendControlCommand("camera_control", camName, agentId, { "action": "sync_ui", "value": 1 });
+  
+    setPlayerSource(refreshedUrl);
+  };
 
   const presetMenu = camPresets.length > 0 ?
     <PresetMenu presets={camPresets} activePreset={activePreset} onSelect={gotoPreset}/> : null;
 
   const liveView = useMemo(() => <ReactHlsPlayer
+    key={playerSource}
+    playerRef={playerRef}  
     src={playerSource}
     autoPlay={true}
     controls={true}
@@ -140,11 +172,12 @@ const CameraLiveView = ({
       // see: https://github.com/video-dev/hls.js/issues/3077#issuecomment-704961806
       "enableWorker": true,
       "maxBufferLength": 1,
-      "liveBackBufferLength": 0,
-      "liveSyncDuration": 0,
-      "liveMaxLatencyDuration": 5,
-      "liveDurationInfinity": true,
-      "highBufferWatchdogPeriod": 1,
+      "lowLatencyMode": true,
+      // "liveBackBufferLength": 0,
+      // "liveSyncDuration": 0,
+      // "liveMaxLatencyDuration": 5,
+      // "liveDurationInfinity": true,
+      // "highBufferWatchdogPeriod": 1,
     }}
     // hlsConfig={{
     //   maxLoadingDelay: 4,
@@ -152,6 +185,21 @@ const CameraLiveView = ({
     //   lowLatencyMode: true,
     // }}
   />, [playerSource]);
+
+  // Handle HLS.js events
+  useEffect(() => {
+    const hls = playerRef.current?.hls;
+    if (hls) {
+      hls.on(hls.constructor.Events.ERROR, (_, data) => {
+        console.error("HLS.js Error:", data);
+      });
+      hls.on(hls.constructor.Events.MANIFEST_PARSED, () => {
+        setCountdown(null);
+        setShowAlert(false);
+        console.log("HLS manifest parsed, ready to play.");
+      });
+    }
+  }, [playerSource]);
 
   const disableButton = (<Button variant="outlined" color="primary" onClick={teardownLiveView}>
     Close Live View
@@ -202,6 +250,11 @@ const CameraLiveView = ({
   return (<React.Fragment>
     {managementPopupElem}
     <Stack spacing={2} direction="column" padding="20px">
+      {showAlert && countdown !== null && (
+        <Alert severity="info">
+          Camera may take {countdown} second{countdown !== 1 ? 's' : ''} to awaken from sleep
+        </Alert>
+      )}
       {liveView}
       {presetMenu}
       <Stack direction="row" justifyContent="center" spacing={5}>
