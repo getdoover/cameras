@@ -1,26 +1,26 @@
-# FROM python:3.11-slim
 FROM spaneng/doover_device_base AS base_image
 
-## FIRST STAGE ##
-#FROM base_image as builder
+# Install ffmpeg, etc. requirements
+RUN apt update && apt install -y python3-dev python3-setuptools libjpeg-dev zlib1g-dev gcc
+RUN apt update && apt install -y ffmpeg iputils-ping --no-install-recommends --no-install-suggests && rm -rf /var/lib/apt/lists/*
 
-# Install pipenv requirements
-RUN apt-get update && apt-get install -y python3-dev python3-setuptools libjpeg-dev zlib1g-dev gcc
-RUN apt-get update && apt-get install -y ffmpeg iputils-ping --no-install-recommends --no-install-suggests && rm -rf /var/lib/apt/lists/*
-
-# Install git for pre-release pydoover
-RUN apt update && apt install -y git
-RUN pip install pipenv --no-cache-dir
-COPY Pipfile .
-COPY Pipfile.lock .
-
-ARG PYDOOVER_GITHUB_PAT
-RUN PIP_USER=1 PIP_IGNORE_INSTALLED=1 pipenv install --system --deploy --ignore-pipfile --clear
-
-#FROM base_image as final_image
-
-#COPY --from=builder $PYROOT/lib/ $PYROOT/lib/
+COPY --from=ghcr.io/astral-sh/uv:0.7.3 /uv /uvx /bin/
+ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
+ENV UV_PYTHON_DOWNLOADS=0
 
 WORKDIR /app
+
+# give the app access to our pipenv installed packages
+RUN uv venv --system-site-packages
+
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=bind,source=uv.lock,target=uv.lock \
+    --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
+    uv sync --locked --no-install-project --no-dev
+
 COPY . /app
-ENTRYPOINT ["python3", "-m", "application"]
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked --no-dev
+
+ENV PATH="/app/.venv/bin:$PATH"
+CMD ["doover-app-run"]

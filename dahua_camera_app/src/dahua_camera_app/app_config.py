@@ -109,4 +109,4 @@ class CameraConfig(config.Schema):
 
 if __name__ == "__main__":
     config = CameraConfig()
-    config.export(Path("../doover_config.json"), "dahua_camera")
+    config.export(Path("../doover_config.json"), "doover_dahua_camera")

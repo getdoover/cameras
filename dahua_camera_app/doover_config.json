@@ -1,10 +1,21 @@
 {
-    "deployment_package_dir": "dahua_camera_app/deployment/",
-    "depends_on": [
-        "platform_iface",
-        "rtsp_to_web_app"
-    ],
-    "dahua_camera": {
+    "doover_dahua_camera": {
+        "key": "e5ef4f15-e83d-4800-abc1-eba317707887",
+        "name": "doover_dahua_camera",
+        "display_name": "Dahua Camera",
+        "description": "App to view and manage Dahua IP cameras. Choose between PTZ or Fixed.",
+        "long_description": "README.md",
+        "type": "DEV",
+        "visibility": "PUB",
+        "allow_many": true,
+        "depends_on": [
+            "platform_interface",
+            "rtsp_to_web_app"
+        ],
+        "owner_org": "36a22e32-ab81-4a39-b400-869d532a052d",
+        "image_name": "ghcr.io/getdoover/cameras:main",
+        "container_registry_profile": "88953909-e9c4-4f81-9ec0-56239d4b0a2e",
+        "build_args": "--platform linux/amd64,linux/arm64",
         "config_schema": {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "$id": "",

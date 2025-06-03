@@ -1,4 +1,21 @@
 {
-    "deployment_package_dir": "rtsp_to_web_app/",
-    "depends_on": ["platform_iface", "rtsp_to_web_app"]
+    "rtsp_to_web_app": {
+        "key": "61a28112-0e62-4b2c-a685-029324cd9d39",
+        "name": "rtsp_to_web_app",
+        "display_name": "RTSP to Web App",
+        "description": "App to convert RTSP streams to a live HLS stream.",
+        "long_description": "README.md",
+        "type": "DEV",
+        "visibility": "PUB",
+        "allow_many": false,
+        "depends_on": [],
+        "owner_org": "36a22e32-ab81-4a39-b400-869d532a052d",
+        "image_name": "ghcr.io/deepch/rtsptoweb:latest",
+        "container_registry_profile": "88953909-e9c4-4f81-9ec0-56239d4b0a2e",
+        "config_schema": {},
+        "owner_org_key": "36a22e32-ab81-4a39-b400-869d532a052d",
+        "code_repo_key": null,
+        "container_registry_profile_key": "88953909-e9c4-4f81-9ec0-56239d4b0a2e",
+        "repo_branch": "main"
+    }
 }
