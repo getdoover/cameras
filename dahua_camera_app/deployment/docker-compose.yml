@@ -1,0 +1,7 @@
+services:
+  dahua_camera:
+    image: ghcr.io/getdoover/cameras:main
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - APP_KEY=$APP_KEY
