@@ -1,5 +1,5 @@
 {
-    "deployment_package_dir": "deployment/",
+    "deployment_package_dir": "dahua_camera_app/deployment/",
     "doover_dahua_camera": {
         "key": "e5ef4f15-e83d-4800-abc1-eba317707887",
         "name": "doover_dahua_camera",
