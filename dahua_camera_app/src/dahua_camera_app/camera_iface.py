@@ -13,7 +13,7 @@ import aiohttp
 
 from PIL import Image
 
-from pydoover.docker import device_agent_iface
+from pydoover.docker import DeviceAgentInterface
 from pydoover import ui
 
 from .dahua import DahuaClient
@@ -157,7 +157,7 @@ class Camera:
 
 class DahuaCamera(Camera):
     def __init__(
-        self, config, dda_iface: device_agent_iface, power_manager
+        self, config, dda_iface: DeviceAgentInterface, power_manager
     ):
         super().__init__(config, dda_iface, power_manager)
 
