@@ -1,4 +1,5 @@
 {
+    "deployment_package_dir": "rtsp_to_web_app/",
     "rtsp_to_web_app": {
         "key": "61a28112-0e62-4b2c-a685-029324cd9d39",
         "name": "rtsp_to_web_app",
