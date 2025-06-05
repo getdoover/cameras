@@ -575,7 +575,7 @@ wheels = [
 [[package]]
 name = "pydoover"
 version = "0.4.3"
-source = { git = "https://github.com/getdoover/pydoover#2746f4c2e74fda4e0b069604bdb33370ddcacba1" }
+source = { git = "https://github.com/getdoover/pydoover#48b03016cfeee9564963693087e3e6167dce6425" }
 dependencies = [
     { name = "requests" },
 ]
