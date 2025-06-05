@@ -15,6 +15,10 @@ log = logging.getLogger(__name__)
 HOST_MATCH = re.compile(r"rtsp://(.*:.*@)?(?P<host>.*):[0-9]*/.*")
 
 
+GET_NOW_CMD_NAME = "camera_snapshots"
+LAST_SNAPSHOT_CMD_NAME = "last_cam_snapshot"
+
+
 class DahuaCameraApplication(Application):
     camera: Camera
     power_management: CameraPowerManagement
@@ -23,9 +27,6 @@ class DahuaCameraApplication(Application):
 
     snapshot_running: bool
     last_camera_snapshot: float = 0
-
-    camera_snap_cmd_name: str = "camera_snapshots"
-    last_snapshot_cmd_name: str = "last_cam_snapshot"
 
     async def setup(self):
         self.subscribe_to_channel("camera_control", self.on_control_message)
@@ -46,13 +47,10 @@ class DahuaCameraApplication(Application):
 
         self.snapshot_running = False
 
-        self.camera_snap_cmd_name = "camera_snapshots"
-        self.last_snapshot_cmd_name = "last_cam_snapshot"
-
         self.ui_manager.add_children(*self.camera.fetch_ui_elements())
         self.ui_manager._transform_interaction_name = self._transform_interaction_name
-        # self.ui_manager._add_interaction(SlimCommand(self.camera_snap_cmd_name, callback=self.on_snapshot_command))
-        # self.ui_manager._add_interaction(SlimCommand(self.last_snapshot_cmd_name))
+        self.ui_manager._add_interaction(ui.SlimCommand(GET_NOW_CMD_NAME))
+        self.ui_manager._add_interaction(ui.SlimCommand(LAST_SNAPSHOT_CMD_NAME))
 
         # we don't want a submodule view for cameras since the UI
         # renders it as a submodule anyway (and we'd end up with double submodules).
@@ -156,7 +154,7 @@ class DahuaCameraApplication(Application):
 
         # await asyncio.gather(*tasks)
 
-    @ui.callback("camera_snapshots", global_interaction=True)
+    @ui.callback(GET_NOW_CMD_NAME, global_interaction=True)
     async def on_snapshot_command(self, _command, new_value: str):
         print("running snapshot command")
         if new_value != "get_immediate_snapshot":
@@ -173,8 +171,8 @@ class DahuaCameraApplication(Application):
         ts = ts or time.time()
 
         self.last_camera_snapshot = ts
-        self.ui_manager.coerce_command(self.last_snapshot_cmd_name, ts)
-        self.ui_manager.coerce_command(self.camera_snap_cmd_name, "completed")
+        self.ui_manager.coerce_command(LAST_SNAPSHOT_CMD_NAME, ts)
+        self.ui_manager.coerce_command(GET_NOW_CMD_NAME, "completed")
 
     def _transform_interaction_name(self, name):
         log.info(f"Transform interaction name received: {name}")
@@ -182,6 +180,6 @@ class DahuaCameraApplication(Application):
         # so we don't have namespace collisions between apps.
         if self.app_key in name:
             return name
-        if name in (self.last_snapshot_cmd_name, self.camera_snap_cmd_name):
+        if name in (GET_NOW_CMD_NAME, LAST_SNAPSHOT_CMD_NAME):
             return name
         return f"{self.app_key}_{name.strip()}"
