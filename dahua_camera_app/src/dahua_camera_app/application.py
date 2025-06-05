@@ -4,8 +4,8 @@ import os
 import re
 import time
 
-from pydoover.docker import Application, run_app
-from pydoover.ui import SlimCommand
+from pydoover import ui
+from pydoover.docker import Application
 
 from .camera_iface import DahuaPTZCamera, DahuaFixedCamera, GenericRTSPCamera, Camera, MessageTooLong
 from .app_config import CameraConfig
@@ -50,8 +50,9 @@ class DahuaCameraApplication(Application):
         self.last_snapshot_cmd_name = "last_cam_snapshot"
 
         self.ui_manager.add_children(*self.camera.fetch_ui_elements())
-        self.ui_manager._add_interaction(SlimCommand(self.camera_snap_cmd_name, callback=self.on_snapshot_command))
-        self.ui_manager._add_interaction(SlimCommand(self.last_snapshot_cmd_name))
+        self.ui_manager._transform_interaction_name = self._transform_interaction_name
+        # self.ui_manager._add_interaction(SlimCommand(self.camera_snap_cmd_name, callback=self.on_snapshot_command))
+        # self.ui_manager._add_interaction(SlimCommand(self.last_snapshot_cmd_name))
 
         # we don't want a submodule view for cameras since the UI
         # renders it as a submodule anyway (and we'd end up with double submodules).
@@ -155,7 +156,8 @@ class DahuaCameraApplication(Application):
 
         # await asyncio.gather(*tasks)
 
-    async def on_snapshot_command(self, new_value: str):
+    @ui.callback("camera_snapshots", global_interaction=True)
+    async def on_snapshot_command(self, _command, new_value: str):
         print("running snapshot command")
         if new_value != "get_immediate_snapshot":
             return
@@ -164,6 +166,7 @@ class DahuaCameraApplication(Application):
             log.info("Skipping trigger snapshot request, snapshot task already running")
             return
 
+        log.info(f"Snapshot command received: {new_value}")
         await self._lock_snapshot_and_run()
 
     def set_last_snapshot_time(self, ts=None):
@@ -172,3 +175,13 @@ class DahuaCameraApplication(Application):
         self.last_camera_snapshot = ts
         self.ui_manager.coerce_command(self.last_snapshot_cmd_name, ts)
         self.ui_manager.coerce_command(self.camera_snap_cmd_name, "completed")
+
+    def _transform_interaction_name(self, name):
+        log.info(f"Transform interaction name received: {name}")
+        # inject the app key (unique) into the interaction name
+        # so we don't have namespace collisions between apps.
+        if self.app_key in name:
+            return name
+        if name in (self.last_snapshot_cmd_name, self.camera_snap_cmd_name):
+            return name
+        return f"{self.app_key}_{name.strip()}"

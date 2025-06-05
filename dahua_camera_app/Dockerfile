@@ -10,6 +10,8 @@ ENV UV_PYTHON_DOWNLOADS=0
 
 WORKDIR /app
 
+RUN apt update && apt install -y git
+
 # give the app access to our pipenv installed packages
 RUN uv venv --system-site-packages
 
