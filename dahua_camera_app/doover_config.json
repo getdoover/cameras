@@ -17,6 +17,11 @@
         "image_name": "ghcr.io/getdoover/cameras:main",
         "container_registry_profile": "88953909-e9c4-4f81-9ec0-56239d4b0a2e",
         "build_args": "--platform linux/amd64,linux/arm64",
+        "staging_config": {
+            "owner_org_key": "3666ee04-ced7-4621-8b96-fdbd43c1e868",
+            "container_registry_profile_key": "b6d23297-e409-4d19-8026-2fc0cce6ebf9",
+            "key": "3f8c777c-9d7f-42db-911d-3a8e449ed50c"
+        },
         "config_schema": {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "$id": "",
@@ -221,6 +226,7 @@
                 "ip_address",
                 "object_detection"
             ]
-        }
+        },
+        "repo_branch": "main"
     }
 }

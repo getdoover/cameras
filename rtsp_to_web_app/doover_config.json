@@ -17,6 +17,11 @@
         "owner_org_key": "36a22e32-ab81-4a39-b400-869d532a052d",
         "code_repo_key": null,
         "container_registry_profile_key": "88953909-e9c4-4f81-9ec0-56239d4b0a2e",
-        "repo_branch": "main"
+        "repo_branch": "main",
+        "staging_config": {
+            "owner_org_key": "3666ee04-ced7-4621-8b96-fdbd43c1e868",
+            "container_registry_profile_key": "b6d23297-e409-4d19-8026-2fc0cce6ebf9",
+            "key": "03c37de0-d1f0-4e64-b9f5-b009ec7cee75"
+        }
     }
 }
