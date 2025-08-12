@@ -59,14 +59,16 @@
                     "x-name": "camera_username",
                     "x-hidden": false,
                     "type": "string",
-                    "description": "Username to login to camera control"
+                    "description": "Username to login to camera control",
+                    "default": null
                 },
                 "camera_password": {
                     "title": "Camera Password",
                     "x-name": "camera_password",
                     "x-hidden": false,
                     "type": "string",
-                    "description": "Password to login to camera control"
+                    "description": "Password to login to camera control",
+                    "default": null
                 },
                 "ip_address": {
                     "title": "IP address",
@@ -221,8 +223,6 @@
             "required": [
                 "camera_name",
                 "cam_name",
-                "camera_username",
-                "camera_password",
                 "ip_address",
                 "object_detection"
             ]

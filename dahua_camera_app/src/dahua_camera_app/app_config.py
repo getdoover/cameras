@@ -17,10 +17,10 @@ class CameraConfig(config.Schema):
         )
 
         self.username = config.String(
-            "Camera Username", description="Username to login to camera control"
+            "Camera Username", description="Username to login to camera control", default=None
         )
         self.password = config.String(
-            "Camera Password", description="Password to login to camera control"
+            "Camera Password", description="Password to login to camera control", default=None
         )
         self.address = config.String(
             "IP address", description="IP address of camera (e.g. 192.168.50.100)"
@@ -107,6 +107,8 @@ class CameraConfig(config.Schema):
         return f"rtsp://{self.address.value}:{self.rtsp_port.value}/{self.rtsp_channel.value}"
 
 
+def export():
+    CameraConfig().export(Path(__file__).parents[2] / "doover_config.json", "doover_dahua_camera")
+
 if __name__ == "__main__":
-    config = CameraConfig()
-    config.export(Path("../doover_config.json"), "doover_dahua_camera")
+    export()

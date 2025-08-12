@@ -13,6 +13,8 @@ dependencies = [
 
 [project.scripts]
 doover-app-run = "dahua_camera_app:main"
+export-config = "dahua_camera_app.app_config:export"
+
 
 [build-system]
 requires = ["hatchling"]
