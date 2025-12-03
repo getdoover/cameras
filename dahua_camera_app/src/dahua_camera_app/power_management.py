@@ -105,10 +105,13 @@ class CameraPowerManagement:
 
     async def handle_cam_done(self, camera_to_handle: str):
         log.debug(f"Handling camera done for {camera_to_handle}")
-        self.active_cameras.remove(camera_to_handle)
+        self.active_cameras.discard(camera_to_handle)
 
-        if len(self.active_cameras) == 0:
+        # Don't power off if there's a delayed power-off task pending (from acquire_for/live view)
+        if len(self.active_cameras) == 0 and not self.delayed_poweroff_tasks:
             await self.power_off()
+        elif self.delayed_poweroff_tasks:
+            log.debug(f"Not powering off - {len(self.delayed_poweroff_tasks)} delayed power-off task(s) pending")
 
     def acquire(self, camera_to_manage: str):
         log.debug(f"Acquiring camera {camera_to_manage}")

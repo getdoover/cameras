@@ -3,6 +3,8 @@ import base64
 import io
 import json
 import logging
+import os
+import time
 import uuid
 import pathlib
 import re
@@ -199,6 +201,43 @@ class DahuaCamera(Camera):
         log.info(f"syncing ui: {to_send}")
         await self.dda_iface.publish_to_channel("ui_cmds", json.dumps(to_send))
 
+    async def wait_for_camera_ready(self, timeout: int = None):
+        """Wait for the camera to be ready after power-on.
+        
+        If the camera was recently powered on, this will wait for the wake_delay
+        period to elapse before returning.
+        """
+        if not self.power_manager.is_powered:
+            log.debug("Camera not powered, skipping wait")
+            return
+        
+        if self.power_manager.start_powered is None:
+            log.debug("No start_powered timestamp, skipping wait")
+            return
+        
+        wake_delay = self.config.wake_delay.value
+        timeout = timeout or wake_delay # default to wake_delay if no timeout is provided
+        
+        elapsed = time.time() - self.power_manager.start_powered
+        remaining = wake_delay - elapsed
+        
+        if remaining > 0:
+            log.info(f"Waiting {remaining:.1f}s for camera to be ready (wake_delay={wake_delay}s)")
+            await asyncio.sleep(remaining)
+        
+        # Also do a quick ping check to make sure camera is reachable
+        hostname = self.config.address.value
+        start_time = time.time()
+        while time.time() - start_time < min(20, timeout):
+            response = os.system(f"ping -c 1 -W 1 {hostname} > /dev/null 2>&1")
+            if response == 0:
+                log.debug(f"Camera {hostname} is now reachable")
+                return
+            log.debug(f"Waiting for camera {hostname} to become reachable...")
+            await asyncio.sleep(1)
+        
+        log.warning(f"Camera {hostname} may not be fully ready (ping timeout)")
+
     async def setup(self):
         await super().setup()
         tags = [x.value.lower() for x in self.config.object_detection.elements]
@@ -230,7 +269,7 @@ class DahuaCamera(Camera):
         await self.sync_ui()  # sync ui_state
 
         if human or vehicle:
-            log.info(f"Starting motion detection for camera {self.name}: {self.config.object_detection.value}")
+            log.info(f"Starting motion detection for camera {self.name}: {tags}")
             await self.client.enable_smart_motion_detection(human=human, vehicle=vehicle)
             events = ["SmartMotionHuman", "SmartMotionVehicle"]
             self.stream_events_task = asyncio.create_task(self.client.stream_events(self.on_cam_event, events))
@@ -400,6 +439,9 @@ class DahuaPTZCamera(DahuaCamera):
 
         log.info(f"Executing control command for camera {self.name}: {data}")
 
+        # Wait for camera to be ready before processing commands that need to talk to it
+        await self.wait_for_camera_ready()
+
         action = data.get("action", "")
         amount = data.get("value")
         if amount is None and action not in ("stop", "sync_ui"):
@@ -482,6 +524,9 @@ class DahuaFixedCamera(DahuaCamera):
 
         if not self.check_control_message(data):
             return
+
+        # Wait for camera to be ready before processing commands that need to talk to it
+        await self.wait_for_camera_ready()
 
         action = data.get("action")
         if action == "sync_ui":
