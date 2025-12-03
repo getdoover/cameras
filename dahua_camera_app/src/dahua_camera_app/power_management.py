@@ -70,11 +70,11 @@ class CameraPowerManagement:
 
     async def power_on(self):
         log.debug("Powering on cameras")
-        # any calls to this should reset a timer to turn off the cameras
-        await self.schedule_power_off()
-
+        
         if self.is_powered:
             log.debug("Cameras are already powered on")
+            # Still schedule power off to reset the timer
+            await self.schedule_power_off()
             return
 
         pin = self.config.power_pin.value
@@ -82,10 +82,22 @@ class CameraPowerManagement:
             log.debug("No power pin found, cannot power on")
             return
 
-        logging.info("Powering cameras on")
-        await self.plt_iface.set_do_async(pin, True)
+        # Set state BEFORE any await calls to prevent race conditions
+        # with other async tasks (e.g., sync_ui) that check is_powered
         self.is_powered = True
         self.start_powered = time.time()
+        log.info("Powering cameras on")
+        
+        try:
+            await self.plt_iface.set_do_async(pin, True)
+            # Schedule power off timer after successful power on
+            await self.schedule_power_off()
+        except Exception as e:
+            # Reset state if power on failed
+            log.error(f"Failed to set power pin: {e}")
+            self.is_powered = False
+            self.start_powered = None
+            raise
 
     async def power_off(self):
         log.debug("Powering off cameras")

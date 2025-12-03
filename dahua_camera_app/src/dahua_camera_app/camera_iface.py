@@ -208,11 +208,11 @@ class DahuaCamera(Camera):
         period to elapse before returning.
         """
         if not self.power_manager.is_powered:
-            log.debug("Camera not powered, skipping wait")
+            log.info("Camera not powered, skipping wait for camera ready")
             return
         
         if self.power_manager.start_powered is None:
-            log.debug("No start_powered timestamp, skipping wait")
+            log.info("No start_powered timestamp, skipping wait for camera ready")
             return
         
         wake_delay = self.config.wake_delay.value
