@@ -70,11 +70,11 @@ class CameraPowerManagement:
 
     async def power_on(self):
         log.debug("Powering on cameras")
-        
+        # any calls to this should reset a timer to turn off the cameras
+        await self.schedule_power_off()
+
         if self.is_powered:
             log.debug("Cameras are already powered on")
-            # Still schedule power off to reset the timer
-            await self.schedule_power_off()
             return
 
         pin = self.config.power_pin.value
@@ -82,22 +82,10 @@ class CameraPowerManagement:
             log.debug("No power pin found, cannot power on")
             return
 
-        # Set state BEFORE any await calls to prevent race conditions
-        # with other async tasks (e.g., sync_ui) that check is_powered
+        logging.info("Powering cameras on")
+        await self.plt_iface.set_do_async(pin, True)
         self.is_powered = True
         self.start_powered = time.time()
-        log.info("Powering cameras on")
-        
-        try:
-            await self.plt_iface.set_do_async(pin, True)
-            # Schedule power off timer after successful power on
-            await self.schedule_power_off()
-        except Exception as e:
-            # Reset state if power on failed
-            log.error(f"Failed to set power pin: {e}")
-            self.is_powered = False
-            self.start_powered = None
-            raise
 
     async def power_off(self):
         log.debug("Powering off cameras")
@@ -117,13 +105,10 @@ class CameraPowerManagement:
 
     async def handle_cam_done(self, camera_to_handle: str):
         log.debug(f"Handling camera done for {camera_to_handle}")
-        self.active_cameras.discard(camera_to_handle)
+        self.active_cameras.remove(camera_to_handle)
 
-        # Don't power off if there's a delayed power-off task pending (from acquire_for/live view)
-        if len(self.active_cameras) == 0 and not self.delayed_poweroff_tasks:
+        if len(self.active_cameras) == 0:
             await self.power_off()
-        elif self.delayed_poweroff_tasks:
-            log.debug(f"Not powering off - {len(self.delayed_poweroff_tasks)} delayed power-off task(s) pending")
 
     def acquire(self, camera_to_manage: str):
         log.debug(f"Acquiring camera {camera_to_manage}")
