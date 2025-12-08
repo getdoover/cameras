@@ -221,7 +221,7 @@ class CameraApplication(Application):
             {
                 "camera_name": self.app_key,
                 "output": data.decode(),
-                "output_type": self.config.snapshot.mode.value,
+                "output_type": self.config.snapshot.mode_as_filetype,
             }
         )
         log.debug(f"message length is {len(message)}, message: {message}")

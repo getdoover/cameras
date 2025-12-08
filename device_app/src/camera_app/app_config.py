@@ -81,6 +81,18 @@ class CameraRemoteComponentConfig(config.Object):
         )
 
 
+class Mode(Enum):
+    video = "Video"
+    image = "Image"
+
+
+class ScaleSize(Enum):
+    p360 = "360:-1"
+    p480 = "480:-1"
+    p720 = "720:-1"
+    p1080 = "1080:-1"
+
+
 class CameraSnapshotConfig(config.Object):
     def __init__(self):
         super().__init__("Camera Snapshot Config")
@@ -93,17 +105,30 @@ class CameraSnapshotConfig(config.Object):
         )
         self.mode = config.Enum(
             "Mode",
-            description="Video format",
-            default="mp4",
-            choices=["mp4", "jpg"],
+            description="Video format. Images are generally preferred as they will load faster than videos.",
+            default=Mode.image,
+            choices=Mode,
         )
         self.secs = config.Integer(
             "Duration", description="Duration of snapshot", default=6
         )
         self.fps = config.Integer("FPS", description="FPS of snapshot", default=5)
-        self.scale = config.String(
-            "Scale", description="Scale of snapshot", default="360:-1"
+        self.scale = config.Enum(
+            "Scale",
+            description="Scale of snapshot",
+            default=ScaleSize.p360,
+            choices=ScaleSize,
         )
+
+    @property
+    def mode_as_filetype(self) -> str:
+        match Mode(self.mode.value):
+            case Mode.video:
+                return "mp4"
+            case Mode.image:
+                return "jpg"
+
+        raise RuntimeError("unknown camera mode")
 
 
 class CameraRTSPServerConfig(config.Object):
@@ -171,11 +196,17 @@ class CameraConfig(config.Schema):
 
     @property
     def human_detect_enabled(self):
-        return any(ObjectDetectionType(e.value) is ObjectDetectionType.person for e in self.object_detection.elements)
+        return any(
+            ObjectDetectionType(e.value) is ObjectDetectionType.person
+            for e in self.object_detection.elements
+        )
 
     @property
     def vehicle_detect_enabled(self):
-        return any(ObjectDetectionType(e.value) is ObjectDetectionType.vehicle for e in self.object_detection.elements)
+        return any(
+            ObjectDetectionType(e.value) is ObjectDetectionType.vehicle
+            for e in self.object_detection.elements
+        )
 
 
 def export():

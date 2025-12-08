@@ -5,7 +5,7 @@ import logging
 import uuid
 from pathlib import Path
 
-from camera_app.app_config import CameraConfig
+from camera_app.app_config import CameraConfig, Mode
 
 OUTPUT_FILE_DIR = Path("/tmp/camera")
 MAX_MESSAGE_SIZE = 125_000
@@ -37,11 +37,11 @@ class CameraBase:
     async def on_control_message(self, data):
         pass
 
-    async def get_snapshot(self, mode: str = None) -> bytes | None:
+    async def get_snapshot(self) -> bytes | None:
         # returns base64 encoded bytes
-        mode = mode or self.config.snapshot.mode.value
+        mode = self.config.snapshot.mode.value
 
-        if mode == "mp4":
+        if Mode(mode) is Mode.video:
             func = self.get_video_snapshot
         else:
             func = self.get_still_snapshot
