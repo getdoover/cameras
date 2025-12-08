@@ -20,6 +20,10 @@ class CameraPowerManagement:
         self.check_release_task = asyncio.create_task(self.check_release())
 
     async def acquire_for(self, dt: timedelta):
+        if not self.config.enabled.value:
+            log.info("Power management is disabled. Skipping...")
+            return
+
         acquired_until_ts = self.app.get_global_tag(
             f"camera_power_{self.config.pin.value}", 0
         )
@@ -50,6 +54,11 @@ class CameraPowerManagement:
         while True:
             try:
                 await self.app.wait_until_ready()
+
+                if not self.config.enabled.value:
+                    log.info("Power management is disabled. Skipping...")
+                    await asyncio.sleep(60)
+                    continue
 
                 # a few prerequisites that make this possible, and desirable.
                 # for simplicity, this is never restarted, nor cancelled when a camera is started. this is because:

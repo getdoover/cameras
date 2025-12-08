@@ -184,7 +184,12 @@ class CameraApplication(Application):
 
         # await a successful ping to the camera
         # generic ip cameras will use an icmp ping, dahua cameras can use an http server ping
-        if not await self.engine.ping(ping_timeout + self.config.power.wake_delay.value):
+        if self.config.power.enabled.value:
+            wake_delay = self.config.power.wake_delay.value
+        else:
+            wake_delay = 0
+
+        if not await self.engine.ping(ping_timeout + wake_delay):
             log.info(f"Failed to ping camera, skipping snapshot.")
             # maybe this should put an error banner up on the UI? log the error somehow?
             return None

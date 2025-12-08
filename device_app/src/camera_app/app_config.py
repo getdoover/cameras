@@ -46,7 +46,7 @@ class CameraPowerConfig(config.Object):
         self.pin = config.Integer(
             "Power Pin",
             description="Digital Output pin that controls power to camera circuit.",
-            default=None,
+            default=0,
         )
         self.timeout = config.Integer(
             "Off After",

@@ -132,7 +132,7 @@
                             "x-hidden": false,
                             "type": "integer",
                             "description": "Digital Output pin that controls power to camera circuit.",
-                            "default": null,
+                            "default": 0,
                             "x-position": 2
                         },
                         "off_after": {
@@ -225,15 +225,15 @@
                         },
                         "mode": {
                             "enum": [
-                                "mp4",
-                                "jpg"
+                                "Video",
+                                "Image"
                             ],
                             "title": "Mode",
                             "x-name": "mode",
                             "x-hidden": false,
                             "type": "string",
-                            "description": "Video format",
-                            "default": "mp4",
+                            "description": "Video format. Images are generally preferred as they will load faster than videos.",
+                            "default": "Image",
                             "x-position": 3
                         },
                         "duration": {
@@ -255,6 +255,12 @@
                             "x-position": 5
                         },
                         "scale": {
+                            "enum": [
+                                "360:-1",
+                                "480:-1",
+                                "720:-1",
+                                "1080:-1"
+                            ],
                             "title": "Scale",
                             "x-name": "scale",
                             "x-hidden": false,
