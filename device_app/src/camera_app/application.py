@@ -32,7 +32,7 @@ class CameraApplication(Application):
     async def setup(self):
         self.power_management = CameraPowerManagement(self)
 
-        self.ui = CameraUI(self.config)
+        self.ui = CameraUI(self.config, self.app_key, self.app_display_name)
         self.ui_manager.add_children(*self.ui.fetch())
 
         # we don't want a submodule view for cameras since the UI
@@ -69,15 +69,15 @@ class CameraApplication(Application):
         match CameraType(self.config.type.value):
             case CameraType.dahua_ptz:
                 self.engine = DahuaPTZCamera(
-                    self.config, self.on_motion_event_callback, self.publish_to_channel
+                    self.config, self.on_motion_event_callback, self.publish_namespaced_ui_cmds
                 )
             case CameraType.dahua_fixed:
                 self.engine = DahuaFixedCamera(
-                    self.config, self.on_motion_event_callback, self.publish_to_channel
+                    self.config, self.on_motion_event_callback, self.publish_namespaced_ui_cmds
                 )
             case CameraType.dahua_generic:
                 self.engine = DahuaCameraBase(
-                    self.config, self.on_motion_event_callback, self.publish_to_channel
+                    self.config, self.on_motion_event_callback, self.publish_namespaced_ui_cmds
                 )
             case CameraType.unifi_generic:
                 self.engine = GenericRTSPCamera(self.config)
@@ -96,7 +96,7 @@ class CameraApplication(Application):
         # we get the full payload here, but so does ui manager (at roughly the same time)
         # so let's just sleep for a second to make sure ui manager is up-to-date and then
         # use their logic to save repeating ourselves (this will also make it easier for doover 2.0 migration)
-        await asyncio.sleep(1)
+        await asyncio.sleep(0.5)
         if self.ui_manager.is_being_observed():
             log.info("Enabling power for user observation.")
             await self.power_management.acquire_for(
@@ -111,7 +111,7 @@ class CameraApplication(Application):
         log.info("Received control command...")
 
         try:
-            data = payload[self.config.internal_name]
+            data = payload[self.app_key]
         except KeyError:
             log.info("Discarding control command, not for this camera.")
             return
@@ -219,7 +219,7 @@ class CameraApplication(Application):
 
         message = json.dumps(
             {
-                "camera_name": self.config.internal_name,
+                "camera_name": self.app_key,
                 "output": data.decode(),
                 "output_type": self.config.snapshot.mode.value,
             }
@@ -227,7 +227,7 @@ class CameraApplication(Application):
         log.debug(f"message length is {len(message)}, message: {message}")
 
         try:
-            await self.publish_to_channel(self.config.internal_name, message)
+            await self.device_agent.publish_to_channel(self.app_key, message, max_age=-1)
         except Exception as e:
             log.warning(f"Failed to publish snapshot: {e}", exc_info=e)
         else:
@@ -238,7 +238,7 @@ class CameraApplication(Application):
             # This is a bit of a dirty hack
             msg = {
                 "camera_snapshots": {
-                    self.config.internal_name: {"last_snap": int(time.time())}
+                    self.app_key: {"last_snap": int(time.time())}
                 }
             }
             log.debug(f"snapshot complete message is {msg}")
@@ -259,7 +259,7 @@ class CameraApplication(Application):
             data = await resp.json()
 
         try:
-            configured_url = data["payload"][self.config.internal_name]["channels"]["0"]["url"]
+            configured_url = data["payload"][self.app_key]["channels"]["0"]["url"]
         except KeyError:
             method = "add"  # doesn't exist
         else:
@@ -270,10 +270,10 @@ class CameraApplication(Application):
             method = "edit"
 
         body = {
-            "name": self.config.internal_name,
+            "name": self.app_key,
             "channels": {
                 "0": {
-                    "name": self.config.internal_name,
+                    "name": self.app_key,
                     "url": self.config.rtsp_uri,
                     "on_demand": True,
                     "debug": False,
@@ -283,7 +283,7 @@ class CameraApplication(Application):
         log.info("Creating rtsp server stream...")
         async with aiohttp.request(
             "POST",
-            f"{base}/stream/{quote(self.config.internal_name)}/{method}",
+            f"{base}/stream/{quote(self.app_key)}/{method}",
             json=body,
             auth=auth,
         ) as resp:
@@ -303,17 +303,17 @@ class CameraApplication(Application):
 
         match event.type:
             case MotionDetectEventType.person:
-                if ui_cmds.get(f"{self.config.internal_name}_human_detect") is True:
+                if ui_cmds.get(f"{self.app_key}_human_detect") is True:
                     await self.publish_to_channel(
                         "significantEvent",
-                        f"{self.config.name.value} has detected a person.",
+                        f"{self.app_display_name} has detected a person.",
                     )
 
             case MotionDetectEventType.vehicle:
-                if ui_cmds.get(f"{self.config.internal_name}_vehicle_detect") is True:
+                if ui_cmds.get(f"{self.app_key}_vehicle_detect") is True:
                     await self.publish_to_channel(
                         "significantEvent",
-                        f"{self.config.name.value} has detected a vehicle.",
+                        f"{self.app_display_name} has detected a vehicle.",
                     )
 
             case MotionDetectEventType.unknown:
@@ -322,7 +322,7 @@ class CameraApplication(Application):
     def configure_detect_alerts(self, ui_cmds_payload, name, enabled):
         log.info(f"Alert {name} is {'enabled' if enabled else 'disabled'}.")
 
-        key = f"{self.config.internal_name}_{name}_detect"
+        key = f"{self.app_key}_{name}_detect"
         if enabled and key not in ui_cmds_payload["cmds"]:
             # default to no alerts for users.
             log.info("Adding to ui_cmds")
@@ -354,3 +354,8 @@ class CameraApplication(Application):
         if name in (GET_NOW_CMD_NAME, LAST_SNAPSHOT_CMD_NAME):
             return name
         return f"{self.app_key}_{name.strip()}"
+
+    async def publish_namespaced_ui_cmds(self, payload):
+        to_send = {"cmds": {self.app_key: payload}}
+        log.info(f"Publishing to UI Cmds: {to_send}")
+        await self.publish_to_channel("ui_cmds", to_send)

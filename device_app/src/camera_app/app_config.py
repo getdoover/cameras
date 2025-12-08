@@ -135,9 +135,6 @@ class ObjectDetectionType(Enum):
 
 class CameraConfig(config.Schema):
     def __init__(self):
-        self.name = config.String(
-            "Camera Name", description="User friendly name for camera"
-        )
         self.type = config.Enum(
             "Camera Type",
             default=CameraType.dahua_generic,
@@ -173,10 +170,6 @@ class CameraConfig(config.Schema):
         return f"rtsp://{self.connection.address.value}:{self.connection.rtsp_port.value}/{self.connection.rtsp_channel.value}"
 
     @property
-    def internal_name(self):
-        return self.name.value.replace(" ", "_").lower()
-
-    @property
     def human_detect_enabled(self):
         return any(ObjectDetectionType(e.value) is ObjectDetectionType.person for e in self.object_detection.elements)
 
@@ -187,5 +180,5 @@ class CameraConfig(config.Schema):
 
 def export():
     CameraConfig().export(
-        Path(__file__).parents[2] / "doover_config.json", "doover_dahua_camera"
+        Path(__file__).parents[2] / "doover_config.json", "doover_camera"
     )

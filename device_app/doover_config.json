@@ -1,8 +1,8 @@
 {
-    "doover_dahua_camera": {
+    "doover_camera": {
         "key": "e5ef4f15-e83d-4800-abc1-eba317707887",
-        "name": "doover_dahua_camera",
-        "display_name": "IP Cameras",
+        "name": "doover_camera",
+        "display_name": "IP Camera",
         "description": "App to view and manage IP cameras. Choose between Dahua PTZ or Fixed, UniFi and more.",
         "long_description": "README.md",
         "type": "DEV",
@@ -27,14 +27,6 @@
             "title": "Application Config",
             "type": "object",
             "properties": {
-                "camera_name": {
-                    "title": "Camera Name",
-                    "x-name": "camera_name",
-                    "x-hidden": false,
-                    "type": "string",
-                    "description": "User friendly name for camera",
-                    "x-position": 0
-                },
                 "camera_type": {
                     "enum": [
                         "Dahua (PTZ)",
@@ -48,14 +40,14 @@
                     "x-hidden": false,
                     "type": "string",
                     "default": "Dahua (Generic)",
-                    "x-position": 1
+                    "x-position": 0
                 },
                 "camera_connection_config": {
                     "title": "Camera Connection Config",
                     "x-name": "camera_connection_config",
                     "x-hidden": false,
                     "type": "object",
-                    "x-position": 2,
+                    "x-position": 1,
                     "properties": {
                         "camera_username": {
                             "title": "Camera Username",
@@ -114,14 +106,16 @@
                     "additionalElements": true,
                     "required": [
                         "ip_address"
-                    ]
+                    ],
+                    "x-collapsible": true,
+                    "x-defaultCollapsed": false
                 },
                 "camera_power_config": {
                     "title": "Camera Power Config",
                     "x-name": "camera_power_config",
                     "x-hidden": false,
                     "type": "object",
-                    "x-position": 3,
+                    "x-position": 2,
                     "properties": {
                         "enabled": {
                             "title": "Enabled",
@@ -161,14 +155,16 @@
                         }
                     },
                     "additionalElements": true,
-                    "required": []
+                    "required": [],
+                    "x-collapsible": true,
+                    "x-defaultCollapsed": false
                 },
                 "camera_remote_component_config": {
                     "title": "Camera Remote Component Config",
                     "x-name": "camera_remote_component_config",
                     "x-hidden": false,
                     "type": "object",
-                    "x-position": 4,
+                    "x-position": 3,
                     "properties": {
                         "enabled": {
                             "title": "Enabled",
@@ -199,14 +195,16 @@
                         }
                     },
                     "additionalElements": true,
-                    "required": []
+                    "required": [],
+                    "x-collapsible": true,
+                    "x-defaultCollapsed": false
                 },
                 "camera_snapshot_config": {
                     "title": "Camera Snapshot Config",
                     "x-name": "camera_snapshot_config",
                     "x-hidden": false,
                     "type": "object",
-                    "x-position": 5,
+                    "x-position": 4,
                     "properties": {
                         "enabled": {
                             "title": "Enabled",
@@ -267,14 +265,16 @@
                         }
                     },
                     "additionalElements": true,
-                    "required": []
+                    "required": [],
+                    "x-collapsible": true,
+                    "x-defaultCollapsed": false
                 },
                 "camera_rtsp_server_config": {
                     "title": "Camera RTSP Server Config",
                     "x-name": "camera_rtsp_server_config",
                     "x-hidden": false,
                     "type": "object",
-                    "x-position": 6,
+                    "x-position": 5,
                     "properties": {
                         "enabled": {
                             "title": "Enabled",
@@ -311,7 +311,9 @@
                         }
                     },
                     "additionalElements": true,
-                    "required": []
+                    "required": [],
+                    "x-collapsible": true,
+                    "x-defaultCollapsed": false
                 },
                 "object_detection": {
                     "title": "Object Detection",
@@ -319,7 +321,7 @@
                     "x-hidden": false,
                     "type": "array",
                     "description": "Objects to detect. Leave blank to disable object detection.",
-                    "x-position": 7,
+                    "x-position": 6,
                     "items": {
                         "enum": [
                             "Person",
@@ -340,12 +342,11 @@
                     "type": "boolean",
                     "description": "Allow control (movement) of PTZ cameras.",
                     "default": true,
-                    "x-position": 8
+                    "x-position": 7
                 }
             },
             "additionalElements": true,
             "required": [
-                "camera_name",
                 "camera_connection_config",
                 "camera_power_config",
                 "camera_remote_component_config",

@@ -87,9 +87,8 @@ class DahuaCameraBase(CameraBase):
         if payload_extra:
             payload.update(payload_extra)
 
-        to_send = {"cmds": {self.config.internal_name: payload}}
-        log.info(f"syncing ui: {to_send}")
-        await self.publish_channel_func("ui_cmds", to_send)
+        log.info(f"syncing ui: {payload}")
+        await self.publish_channel_func(payload)
 
     async def get_still_snapshot(self) -> bytes:
         # we don't need to use ffmpeg on this, just use the camera's built-in stuff
