@@ -20,17 +20,21 @@ class CameraUI:
                 port=self.config.connection.rtsp_port.value,
                 rtsp_uri=self.config.rtsp_uri,
                 cam_type=self.config.type.value,
+                position=52,
             )
 
             # Set the Display Name to blank to avoid title in submodule
-            original_cam_history = ui.CameraHistory(name, "", self.config.rtsp_uri)
+            original_cam_history = ui.CameraHistory(
+                name, "", self.config.rtsp_uri, position=51
+            )
 
             self.camera = ui.Camera(
                 name,
                 self.config.name.value,
                 self.config.rtsp_uri,
                 children=[original_cam_history, ui_liveview],
+                position=50,
             )
 
     def fetch(self):
-        return (self.camera, )
+        return (self.camera,)
