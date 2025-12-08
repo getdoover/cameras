@@ -1,8 +1,0 @@
-services:
-  device_io_tester:
-    build: .
-    restart: unless-stopped
-    privileged: true
-    network_mode: host
-    volumes:
-      - /dev:/dev:rw

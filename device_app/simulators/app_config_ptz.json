@@ -1,0 +1,39 @@
+{
+    "camera_name": "test_cam_ptz",
+    "camera_type": "Dahua (PTZ)",
+    "camera_connection_config": {
+        "camera_username": "admin",
+        "camera_password": "19HandleyDrive",
+        "ip_address": "192.168.0.78",
+        "rtsp_port": 554,
+        "rtsp_channel": "live",
+        "control_port": 80
+    },
+    "camera_power_config": {
+        "enabled": true,
+        "power_pin": 0,
+        "off_after": 120,
+        "wake_delay": 30
+    },
+    "camera_remote_component_config": {
+        "enabled": true,
+        "url": "https://getdoover.github.io/cameras/HLSLiveView.js",
+        "name": "Live View"
+    },
+    "camera_snapshot_config": {
+        "enabled": true,
+        "period": 600,
+        "mode": "jpeg",
+        "duration": 1,
+        "fps": 5,
+        "scale": "360:-1"
+    },
+    "camera_rtsp_server_config": {
+        "enabled": true,
+        "address": "http://localhost:8083",
+        "username": "demo",
+        "password": "demo"
+    },
+    "object_detection": ["Person", "Vehicle"],
+    "control_enabled": true
+}
