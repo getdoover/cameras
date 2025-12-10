@@ -63,9 +63,8 @@ class CameraBase:
         return data
 
     async def get_still_snapshot(self) -> bytes:
-        fp = self.get_output_filepath(str(uuid.uuid4()), "jpeg")
-
-        cmd = f"ffmpeg -y -r 1 -i {self.config.rtsp_uri} -vf 'scale=720:-1' -vsync vfr -r 1 -vframes 1 {fp}"
+        fp = self.get_output_filepath(str(uuid.uuid4()), "jpg")
+        cmd = f"ffmpeg -y -rtsp_transport tcp -i {self.config.rtsp_uri} -vf 'scale={self.config.snapshot.scale.value}' -frames:v 1 {fp}"
         await self.run_ffmpeg_cmd(cmd)
         return base64.b64encode(fp.read_bytes())
 
