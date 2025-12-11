@@ -40,6 +40,7 @@ class CameraApplication(Application):
         self.ui_manager.set_variant(ui.ApplicationVariant.stacked)
 
         self.snapshot_running = None
+        self._shutdown_at = None
 
         # the below is probably a "fix in doover 2.0" problem to have some better / more native
         # camera feels
@@ -102,6 +103,10 @@ class CameraApplication(Application):
             await self.power_management.acquire_for(
                 timedelta(seconds=UI_CONNECT_POWERON_TIMEOUT_SEC)
             )
+
+    async def on_shutdown_at(self, shutdown_at: datetime):
+        self._shutdown_at = shutdown_at
+        await self.power_management.release()
 
     async def on_control_message(self, _, payload: dict[str, Any]):
         if payload in (None, "None"):
