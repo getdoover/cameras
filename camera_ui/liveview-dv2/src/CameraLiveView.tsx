@@ -183,9 +183,11 @@ const CameraLiveView = ({
         startCountdown();
 
         await activateTunnel(liveViewTunnel.id);
-        // might need to send these with dependencies
-        sendControlCommand(ControlCommand.PowerOn, 1);
-        sendControlCommand(ControlCommand.SyncUI, 1);
+        sendControlCommand(ControlCommand.PowerOn, 1, {
+            onSuccess: () => {
+                sendControlCommand(ControlCommand.SyncUI, 1)
+            }
+        });
         // http://192.168.0.98:8083/stream/ptz_cam_1/channel/0/hls/live/index.m3u8
         setTimeout(() => {
             setShowLiveView(true);
@@ -221,8 +223,11 @@ const CameraLiveView = ({
         const baseUrl = playerSource.split("?")[0];
         const refreshedUrl = `${baseUrl}?t=${Date.now()}`;
 
-        sendControlCommand(ControlCommand.PowerOn, 1);
-        sendControlCommand(ControlCommand.SyncUI, 1);
+        sendControlCommand(ControlCommand.PowerOn, 1, {
+            onSuccess: () => {
+                sendControlCommand(ControlCommand.SyncUI, 1)
+            }
+        });
 
         setPlayerSource(refreshedUrl);
     };
