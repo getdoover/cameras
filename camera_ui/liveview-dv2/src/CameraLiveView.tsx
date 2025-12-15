@@ -76,8 +76,6 @@ const CameraLiveView = ({
 
     const customMutation = useCustomMutation();
 
-    const [playerSource, setPlayerSource] = useState<string>("");
-
     const [managementPopup, setManagementPopup] = useState<boolean>(false);
 
     const [loading, setLoading] = useState<boolean>(false);
@@ -87,9 +85,17 @@ const CameraLiveView = ({
     const [countdown, setCountdown] = useState<number>();
     const [showAlert, setShowAlert] = useState<boolean>(false);
 
+    const playerSource = useRef("");
+
 
     rtspServerHost = rtspServerHost || "localhost";
     rtspServerPort = rtspServerPort || 8083;
+
+    useEffect(() => {
+        if (liveViewTunnel) {
+            playerSource.current = `https://${liveViewTunnel?.endpoint}/stream/${camName}/channel/0/hls/live/index.m3u8`
+        }
+    }, [liveViewTunnel, camName]);
 
     // create both of these tunnels if they don't exist (and everything has loaded)
     useEffect(() => {
@@ -141,8 +147,8 @@ const CameraLiveView = ({
     //         {url: `/tunnels/${tunnel_id}/deactivate`, method: "post", values: {}})
     // }
 
-    const sendControlCommand = (action: ControlCommand, value: string | number, options?: Parameters<typeof sendControlMutation.mutate>[1]) => {
-        sendControlMutation.mutate({
+    const sendControlCommand = async (action: ControlCommand, value: string | number, options?: Parameters<typeof sendControlMutation.mutate>[1]) => {
+        await sendControlMutation.mutateAsync({
             [camName]: {
                 "action": action,
                 "value": value,
@@ -153,11 +159,8 @@ const CameraLiveView = ({
 
 
     const gotoPreset = async (preset: string) => {
-        sendControlCommand(ControlCommand.PowerOn, 1, {
-            onSuccess: () => {
-                sendControlCommand(ControlCommand.GotoPreset, preset)
-            }
-        });
+        await sendControlCommand(ControlCommand.PowerOn, 1);
+        await sendControlCommand(ControlCommand.GotoPreset, preset);
     }
 
     const setupTunnel = async () => {
@@ -183,25 +186,21 @@ const CameraLiveView = ({
         startCountdown();
 
         await activateTunnel(liveViewTunnel.id);
-        sendControlCommand(ControlCommand.PowerOn, 1, {
-            onSuccess: () => {
-                sendControlCommand(ControlCommand.SyncUI, 1)
-            }
-        });
+        await sendControlCommand(ControlCommand.PowerOn, 1);
+        await sendControlCommand(ControlCommand.SyncUI, 1);
+
         // http://192.168.0.98:8083/stream/ptz_cam_1/channel/0/hls/live/index.m3u8
         setTimeout(() => {
             setShowLiveView(true);
             setLoading(false);
-            setPlayerSource(`https://${liveViewTunnel.endpoint}/stream/${camName}/channel/0/hls/live/index.m3u8`);
-        }, 3_000);
+        }, 1_000);
 
         // setTimeout(resetPlayerUrl, 5_000)
     };
 
     const setupManageCameraTunnel = async () => {
         setManageRedirectLoading(true);
-        sendControlCommand(ControlCommand.PowerOn, 1);
-
+        await sendControlCommand(ControlCommand.PowerOn, 1);
         await activateTunnel(managementTunnel.id);
 
         setTimeout(() => {
@@ -219,17 +218,14 @@ const CameraLiveView = ({
     //     setPlayerSource("");
     // }
 
-    const resetPlayerUrl = () => {
-        const baseUrl = playerSource.split("?")[0];
+    const resetPlayerUrl = async () => {
+        const baseUrl = playerSource.current.split("?")[0];
         const refreshedUrl = `${baseUrl}?t=${Date.now()}`;
 
-        sendControlCommand(ControlCommand.PowerOn, 1, {
-            onSuccess: () => {
-                sendControlCommand(ControlCommand.SyncUI, 1)
-            }
-        });
+        await sendControlCommand(ControlCommand.PowerOn, 1);
+        await sendControlCommand(ControlCommand.SyncUI, 1);
 
-        setPlayerSource(refreshedUrl);
+        playerSource.current = refreshedUrl;
     };
 
     const onPlayerReady = () => {
@@ -295,6 +291,8 @@ const CameraLiveView = ({
         </Box>
     </Dialog>) : null;
 
+    console.log("player source: ", playerSource);
+
 
     return (<>
         {managementPopupElem}
@@ -302,7 +300,7 @@ const CameraLiveView = ({
             {showAlert && countdown !== null && (<Alert severity="info">
                 Camera may take {countdown} second{countdown !== 1 ? 's' : ''} to awaken from sleep
             </Alert>)}
-            <LiveViewPlayer source={playerSource} onReady={onPlayerReady}/>
+            <LiveViewPlayer source={playerSource.current} onReady={onPlayerReady}/>
             {presetMenu}
             <Stack direction="row" justifyContent="center" spacing={5}>
                 {resetStream}

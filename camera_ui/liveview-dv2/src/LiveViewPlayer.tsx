@@ -19,9 +19,11 @@ const LiveViewPlayer = ({source, onReady}: { source: string, onReady?: () => voi
     return <ReactPlayer
         key={source}
         ref={setPlayerRef}
+        src={source}
         autoPlay
         controls
         width={"100%"}
+        height={"100%"}
         onReady={() => {
             console.log("ReactPlayer Ready");
             onReady?.()
