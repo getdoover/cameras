@@ -3,8 +3,8 @@ export default {
     remotes: {
         // feel free to change these when you're testing & deploying locally.
         // the actual values don't matter (I think?) when this is deployed.
-        doover_admin: 'doover_admin@http://localhost:8080/mf-manifest.json',
-        customer_site: 'customer_site@http://localhost:8025/mf-manifest.json',
+        doover_admin: 'doover_admin@[window.dooverCustomerSite_remoteUrl]',
+        customer_site: 'customer_site@[window.dooverAdminSite_remoteUrl]',
     },
     exposes: {
         './LiveViewV2': './src/RemoteComponent',
