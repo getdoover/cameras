@@ -14,7 +14,6 @@ on:
   push:
     branches:
       - main
-      - dv1
     paths:
       - 'device_app/**'
   release:
