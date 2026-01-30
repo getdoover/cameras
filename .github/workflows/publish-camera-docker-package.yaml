@@ -14,6 +14,7 @@ on:
   push:
     branches:
       - main
+      - dv1
     paths:
       - 'device_app/**'
   release:
@@ -58,6 +59,9 @@ jobs:
         with:
           images: |
             ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=${{ github.ref_name == 'dv1' && 'dv1' || (github.ref_name == 'main' && 'latest' || github.ref_name) }}
+            type=sha,prefix=
 
       - name: Build and push Docker images
         id: push
