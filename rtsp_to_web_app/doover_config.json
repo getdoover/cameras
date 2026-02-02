@@ -22,6 +22,15 @@
             "owner_org_key": "3666ee04-ced7-4621-8b96-fdbd43c1e868",
             "container_registry_profile_key": "b6d23297-e409-4d19-8026-2fc0cce6ebf9",
             "key": "03c37de0-d1f0-4e64-b9f5-b009ec7cee75"
-        }
+        },
+        "lambda_config": {},
+        "owner_org_id": null,
+        "container_registry_profile_id": "93955828574386692",
+        "id": "144016654743946753",
+        "organisation_id": null,
+        "code_repo_id": null,
+        "export_config_command": null,
+        "run_command": null,
+        "lambda_arn": null
     }
 }

@@ -1,80 +1,72 @@
-# Doover Application Template
+# IP Camera
 
-This repository serves as a template for creating Doover applications.
+<img src="https://doover.com/wp-content/uploads/Doover-Logo-Landscape-Navy-padded-small.png" alt="Doover Logo" style="max-width: 300px;">
 
-It provides a structured layout for application code, deployment configurations, simulators, and tests. The template is
-designed to simplify the development and deployment of Doover-compatible applications.
+**View and manage IP cameras with support for Dahua PTZ, Dahua Fixed, UniFi, and generic IP cameras.**
 
-The basic structure of the repository is as follows:
+[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/getdoover/cameras)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/getdoover/cameras/blob/main/LICENSE)
 
-## Getting Started
+[Configuration](#configuration) | [Developer](https://github.com/getdoover/cameras/blob/main/DEVELOPMENT.md) | [Need Help?](#need-help)
 
-```
-README.md           <-- This file
-pyproject.toml      <-- Python project configuration file (including dependencies)
-Dockerfile          <-- Dockerfile for building the application image
-doover_config.json  <-- Configuration file for doover
+<br/>
 
-src/app_template/   <-- Application directory
-  application.py    <-- Main application code
-  app_config.py     <-- Config schema definition
-  app_ui.py         <-- UI code (if applicable)
-  app_state.py      <-- State machine (if applicable)
+## Overview
 
-simulator/
-  app_config.json   <-- Sample configuration for the simulator
-  docker-compose.yml <-- Docker Compose file for the simulator
-  
-tests/
-    test_imports.py  <-- Test file for the application
-```
+App to view and manage IP cameras. Choose between Dahua PTZ or Fixed, UniFi and more. Features include live streaming via HLS, periodic snapshots, object detection, and optional power control for remote camera management.
 
-The `doover_config.json` file is the doover configuration file for the application. 
+<br/>
 
-It defines all metadata about the application, including name, short and long description, 
-dependent apps, image name, owner organisation, container registry and more.
+## Configuration
 
-### Prerequisites
+| Setting | Description | Default |
+|---------|-------------|---------|
+| **Camera Type** | Type of camera (Dahua PTZ, Dahua Fixed, Dahua Generic, UniFi Generic, Generic IP) | `Dahua (Generic)` |
+| **Camera Username** | Username to login to camera control | `None` |
+| **Camera Password** | Password to login to camera control | `None` |
+| **IP Address** | IP address of camera (e.g. 192.168.50.100) | `Required` |
+| **RTSP Port** | Port of RTSP feed on camera | `554` |
+| **RTSP Channel** | RTSP channel name | `live` |
+| **Control Port** | Port of control page on camera | `80` |
+| **Power Control Enabled** | Whether power control is enabled for this camera | `false` |
+| **Power Pin** | Digital Output pin that controls power to camera circuit | `0` |
+| **Off After** | Seconds after which the camera will be powered off | `900` |
+| **Wake Delay** | Seconds for camera to boot before requesting a snapshot | `5` |
+| **Live View Enabled** | Whether remote component is enabled for this camera | `true` |
+| **Live View URL** | URL for live view component | `https://getdoover.github.io/cameras/HLSLiveView.js` |
+| **Snapshot Enabled** | Whether periodic snapshots are enabled | `true` |
+| **Snapshot Period** | Seconds between snapshots | `14400` |
+| **Snapshot Mode** | Video or Image format | `Image` |
+| **Object Detection** | Objects to detect (Person, Vehicle) | `None` |
+| **Control Enabled** | Allow control (movement) of PTZ cameras | `true` |
 
-- Docker and Docker Compose installed
-- Python 3.11 or later (if running locally)
-- Pipenv for managing Python dependencies
+<br/>
 
-### Running Locally
+## Integrations
 
-1. Run the application:
+This app works seamlessly with:
 
-```bash
-doover app run
-```
+- **Platform Interface**: Core Doover platform component
+- **RTSP to Web App**: Required for live HLS streaming
 
-## Simulators
+<br/>
 
-The `simulator/` directory contains tools for simulating application behavior. For example:
+## Need Help?
 
-- `app_config.json`: Sample configuration file for the app.
-- `docker-compose.yml`: Defines services for running the application.
+- Email: support@doover.com
+- [Community Forum](https://doover.com/community)
+- [Full Documentation](https://docs.doover.com)
+- [Developer Documentation](https://github.com/getdoover/cameras/blob/main/DEVELOPMENT.md)
 
-You can find a sample simulator in the `simulator/sample/` directory. While it is fairly bare-bones, it shows
-positioning of the simulator in the application structure, and how to start the simulator alongside your application.
+<br/>
 
-## Testing
+## Version History
 
-Run the tests using the following command:
+### v1.0.0 (Current)
+- Initial release
 
-```bash
-pytest tests/
-```
+<br/>
 
-## Deployment
+## License
 
-The `deployment/` directory contains deployment configurations, including a `docker-compose.yml` file for orchestrating
-services.
-
-## Customization
-
-To create your own Doover application:
-
-1. Modify the application logic in the appropriate directory.
-2. Update the simulator and test configurations as needed.
-3. Adjust deployment configurations to suit your requirements.
+This app is licensed under the [Apache License 2.0](https://github.com/getdoover/cameras/blob/main/LICENSE).
