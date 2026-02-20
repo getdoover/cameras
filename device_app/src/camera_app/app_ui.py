@@ -3,6 +3,24 @@ from pydoover import ui
 from camera_app.app_config import CameraConfig
 
 
+class PTZCameraLiveView(ui.Element):
+    type = "uiCameraLiveView"
+
+    def __init__(self, camera_name: str, **kwargs):
+        self.camera_name = camera_name
+        self.presets = []
+        self.active_preset = None
+        super().__init__(**kwargs)
+
+    def to_dict(self):
+        res = super().to_dict()
+        res["cameraName"] = self.camera_name
+        res["ptzControl"] = True
+        res["presets"] = self.presets
+        res["activePreset"] = self.active_preset
+        return res
+
+
 class CameraUI:
     def __init__(self, config: CameraConfig, app_key: str, app_display_name: str):
         self.config = config
@@ -35,5 +53,13 @@ class CameraUI:
                 position=50,
             )
 
+        self.live_view = PTZCameraLiveView(
+            app_key, name=f"{app_key}_lv", display_name=app_display_name
+        )
+
     def fetch(self):
-        return (self.camera,)
+        return (self.camera, self.live_view)
+
+    def update_presets(self, presets: list[str], active_preset):
+        self.live_view.presets = presets
+        self.live_view.active_preset = active_preset

@@ -34,8 +34,11 @@ class CameraBase:
     def ensure_output_dir() -> None:
         OUTPUT_FILE_DIR.mkdir(parents=True, exist_ok=True)
 
-    async def on_control_message(self, data):
+    async def on_control_message(self, message_id, data):
         pass
+
+    async def fetch_presets(self) -> list[str]:
+        return []
 
     async def get_snapshot(self) -> bytes | None:
         # returns base64 encoded bytes

@@ -6,14 +6,6 @@ from .dahua_base import DahuaCameraBase
 log = logging.getLogger(__name__)
 
 class DahuaFixedCamera(DahuaCameraBase):
-
-    async def get_ui_payload(self, force_allow_absolute: bool = False):
-        status = await self.client.get_focus_status()
-        return {
-            "cam_position": {"zoom": float(status["status.Zoom"])*100},
-            "allow_absolute_position": force_allow_absolute or status["status.Status"] == "Normal"
-        }
-
     async def check_for_zoom_complete(self):
         retries = 0
         status = None
@@ -23,22 +15,17 @@ class DahuaFixedCamera(DahuaCameraBase):
             retries += 1
             await asyncio.sleep(0.1)
 
-        await self.sync_ui()
-
-    async def on_control_message(self, data):
+    async def on_control_message(self, message_id, data):
         # check for power on message
-        await super().on_control_message(data)
+        await super().on_control_message(message_id, data)
 
-        if not self.check_control_message(data):
+        if not self.check_control_message(message_id, data):
             return
 
         action = data.get("action")
-        if action == "sync_ui":
-            await self.sync_ui()
-        elif action == "reset":
+        if action == "reset":
             await self.client.adjust_manual_zoom(zoom=-1, focus=-1)
             await self.check_for_zoom_complete()
-            await self.sync_ui(force_allow_absolute=True)
 
         if data.get("action") != "zoom":
             return

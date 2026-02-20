@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from datetime import datetime, timezone
 
 from .dahua_base import DahuaCameraBase
 
@@ -42,25 +43,15 @@ class DahuaPTZCamera(DahuaCameraBase):
         #        self.normalise(y, self.VERTICAL_RANGE, (0, 1)), \
         #        self.normalise(zoom, self.ZOOM_RANGE, (-1, 1))
 
-    async def get_ui_payload(self, force_allow_absolute: bool = False):
+    async def fetch_presets(self) -> list[str]:
         presets = await self.client.get_presets(fetch=True)
-        x, y, z = await self.get_position(fetch=True)
-        log.info(f"syncing position: x: {x}, y: {y}, z: {z}")
-        self.last_absolute_control = True
-        return {
-            f"presets": list(presets.keys()),
-            f"cam_position": {
-                "pan": x, "tilt": y, "zoom": z
-            },
-            "allow_absolute_position": True
-        }
+        return list(presets.keys())
 
     async def set_absolute_control_disabled(self):
         if self.last_absolute_control is False:
             return
 
         self.last_absolute_control = False
-        await self.sync_ui()
 
     async def get_position(self, fetch: bool = False):
         if fetch is False and self.last_position is not None:
@@ -80,21 +71,28 @@ class DahuaPTZCamera(DahuaCameraBase):
             retries += 1
             await asyncio.sleep(0.1)
 
-        await self.sync_ui()
+    @staticmethod
+    def snowflake_to_datetime(snowflake_id):
+        timestamp = ((int(snowflake_id) >> 22) + 1735689600000) / 1000.0
+        dt = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+        now = datetime.now(tz=timezone.utc)
+        log.info(f"DT: {(now - dt).total_seconds()}sec")
 
-    async def on_control_message(self, data):
+    async def on_control_message(self, message_id, data):
         # check for power on message
-        await super().on_control_message(data)
+        await super().on_control_message(message_id, data)
 
-        if not self.check_control_message(data):
+        if not self.check_control_message(message_id, data):
             return
 
         log.info(f"Executing control command for camera: {data}")
 
         action = data.get("action", "")
         amount = data.get("value")
-        if amount is None and action not in ("stop", "sync_ui"):
+        if amount is None and action != "stop":
             return
+
+        self.snowflake_to_datetime(message_id)
 
         if action == "stop":
             await self.client.stop_ptz()
@@ -104,6 +102,7 @@ class DahuaPTZCamera(DahuaCameraBase):
             z = self.normalise(amount, (0, 100), (0, 1))
             await self.client.absolute_ptz(x, y, z)
             await self.check_for_move_complete()
+            await self.clear_active_preset_func()
         elif action == "pantilt_continuous":
             pan, tilt = amount.get("pan"), amount.get("tilt")
             pan = self.normalise(pan, (-1, 1), (-10, 10))
@@ -112,13 +111,22 @@ class DahuaPTZCamera(DahuaCameraBase):
             # tilt = self.validate_value(tilt, -100, 100, -10, 10)
             log.info(f"pan-tilting: {pan}, {tilt}")
             await self.client.continuous_ptz(pan, tilt, 0, timeout=0.5)
-            await self.set_absolute_control_disabled()
+            log.info(f"done pan-tilt-movement")
+            await self.clear_active_preset_func()
+            # await self.set_absolute_control_disabled()
+        elif action == "zoom_continuous":
+            amount = self.validate_value(amount, -100, 100, -1, 1)
+            # zoom amounts don't matter... it's just the + or - that matters (in vs out)
+            await self.client.continuous_zoom(amount)
+            await self.clear_active_preset_func()
+
         elif action == "pantilt_absolute":
             pan, tilt = amount.get("pan"), amount.get("tilt")
             log.info(f"pan-tilting absolute: {pan}, {tilt}")
             curr_pos = await self.get_position()
             await self.client.absolute_ptz(pan, tilt, curr_pos[2])
             await self.check_for_move_complete()
+            await self.clear_active_preset_func()
         elif "incremental" in action:
             amount = self.validate_value(amount, -100, 100, -1, 1)
             log.info(f"incremental moving: {action}, {amount}")
@@ -129,19 +137,19 @@ class DahuaPTZCamera(DahuaCameraBase):
                 await self.client.relative_ptz(0, amount, 0)
             elif action == "incremental_zoom":
                 await self.client.relative_ptz(0, 0, amount)
+
+            await self.clear_active_preset_func()
         elif action == "goto_preset":
             log.info(f"moving to preset {amount}")
             await self.client.goto_preset(amount)
-            await self.set_absolute_control_disabled()
+            # await self.set_absolute_control_disabled()
+            await self.sync_presets_func(amount)
             await self.check_for_move_complete()
-            await self.sync_ui(payload_extra={"active_preset": amount})
         elif action == "create_preset":
             log.info(f"creating preset {amount}")
             await self.client.create_preset(amount)
-            await self.sync_ui()
+            await self.sync_presets_func(amount)
         elif action == "delete_preset":
             log.info(f"deleting preset {amount}")
             await self.client.delete_preset(amount)
-            await self.sync_ui()
-        elif action == "sync_ui":
-            await self.sync_ui()
+            await self.sync_presets_func()

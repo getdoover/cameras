@@ -1,11 +1,11 @@
 services:
-  fixed_cam:
-    build: ../
-    network_mode: host
-    restart: unless-stopped
-    environment:
-      - APP_KEY=test_app_key
-      - CONFIG_FP=/app/simulators/app_config_fixed.json
+#  fixed_cam:
+#    build: ../
+#    network_mode: host
+#    restart: unless-stopped
+#    environment:
+#      - APP_KEY=test_app_key
+#      - CONFIG_FP=/app/simulators/app_config_fixed.json
 
   ptz_cam:
     build: ../

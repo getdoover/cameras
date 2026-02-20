@@ -28,15 +28,17 @@ log = logging.getLogger(__name__)
 
 
 class DahuaCameraBase(CameraBase):
-    def __init__(self, config, motion_detect_callback, publish_channel_func):
+    def __init__(self, config, motion_detect_callback, sync_presets_func, clear_active_preset_func):
         super().__init__(config)
 
-        self.completed_tasks = []
+        self.last_processed_id = None
 
         self.stream_events_task = None
         self.client: DahuaClient = None
         self.on_motion_event_callback = motion_detect_callback
-        self.publish_channel_func = publish_channel_func
+
+        self.sync_presets_func = sync_presets_func
+        self.clear_active_preset_func = clear_active_preset_func
 
     async def setup(self):
         self.client = DahuaClient(
@@ -74,22 +76,6 @@ class DahuaCameraBase(CameraBase):
         if self.stream_events_task:
             self.stream_events_task.cancel()
 
-    async def get_ui_payload(self, force_allow_absolute: bool = False):
-        return {}
-
-    async def sync_ui(self, force_allow_absolute: bool = False, payload_extra=None):
-        # fixme: this relies on the DODGY notion that the camera UI
-        #  component is in a submodule called _liveview_submodule.
-        #  need to fix this when merging the live view into camera UI.
-        payload = await self.get_ui_payload(force_allow_absolute=force_allow_absolute)
-        if not payload:
-            return
-        if payload_extra:
-            payload.update(payload_extra)
-
-        log.info(f"syncing ui: {payload}")
-        await self.publish_channel_func(payload)
-
     async def get_still_snapshot(self) -> bytes:
         # we don't need to use ffmpeg on this, just use the camera's built-in stuff
 
@@ -125,22 +111,16 @@ class DahuaCameraBase(CameraBase):
         log.info(f"Detected motion detection event: {event_type}")
         await self.on_motion_event_callback(MotionDetectEvent(event_type, data))
 
-    def check_control_message(self, data):
+    async def check_control_message(self, message_id, data):
         if self.config.control_enabled.value is False:
             log.info("Control not enabled, ignoring message.")
             return False
 
-        try:
-            task_id = data["task_id"]
-        except (KeyError, TypeError):
-            log.info("No task_id in control message. Skipping...")
+        if self.last_processed_id and message_id < self.last_processed_id:
+            log.info("Task stale, skipping...")
             return False
 
-        if task_id in self.completed_tasks:
-            log.info("Task already completed, skipping...")
-            return False
-
-        self.completed_tasks.append(data["task_id"])
+        self.last_processed_id = message_id
         return True
 
     async def ping(self, timeout: int):

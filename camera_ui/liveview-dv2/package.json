@@ -13,6 +13,7 @@
     },
     "dependencies": {
         "@emotion/styled": "^11.14.1",
+        "@eyevinn/webrtc-player": "^0.13.0",
         "@module-federation/enhanced": "^0.21.6",
         "@mui/icons-material": "^7.3.6",
         "@mui/material": "^7.3.6",

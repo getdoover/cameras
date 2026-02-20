@@ -596,7 +596,7 @@ class DahuaClient:
 
         try:
             action, channel, speed = self.prev_ptz_action
-        except AttributeError:
+        except (AttributeError, TypeError):
             return
 
         return await self.get(
@@ -640,6 +640,13 @@ class DahuaClient:
 
         return await self.get(
             f"/cgi-bin/ptz.cgi?action=start&code=Continuously&channel={channel}&arg1={pan}&arg2={tilt}&arg3={zoom}&arg4={to_send_timeout}"
+        )
+
+    async def continuous_zoom(self, amount, channel: int = 1):
+        code = "ZoomWide" if amount < 0 else "ZoomTele"
+        self.prev_ptz_action = (code, channel, amount)
+        return await self.get(
+            f"/cgi-bin/ptz.cgi?action=start&code={code}&channel={channel}&arg1=0&arg2=0&arg3=0"
         )
 
     async def relative_ptz(self, pan, tilt, zoom, channel: int = 1):
