@@ -3,14 +3,14 @@ from pydoover import ui
 from camera_app.app_config import CameraConfig
 
 
-class PTZCameraLiveView(ui.Element):
+class CameraLiveView(ui.Element):
     type = "uiCameraLiveView"
 
-    def __init__(self, camera_name: str, **kwargs):
+    def __init__(self, camera_name: str, display_name: str = "Live View", name: str = "History", **kwargs):
         self.camera_name = camera_name
         self.presets = []
         self.active_preset = None
-        super().__init__(**kwargs)
+        super().__init__(name=name, display_name=display_name, **kwargs)
 
     def to_dict(self):
         res = super().to_dict()
@@ -20,6 +20,52 @@ class PTZCameraLiveView(ui.Element):
         res["activePreset"] = self.active_preset
         return res
 
+
+class CameraHistory(ui.Element):
+    type = "uiCameraHistory"
+
+    def __init__(self, camera_name: str, display_name: str = "History", name: str = "history", **kwargs):
+        self.camera_name = camera_name
+        self.presets = []
+        self.active_preset = None
+        super().__init__(name=name, display_name=display_name, **kwargs)
+
+    def to_dict(self):
+        res = super().to_dict()
+        res["cameraName"] = self.camera_name
+        res["ptzControl"] = True
+        res["presets"] = self.presets
+        res["activePreset"] = self.active_preset
+        return res
+
+
+class TabContainer(ui.Element):
+    type = "uiTabs"
+
+    def __init__(self, children: list[ui.Element], **kwargs):
+        self.children = children
+        super().__init__(**kwargs)
+
+    def to_dict(self):
+        res = super().to_dict()
+        res["children"] = {c.name: c.to_dict() for c in self.children}
+        return res
+
+class Switch(ui.Interaction):
+    type = "uiSwitch"
+
+    def __init__(self, name: str, icon: str = None, colour: ui.Colour = None, **kwargs):
+        super().__init__(name=name.replace(" ", "_").lower(), display_name=name, **kwargs)
+        self.icon = icon
+        self.colour = colour
+
+    def to_dict(self):
+        res = super().to_dict()
+        if self.icon:
+            res["icon"] = self.icon
+        if self.colour:
+            res["colour"] = self.colour
+        return res
 
 class CameraUI:
     def __init__(self, config: CameraConfig, app_key: str, app_display_name: str):
@@ -53,12 +99,21 @@ class CameraUI:
                 position=50,
             )
 
-        self.live_view = PTZCameraLiveView(
-            app_key, name=f"{app_key}_lv", display_name=app_display_name
+        self.history = CameraHistory(app_key)
+
+        self.live_view = CameraLiveView(
+            app_key, name=f"{app_key}_lv", display_name="Live View"
         )
 
+        self.vehicle_detection = Switch("Alert me for Vehicle Motion", icon="fa-car", hidden=not config.vehicle_detect_enabled)
+        self.human_detection = Switch("Alert me for Human Motion", icon="fa-user", hidden=not config.human_detect_enabled)
+        container = ui.Container(children=[self.vehicle_detection, self.human_detection], name="detection", display_name="Object Detection")
+
+        self.tab_container = TabContainer(children=[self.history, self.live_view, container], name="tabs", display_name="Tabs")
+
+
     def fetch(self):
-        return (self.camera, self.live_view)
+        return (self.tab_container, )
 
     def update_presets(self, presets: list[str], active_preset):
         self.live_view.presets = presets

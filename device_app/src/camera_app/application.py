@@ -33,12 +33,15 @@ class CameraApplication(Application):
     async def setup(self):
         self.power_management = CameraPowerManagement(self)
 
+        self.app_display_name = self.app_display_name or "Camera"
+
         self.ui = CameraUI(self.config, self.app_key, self.app_display_name)
         self.ui_manager.add_children(*self.ui.fetch())
 
         # we don't want a submodule view for cameras since the UI
         # renders it as a submodule anyway (and we'd end up with double submodules).
         self.ui_manager.set_variant(ui.ApplicationVariant.stacked)
+        self.ui_manager.set_display_name(self.app_display_name)
 
         self.snapshot_running = None
         self._shutdown_at = None
@@ -53,22 +56,6 @@ class CameraApplication(Application):
 
         self.control_task = asyncio.create_task(self.handle_control_messages())
         # self.device_agent.subscribe_to_channel_messages("camera_control", self.on_control_message)
-
-        ui_cmds = await self.get_channel_aggregate("ui_cmds")
-
-        to_send = {}
-        to_send.update(
-            self.configure_detect_alerts(
-                ui_cmds, "human", self.config.human_detect_enabled
-            )
-        )
-        to_send.update(
-            self.configure_detect_alerts(
-                ui_cmds, "vehicle", self.config.vehicle_detect_enabled
-            )
-        )
-        if to_send:
-            await self.publish_to_channel("ui_cmds", {"cmds": to_send})
 
         match CameraType(self.config.type.value):
             case CameraType.dahua_ptz:
@@ -239,17 +226,17 @@ class CameraApplication(Application):
 
         ## attempt to take a snapshot
         error_count = 0
-        data = None
+        files = None
         while error_count < retries:
             try:
-                data = await self.engine.get_snapshot()
+                files = await self.engine.get_snapshot()
             except Exception as e:
                 log.info(f"Failed to get snapshot: {e}, retrying...")
                 await asyncio.sleep(1)
                 error_count += 1
                 continue
 
-            if data:
+            if files:
                 # we've got the camera, keep moving...
                 break
             else:
@@ -257,23 +244,21 @@ class CameraApplication(Application):
                 await asyncio.sleep(1)
                 error_count += 1
 
-        if data is None:
+        if files is None:
             log.info("Failed to get snapshot after retries")
             return False
 
-        message = json.dumps(
-            {
-                "camera_name": self.app_key,
-                "output": data.decode(),
-                "output_type": self.config.snapshot.mode_as_filetype,
-            }
-        )
-        log.debug(f"message length is {len(message)}, message: {message}")
+        # message = json.dumps(
+        #     {
+        #         "camera_name": self.app_key,
+        #         "output": data.decode(),
+        #         "output_type": self.config.snapshot.mode_as_filetype,
+        #     }
+        # )
+        # log.debug(f"message length is {len(message)}, message: {message}")
 
         try:
-            await self.device_agent.publish_to_channel(
-                self.app_key, message, max_age=-1
-            )
+            await self.device_agent.create_message(self.app_key, {}, files)
         except Exception as e:
             log.warning(f"Failed to publish snapshot: {e}", exc_info=e)
         else:
@@ -366,46 +351,25 @@ class CameraApplication(Application):
 
     async def on_motion_event_callback(self, event: MotionDetectEvent):
         log.info(f"Motion event detected, type: {event.type}.")
-
-        ui_cmds = await self.get_channel_aggregate("ui_cmds")
-        if not ui_cmds:
-            log.info("ui_cmds unknown, skipping event.")
-            return
-        # fixme: remove this for doover 2.0
-
         await self.lock_snapshot_and_run()
 
         match event.type:
             case MotionDetectEventType.person:
-                if ui_cmds.get(f"{self.app_key}_human_detect") is True:
+                if self.ui.human_detection.current_value is True:
                     await self.publish_to_channel(
-                        "significantEvent",
+                        "notifications",
                         f"{self.app_display_name} has detected a person.",
                     )
 
             case MotionDetectEventType.vehicle:
-                if ui_cmds.get(f"{self.app_key}_vehicle_detect") is True:
+                if self.ui.vehicle_detection.current_value is True:
                     await self.publish_to_channel(
-                        "significantEvent",
+                        "notifications",
                         f"{self.app_display_name} has detected a vehicle.",
                     )
 
             case MotionDetectEventType.unknown:
                 log.warning("Unknown event detected.")
-
-    def configure_detect_alerts(self, ui_cmds_payload, name, enabled):
-        log.info(f"Alert {name} is {'enabled' if enabled else 'disabled'}.")
-
-        key = f"{self.app_key}_{name}_detect"
-        if enabled and key not in ui_cmds_payload:
-            # default to no alerts for users.
-            log.info("Adding to ui_cmds")
-            return {key: False}
-        elif enabled is False and key in ui_cmds_payload:
-            # get rid of this field from ui_cmds so we don't display to user.
-            log.info("Removing from ui_cmds")
-            return {key: None}
-        return {}
 
     @ui.callback(GET_NOW_CMD_NAME, global_interaction=True)
     async def on_snapshot_command(self, _command, new_value: str):
@@ -448,4 +412,4 @@ class CameraApplication(Application):
 
     async def clear_preset(self):
         await self.set_tag("active_preset", None)
-        await self.ui.update_presets(self.get_tag("presets"), None)
+        self.ui.update_presets(self.get_tag("presets"), None)

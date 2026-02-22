@@ -5,6 +5,7 @@ import logging
 import uuid
 from pathlib import Path
 
+from pydoover.docker.device_agent.models import File
 from camera_app.app_config import CameraConfig, Mode
 
 OUTPUT_FILE_DIR = Path("/tmp/camera")
@@ -40,7 +41,7 @@ class CameraBase:
     async def fetch_presets(self) -> list[str]:
         return []
 
-    async def get_snapshot(self) -> bytes | None:
+    async def get_snapshot(self) -> list[File]:
         # returns base64 encoded bytes
         mode = self.config.snapshot.mode.value
 
@@ -55,23 +56,28 @@ class CameraBase:
             log.exception(f"get_snapshot: {str(e)}", exc_info=e)
             return None
 
-        if data and len(data) > MAX_MESSAGE_SIZE:
-            log.info(
-                f"Reducing snapshot length from {self.config.snapshot.secs.value} to {self.config.snapshot.secs.value * 0.7}"
-            )
-            self.config.snapshot.secs.value = self.config.snapshot.secs.value * 0.7
-            # None signifies an error, so use the parent retry handler which will run this a few times
-            return None
+        # if data and len(data) > MAX_MESSAGE_SIZE:
+        #     log.info(
+        #         f"Reducing snapshot length from {self.config.snapshot.secs.value} to {self.config.snapshot.secs.value * 0.7}"
+        #     )
+        #     self.config.snapshot.secs.value = self.config.snapshot.secs.value * 0.7
+        #     # None signifies an error, so use the parent retry handler which will run this a few times
+        #     return None
 
-        return data
+        return [data]
 
-    async def get_still_snapshot(self) -> bytes:
+    async def get_still_snapshot(self) -> File:
         fp = self.get_output_filepath(str(uuid.uuid4()), "jpg")
         cmd = f"ffmpeg -y -rtsp_transport tcp -i {self.config.rtsp_uri} -vf 'scale={self.config.snapshot.scale.value}' -frames:v 1 {fp}"
         await self.run_ffmpeg_cmd(cmd)
-        return base64.b64encode(fp.read_bytes())
+        return File(
+            filename="snapshot.jpg",
+            data=fp.read_bytes(),
+            size=fp.stat().st_size,
+            content_type="image/jpeg",
+        )
 
-    async def get_video_snapshot(self) -> bytes:
+    async def get_video_snapshot(self) -> File:
         fp = self.get_output_filepath(str(uuid.uuid4()), "mp4")
 
         # possible alternative, allegedly h265 is the "new" best high-compression format.
@@ -82,7 +88,12 @@ class CameraBase:
             f"format=yuv420p,pad=ceil(iw/2)*2:ceil(ih/2)*2' -t {self.config.snapshot.secs.value} -c:v libx264 -c:a aac {fp}"
         )
         await self.run_ffmpeg_cmd(cmd)
-        return base64.b64encode(fp.read_bytes())
+        return File(
+            filename="snapshot.mp4",
+            data=fp.read_bytes(),
+            size=fp.stat().st_size,
+            content_type="video/mp4",
+        )
 
     async def run_ffmpeg_cmd(self, cmd):
         self.ensure_output_dir()

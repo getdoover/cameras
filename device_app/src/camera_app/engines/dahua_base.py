@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 
 import aiohttp
 from PIL import Image
+from pydoover.docker.device_agent.models import File
 
 from .base import CameraBase, MAX_MESSAGE_SIZE
 from ..clients import DahuaClient
@@ -76,22 +77,27 @@ class DahuaCameraBase(CameraBase):
         if self.stream_events_task:
             self.stream_events_task.cancel()
 
-    async def get_still_snapshot(self) -> bytes:
+    async def get_still_snapshot(self) -> File:
         # we don't need to use ffmpeg on this, just use the camera's built-in stuff
 
         snap = await self.client.get_snapshot()
+        return File(
+            filename="snapshot.jpg",
+            data=snap,
+            size=len(snap),
+            content_type="image/jpeg",
+        )
         # we need to do a bit of compression because normal images are ~255kB,
         # we have a 128kB max limit on the websocket. by reducing the quality to 10% we can get them down to ~50kB.
-        proj = base64.b64encode(snap)
-        log.info(f"Original resolution image is {len(proj) / 1000}kB.")
-        if len(proj) > MAX_MESSAGE_SIZE:
-            log.info("Downscaling original image to 10% quality.")
-            im = Image.open(io.BytesIO(snap))
-            buf = io.BytesIO()
-            im.save(buf, "JPEG", quality=10)
-            proj = base64.b64encode(buf.getbuffer())
-
-        return proj
+        # proj = base64.b64encode(snap)
+        # log.info(f"Original resolution image is {len(proj) / 1000}kB.")
+        # if len(proj) > MAX_MESSAGE_SIZE:
+        #     log.info("Downscaling original image to 10% quality.")
+        #     im = Image.open(io.BytesIO(snap))
+        #     buf = io.BytesIO()
+        #     im.save(buf, "JPEG", quality=10)
+        #     proj = base64.b64encode(buf.getbuffer())
+        # return proj
 
     async def on_cam_event(self, data: bytes, _):
         match = EVENT_MATCH.search(data.decode())

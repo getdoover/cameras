@@ -22,8 +22,8 @@
     },
     "camera_snapshot_config": {
         "enabled": true,
-        "period": 600,
-        "mode": "jpeg",
+        "period": 14400,
+        "mode": "Image",
         "duration": 1,
         "fps": 5,
         "scale": "360:-1"

@@ -2,9 +2,13 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 
+from pydoover.docker.device_agent.models import File
+
 from .dahua_base import DahuaCameraBase
+from ..app_config import Mode
 
 log = logging.getLogger(__name__)
+
 
 class DahuaPTZCamera(DahuaCameraBase):
     HORIZONTAL_RANGE = (0, 360)
@@ -18,8 +22,9 @@ class DahuaPTZCamera(DahuaCameraBase):
 
     @staticmethod
     def normalise(value, actual_range, desired_range):
-        prop = desired_range[0] + \
-                (value - actual_range[0]) * (desired_range[1] - desired_range[0]) / (actual_range[1] - actual_range[0])
+        prop = desired_range[0] + (value - actual_range[0]) * (
+            desired_range[1] - desired_range[0]
+        ) / (actual_range[1] - actual_range[0])
         return max(min(prop, desired_range[1]), desired_range[0])
 
     def validate_value(self, value, min_val, max_val, new_min, new_max):
@@ -111,7 +116,7 @@ class DahuaPTZCamera(DahuaCameraBase):
             # tilt = self.validate_value(tilt, -100, 100, -10, 10)
             log.info(f"pan-tilting: {pan}, {tilt}")
             await self.client.continuous_ptz(pan, tilt, 0, timeout=0.5)
-            log.info(f"done pan-tilt-movement")
+            log.info("done pan-tilt-movement")
             await self.clear_active_preset_func()
             # await self.set_absolute_control_disabled()
         elif action == "zoom_continuous":
@@ -153,3 +158,34 @@ class DahuaPTZCamera(DahuaCameraBase):
             log.info(f"deleting preset {amount}")
             await self.client.delete_preset(amount)
             await self.sync_presets_func()
+
+    async def get_snapshot(self) -> list[File]:
+        if Mode(self.config.snapshot.mode.value) is Mode.video:
+            func = self.get_video_snapshot
+        else:
+            func = self.get_still_snapshot
+
+        files = []
+
+        presets = await self.fetch_presets()
+        if presets:
+            for preset in presets:
+                log.info(f"Taking snapshot at {preset}...")
+                try:
+                    await self.client.goto_preset(preset)
+                    await self.check_for_move_complete()
+                    file = await func()
+                except Exception as e:
+                    log.info(f"Failed to take snapshot: {e}")
+                else:
+                    files.append(file)
+        else:
+            try:
+                file = await func()
+            except Exception as e:
+                log.info(f"Failed to take snapshot: {e}")
+            else:
+                files.append(file)
+
+        log.info(f"Sending {len(files)} snapshots...")
+        return files
