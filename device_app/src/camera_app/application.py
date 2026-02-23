@@ -157,7 +157,9 @@ class CameraApplication(Application):
         if data.get("action") == "accept_sdp":
             await self.setup_rtsp_server()
             await self.power_management.acquire()
-            await self.accept_sdp_offer(self.app_key, data.get("stream_name"), data.get("value"))
+            await self.accept_sdp_offer(
+                self.app_key, data.get("stream_name"), data.get("value")
+            )
             return
 
         log.info(f"Received control command, forwarding to engine: {data}.")
@@ -373,17 +375,21 @@ class CameraApplication(Application):
         match event.type:
             case MotionDetectEventType.person:
                 if self.ui.human_detection.current_value is True:
-                    await self.publish_to_channel(
-                        "notifications",
-                        f"{self.app_display_name} has detected a person.",
-                    )
+                    payload = {
+                        "message": f"{self.app_display_name} has detected a person.",
+                        "topic": "motion_event_person",
+                        "severity": "Info",
+                    }
+                    await self.publish_to_channel("notifications", payload)
 
             case MotionDetectEventType.vehicle:
                 if self.ui.vehicle_detection.current_value is True:
-                    await self.publish_to_channel(
-                        "notifications",
-                        f"{self.app_display_name} has detected a vehicle.",
-                    )
+                    payload = {
+                        "message": f"{self.app_display_name} has detected a vehicle.",
+                        "topic": "motion_event_vehicle",
+                        "severity": "Info",
+                    }
+                    await self.publish_to_channel("notifications", payload)
 
             case MotionDetectEventType.unknown:
                 log.warning("Unknown event detected.")
