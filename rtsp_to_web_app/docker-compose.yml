@@ -1,6 +1,6 @@
 services:
   rtsp_to_web:
-    image: ghcr.io/spaneng/rtsptoweb:latest
+    image: ghcr.io/spaneng/rtsptoweb:master
     network_mode: host
     restart: unless-stopped
     volumes:
