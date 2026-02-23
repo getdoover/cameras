@@ -1,5 +1,4 @@
 {
-    "deployment_package_dir": "rtsp_to_web_app/",
     "rtsp_to_web_app": {
         "key": "61a28112-0e62-4b2c-a685-029324cd9d39",
         "name": "rtsp_to_web_app",
@@ -11,7 +10,7 @@
         "allow_many": false,
         "depends_on": [],
         "owner_org": "36a22e32-ab81-4a39-b400-869d532a052d",
-        "image_name": "ghcr.io/deepch/rtsptoweb:latest",
+        "image_name": "ghcr.io/spaneng/rtsptoweb:latest",
         "container_registry_profile": "88953909-e9c4-4f81-9ec0-56239d4b0a2e",
         "config_schema": {},
         "owner_org_key": "36a22e32-ab81-4a39-b400-869d532a052d",
@@ -21,7 +20,9 @@
         "staging_config": {
             "owner_org_key": "3666ee04-ced7-4621-8b96-fdbd43c1e868",
             "container_registry_profile_key": "b6d23297-e409-4d19-8026-2fc0cce6ebf9",
-            "key": "03c37de0-d1f0-4e64-b9f5-b009ec7cee75"
+            "key": "03c37de0-d1f0-4e64-b9f5-b009ec7cee75",
+            "container_registry_profile_id": "7369503425484439552",
+            "id": "151527335244375563"
         },
         "lambda_config": {},
         "owner_org_id": null,
@@ -31,6 +32,8 @@
         "code_repo_id": null,
         "export_config_command": null,
         "run_command": null,
-        "lambda_arn": null
+        "lambda_arn": null,
+        "icon_url": null,
+        "banner_url": null
     }
 }

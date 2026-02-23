@@ -19,7 +19,9 @@
         "staging_config": {
             "owner_org_key": "3666ee04-ced7-4621-8b96-fdbd43c1e868",
             "container_registry_profile_key": "b6d23297-e409-4d19-8026-2fc0cce6ebf9",
-            "key": "3f8c777c-9d7f-42db-911d-3a8e449ed50c"
+            "container_registry_profile_id": "7369503425484439552",
+            "key": "3f8c777c-9d7f-42db-911d-3a8e449ed50c",
+            "id": "151527743123662351"
         },
         "config_schema": {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -33,12 +35,17 @@
                         "Dahua (Fixed)",
                         "Dahua (Generic)",
                         "UniFi (Generic)",
-                        "Generic IP"
+                        "Generic IP",
+                        "Hikvision (Thermal)"
                     ],
                     "title": "Camera Type",
                     "x-name": "camera_type",
                     "x-hidden": false,
-                    "type": "string",
+                    "type": [
+                        "string",
+                        "null"
+                    ],
+                    "x-required": false,
                     "default": "Dahua (Generic)",
                     "x-position": 0
                 },
@@ -47,13 +54,18 @@
                     "x-name": "camera_connection_config",
                     "x-hidden": false,
                     "type": "object",
+                    "x-required": true,
                     "x-position": 1,
                     "properties": {
                         "camera_username": {
                             "title": "Camera Username",
                             "x-name": "camera_username",
                             "x-hidden": false,
-                            "type": "string",
+                            "type": [
+                                "string",
+                                "null"
+                            ],
+                            "x-required": false,
                             "description": "Username to login to camera control",
                             "default": null,
                             "x-position": 1
@@ -62,7 +74,11 @@
                             "title": "Camera Password",
                             "x-name": "camera_password",
                             "x-hidden": false,
-                            "type": "string",
+                            "type": [
+                                "string",
+                                "null"
+                            ],
+                            "x-required": false,
                             "description": "Password to login to camera control",
                             "default": null,
                             "x-position": 2
@@ -72,6 +88,7 @@
                             "x-name": "ip_address",
                             "x-hidden": false,
                             "type": "string",
+                            "x-required": true,
                             "description": "IP address of camera (e.g. 192.168.50.100)",
                             "x-position": 3
                         },
@@ -79,7 +96,11 @@
                             "title": "RTSP Port",
                             "x-name": "rtsp_port",
                             "x-hidden": false,
-                            "type": "integer",
+                            "type": [
+                                "integer",
+                                "null"
+                            ],
+                            "x-required": false,
                             "description": "Port of RTSP feed on camera",
                             "default": 554,
                             "x-position": 4
@@ -88,7 +109,11 @@
                             "title": "RTSP Channel",
                             "x-name": "rtsp_channel",
                             "x-hidden": false,
-                            "type": "string",
+                            "type": [
+                                "string",
+                                "null"
+                            ],
+                            "x-required": false,
                             "description": "RTSP channel name. On Dahua cameras this is usually 'live'.",
                             "default": "live",
                             "x-position": 5
@@ -97,7 +122,11 @@
                             "title": "Control Port",
                             "x-name": "control_port",
                             "x-hidden": false,
-                            "type": "integer",
+                            "type": [
+                                "integer",
+                                "null"
+                            ],
+                            "x-required": false,
                             "description": "Port of control page on camera",
                             "default": 80,
                             "x-position": 6
@@ -115,13 +144,18 @@
                     "x-name": "camera_power_config",
                     "x-hidden": false,
                     "type": "object",
+                    "x-required": true,
                     "x-position": 2,
                     "properties": {
                         "enabled": {
                             "title": "Enabled",
                             "x-name": "enabled",
                             "x-hidden": false,
-                            "type": "boolean",
+                            "type": [
+                                "boolean",
+                                "null"
+                            ],
+                            "x-required": false,
                             "description": "Whether power control is enabled for this camera",
                             "default": false,
                             "x-position": 1
@@ -130,7 +164,11 @@
                             "title": "Power Pin",
                             "x-name": "power_pin",
                             "x-hidden": false,
-                            "type": "integer",
+                            "type": [
+                                "integer",
+                                "null"
+                            ],
+                            "x-required": false,
                             "description": "Digital Output pin that controls power to camera circuit.",
                             "default": 0,
                             "x-position": 2
@@ -139,7 +177,11 @@
                             "title": "Off After",
                             "x-name": "off_after",
                             "x-hidden": false,
-                            "type": "integer",
+                            "type": [
+                                "integer",
+                                "null"
+                            ],
+                            "x-required": false,
                             "description": "Number of seconds after which the camera will be powered off",
                             "default": 900,
                             "x-position": 3
@@ -148,50 +190,14 @@
                             "title": "Wake Delay",
                             "x-name": "wake_delay",
                             "x-hidden": false,
-                            "type": "integer",
+                            "type": [
+                                "integer",
+                                "null"
+                            ],
+                            "x-required": false,
                             "description": "Seconds for camera to boot before requesting a snapshot.",
                             "default": 5,
                             "x-position": 4
-                        }
-                    },
-                    "additionalElements": true,
-                    "required": [],
-                    "x-collapsible": true,
-                    "x-defaultCollapsed": false
-                },
-                "camera_remote_component_config": {
-                    "title": "Camera Remote Component Config",
-                    "x-name": "camera_remote_component_config",
-                    "x-hidden": false,
-                    "type": "object",
-                    "x-position": 3,
-                    "properties": {
-                        "enabled": {
-                            "title": "Enabled",
-                            "x-name": "enabled",
-                            "x-hidden": false,
-                            "type": "boolean",
-                            "description": "Whether remote component is enabled for this camera",
-                            "default": true,
-                            "x-position": 1
-                        },
-                        "url": {
-                            "title": "URL",
-                            "x-name": "url",
-                            "x-hidden": false,
-                            "type": "string",
-                            "description": "URL for live view component. Leave blank to disable live view.",
-                            "default": "https://getdoover.github.io/cameras/HLSLiveView.js",
-                            "x-position": 2
-                        },
-                        "name": {
-                            "title": "Name",
-                            "x-name": "name",
-                            "x-hidden": false,
-                            "type": "string",
-                            "description": "Name of live view component",
-                            "default": "Live View",
-                            "x-position": 3
                         }
                     },
                     "additionalElements": true,
@@ -204,13 +210,18 @@
                     "x-name": "camera_snapshot_config",
                     "x-hidden": false,
                     "type": "object",
-                    "x-position": 4,
+                    "x-required": true,
+                    "x-position": 3,
                     "properties": {
                         "enabled": {
                             "title": "Enabled",
                             "x-name": "enabled",
                             "x-hidden": false,
-                            "type": "boolean",
+                            "type": [
+                                "boolean",
+                                "null"
+                            ],
+                            "x-required": false,
                             "default": true,
                             "x-position": 1
                         },
@@ -218,7 +229,11 @@
                             "title": "Period",
                             "x-name": "period",
                             "x-hidden": false,
-                            "type": "integer",
+                            "type": [
+                                "integer",
+                                "null"
+                            ],
+                            "x-required": false,
                             "description": "Number of seconds between snapshots",
                             "default": 14400,
                             "x-position": 2
@@ -231,7 +246,11 @@
                             "title": "Mode",
                             "x-name": "mode",
                             "x-hidden": false,
-                            "type": "string",
+                            "type": [
+                                "string",
+                                "null"
+                            ],
+                            "x-required": false,
                             "description": "Video format. Images are generally preferred as they will load faster than videos.",
                             "default": "Image",
                             "x-position": 3
@@ -240,7 +259,11 @@
                             "title": "Duration",
                             "x-name": "duration",
                             "x-hidden": false,
-                            "type": "integer",
+                            "type": [
+                                "integer",
+                                "null"
+                            ],
+                            "x-required": false,
                             "description": "Duration of snapshot",
                             "default": 6,
                             "x-position": 4
@@ -249,7 +272,11 @@
                             "title": "FPS",
                             "x-name": "fps",
                             "x-hidden": false,
-                            "type": "integer",
+                            "type": [
+                                "integer",
+                                "null"
+                            ],
+                            "x-required": false,
                             "description": "FPS of snapshot",
                             "default": 5,
                             "x-position": 5
@@ -264,7 +291,11 @@
                             "title": "Scale",
                             "x-name": "scale",
                             "x-hidden": false,
-                            "type": "string",
+                            "type": [
+                                "string",
+                                "null"
+                            ],
+                            "x-required": false,
                             "description": "Scale of snapshot",
                             "default": "360:-1",
                             "x-position": 6
@@ -280,13 +311,18 @@
                     "x-name": "camera_rtsp_server_config",
                     "x-hidden": false,
                     "type": "object",
-                    "x-position": 5,
+                    "x-required": true,
+                    "x-position": 4,
                     "properties": {
                         "enabled": {
                             "title": "Enabled",
                             "x-name": "enabled",
                             "x-hidden": false,
-                            "type": "boolean",
+                            "type": [
+                                "boolean",
+                                "null"
+                            ],
+                            "x-required": false,
                             "default": true,
                             "x-position": 1
                         },
@@ -294,7 +330,11 @@
                             "title": "Address",
                             "x-name": "address",
                             "x-hidden": false,
-                            "type": "string",
+                            "type": [
+                                "string",
+                                "null"
+                            ],
+                            "x-required": false,
                             "description": "Address of RTSP server",
                             "default": "http://localhost:8083",
                             "x-position": 2
@@ -303,7 +343,11 @@
                             "title": "Username",
                             "x-name": "username",
                             "x-hidden": false,
-                            "type": "string",
+                            "type": [
+                                "string",
+                                "null"
+                            ],
+                            "x-required": false,
                             "default": "demo",
                             "x-position": 3
                         },
@@ -311,7 +355,11 @@
                             "title": "Password",
                             "x-name": "password",
                             "x-hidden": false,
-                            "type": "string",
+                            "type": [
+                                "string",
+                                "null"
+                            ],
+                            "x-required": false,
                             "default": "demo",
                             "x-position": 4
                         }
@@ -326,8 +374,9 @@
                     "x-name": "object_detection",
                     "x-hidden": false,
                     "type": "array",
+                    "x-required": true,
                     "description": "Objects to detect. Leave blank to disable object detection.",
-                    "x-position": 6,
+                    "x-position": 5,
                     "items": {
                         "enum": [
                             "Person",
@@ -336,7 +385,11 @@
                         "title": "Object",
                         "x-name": "object",
                         "x-hidden": false,
-                        "type": "string",
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "x-required": false,
                         "default": "Person"
                     },
                     "uniqueItems": true
@@ -345,20 +398,64 @@
                     "title": "Control Enabled",
                     "x-name": "control_enabled",
                     "x-hidden": false,
-                    "type": "boolean",
+                    "type": [
+                        "boolean",
+                        "null"
+                    ],
+                    "x-required": false,
                     "description": "Allow control (movement) of PTZ cameras.",
                     "default": true,
-                    "x-position": 7
+                    "x-position": 6
+                },
+                "thermal_config": {
+                    "title": "Thermal Config",
+                    "x-name": "thermal_config",
+                    "x-hidden": false,
+                    "type": "object",
+                    "x-required": true,
+                    "x-position": 7,
+                    "properties": {
+                        "enabled": {
+                            "title": "Enabled",
+                            "x-name": "enabled",
+                            "x-hidden": false,
+                            "type": [
+                                "boolean",
+                                "null"
+                            ],
+                            "x-required": false,
+                            "description": "Whether thermal is enabled for this camera",
+                            "default": false,
+                            "x-position": 1
+                        },
+                        "channel": {
+                            "title": "Channel",
+                            "x-name": "channel",
+                            "x-hidden": false,
+                            "type": [
+                                "string",
+                                "null"
+                            ],
+                            "x-required": false,
+                            "description": "RTSP channel name for thermal feed. On Hikvision thermal cameras this is usually /Streaming/Channels/201.",
+                            "default": "Streaming/Channels/201",
+                            "x-position": 2
+                        }
+                    },
+                    "additionalElements": true,
+                    "required": [],
+                    "x-collapsible": true,
+                    "x-defaultCollapsed": false
                 }
             },
             "additionalElements": true,
             "required": [
                 "camera_connection_config",
                 "camera_power_config",
-                "camera_remote_component_config",
                 "camera_snapshot_config",
                 "camera_rtsp_server_config",
-                "object_detection"
+                "object_detection",
+                "thermal_config"
             ]
         },
         "lambda_config": {},
@@ -370,6 +467,8 @@
         "repo_branch": "main",
         "export_config_command": null,
         "run_command": null,
-        "lambda_arn": null
+        "lambda_arn": null,
+        "icon_url": null,
+        "banner_url": null
     }
 }

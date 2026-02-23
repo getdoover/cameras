@@ -8,28 +8,9 @@
         "http_login": "demo",
         "http_password": "demo",
         "http_port": ":8083",
-        "ice_servers": [
-            "turn:167.235.241.140:3478?transport=udp"
-        ],
-        "ice_username": "1770947393:johnsmith",
-        "ice_credential": "Y1/KA7gFZ0ylvSCvlyYfX/8LdkU=",
         "rtsp_port": ":5541"
     },
-    "streams": {
-        "demo1": {
-            "name": "test video stream 1",
-            "channels": {
-                "0": {
-                    "name": "ch1",
-                    "url": "rtsp://admin:admin123@192.168.50.72:554/live",
-                    "on_demand": true,
-                    "debug": false,
-                    "audio": false,
-                    "status": 0
-                }
-            }
-        }
-    },
+    "streams": {},
     "channel_defaults": {
         "on_demand": true
     }
