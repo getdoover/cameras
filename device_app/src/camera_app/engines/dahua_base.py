@@ -77,7 +77,7 @@ class DahuaCameraBase(CameraBase):
         if self.stream_events_task:
             self.stream_events_task.cancel()
 
-    async def get_still_snapshot(self) -> File:
+    async def get_still_snapshot(self, rtsp_uri: str) -> File:
         # we don't need to use ffmpeg on this, just use the camera's built-in stuff
 
         snap = await self.client.get_snapshot()

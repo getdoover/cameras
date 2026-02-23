@@ -14,3 +14,11 @@ services:
     environment:
       - APP_KEY=test_app_key_ptz
       - CONFIG_FP=/app/simulators/app_config_ptz.json
+
+#  thermal_cam:
+#    build: ../
+#    network_mode: host
+#    restart: unless-stopped
+#    environment:
+#      - APP_KEY=test_app_key_thermal
+#      - CONFIG_FP=/app/simulators/app_config_thermal.json

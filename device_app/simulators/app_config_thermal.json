@@ -1,12 +1,12 @@
 {
-    "camera_name": "test_cam",
-    "camera_type": "Dahua (Fixed)",
+    "camera_name": "test_cam_thermal",
+    "camera_type": "Hikvision (Thermal)",
     "camera_connection_config": {
         "camera_username": "admin",
-        "camera_password": "19HandleyDrive",
-        "ip_address": "192.168.0.101",
+        "camera_password": "doover321",
+        "ip_address": "192.168.50.221",
         "rtsp_port": 554,
-        "rtsp_channel": "live",
+        "rtsp_channel": "Streaming/Channels/101",
         "control_port": 80
     },
     "camera_power_config": {
@@ -15,15 +15,10 @@
         "off_after": 120,
         "wake_delay": 30
     },
-    "camera_remote_component_config": {
-        "enabled": true,
-        "url": "https://getdoover.github.io/cameras/HLSLiveView.js",
-        "name": "Live View"
-    },
     "camera_snapshot_config": {
         "enabled": true,
-        "period": 600,
-        "mode": "jpeg",
+        "period": 14400,
+        "mode": "Image",
         "duration": 1,
         "fps": 5,
         "scale": "360:-1"
@@ -34,13 +29,10 @@
         "username": "demo",
         "password": "demo"
     },
-    "object_detection": [
-        "Person",
-        "Vehicle"
-    ],
-    "control_enabled": true,
+    "object_detection": [],
+    "control_enabled": false,
     "thermal_config": {
-        "enabled": false,
-        "channel": ""
+        "enabled": true,
+        "channel": "Streaming/Channels/201"
     }
 }

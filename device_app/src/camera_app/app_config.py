@@ -4,6 +4,22 @@ from pathlib import Path
 from pydoover import config
 
 
+class CameraThermalConfig(config.Object):
+    def __init__(self):
+        super().__init__("Thermal Config")
+
+        self.enabled = config.Boolean(
+            "Enabled",
+            description="Whether thermal is enabled for this camera",
+            default=False,
+        )
+        self.channel = config.String(
+            "Channel",
+            description="RTSP channel name for thermal feed. On Hikvision thermal cameras this is usually /Streaming/Channels/201.",
+            default="Streaming/Channels/201",
+        )
+
+
 class CameraConnectionConfig(config.Object):
     def __init__(self):
         super().__init__("Camera Connection Config")
@@ -58,28 +74,6 @@ class CameraPowerConfig(config.Object):
             description="Seconds for camera to boot before requesting a snapshot.",
             default=5,
         )
-
-
-class CameraRemoteComponentConfig(config.Object):
-    def __init__(self):
-        super().__init__("Camera Remote Component Config")
-
-        self.enabled = config.Boolean(
-            "Enabled",
-            description="Whether remote component is enabled for this camera",
-            default=True,
-        )
-        self.url = config.String(
-            "URL",
-            description="URL for live view component. Leave blank to disable live view.",
-            default="https://getdoover.github.io/cameras/HLSLiveView.js",
-        )
-        self.name = config.String(
-            "Name",
-            description="Name of live view component",
-            default="Live View",
-        )
-
 
 class Mode(Enum):
     video = "Video"
@@ -151,6 +145,7 @@ class CameraType(Enum):
     dahua_generic = "Dahua (Generic)"
     unifi_generic = "UniFi (Generic)"
     generic_ip = "Generic IP"
+    hikvision_thermal = "Hikvision (Thermal)"
 
 
 class ObjectDetectionType(Enum):
@@ -168,7 +163,6 @@ class CameraConfig(config.Schema):
 
         self.connection = CameraConnectionConfig()
         self.power = CameraPowerConfig()
-        self.remote_component = CameraRemoteComponentConfig()
         self.snapshot = CameraSnapshotConfig()
         self.rtsp_server = CameraRTSPServerConfig()
 
@@ -187,12 +181,22 @@ class CameraConfig(config.Schema):
             description="Allow control (movement) of PTZ cameras.",
             default=True,
         )
+        self.thermal = CameraThermalConfig()
 
     @property
     def rtsp_uri(self) -> str:
         if self.connection.username.value or self.connection.password.value:
             return f"rtsp://{self.connection.username.value}:{self.connection.password.value}@{self.connection.address.value}:{self.connection.rtsp_port.value}/{self.connection.rtsp_channel.value}"
         return f"rtsp://{self.connection.address.value}:{self.connection.rtsp_port.value}/{self.connection.rtsp_channel.value}"
+
+    @property
+    def thermal_rtsp_uri(self):
+        if not self.thermal.enabled.value:
+            return None
+
+        if self.connection.username.value or self.connection.password.value:
+            return f"rtsp://{self.connection.username.value}:{self.connection.password.value}@{self.connection.address.value}:{self.connection.rtsp_port.value}/{self.thermal.channel.value}"
+        return f"rtsp://{self.connection.address.value}:{self.connection.rtsp_port.value}/{self.thermal.channel.value}"
 
     @property
     def human_detect_enabled(self):

@@ -51,7 +51,7 @@ class CameraBase:
             func = self.get_still_snapshot
 
         try:
-            data = await func()
+            data = await func(self.config.rtsp_uri)
         except Exception as e:
             log.exception(f"get_snapshot: {str(e)}", exc_info=e)
             return None
@@ -66,9 +66,9 @@ class CameraBase:
 
         return [data]
 
-    async def get_still_snapshot(self) -> File:
+    async def get_still_snapshot(self, rtsp_uri: str) -> File:
         fp = self.get_output_filepath(str(uuid.uuid4()), "jpg")
-        cmd = f"ffmpeg -y -rtsp_transport tcp -i {self.config.rtsp_uri} -vf 'scale={self.config.snapshot.scale.value}' -frames:v 1 {fp}"
+        cmd = f"ffmpeg -y -rtsp_transport tcp -i {rtsp_uri} -vf 'scale={self.config.snapshot.scale.value}' -frames:v 1 {fp}"
         await self.run_ffmpeg_cmd(cmd)
         return File(
             filename="snapshot.jpg",
@@ -77,14 +77,14 @@ class CameraBase:
             content_type="image/jpeg",
         )
 
-    async def get_video_snapshot(self) -> File:
+    async def get_video_snapshot(self, rtsp_uri: str) -> File:
         fp = self.get_output_filepath(str(uuid.uuid4()), "mp4")
 
         # possible alternative, allegedly h265 is the "new" best high-compression format.
         # ffmpeg -y -rtsp_transport tcp -i rtsp://10.144.239.221:554/s0 -vf
         # scale=420:-1 -r 10 -t 6 -vcodec libx265 -tag:v hvc1 -c:a aac output.mp4
         cmd = (
-            f"ffmpeg -y -rtsp_transport tcp -i {self.config.rtsp_uri} -vf 'fps={self.config.snapshot.fps.value},scale={self.config.snapshot.scale.value},"
+            f"ffmpeg -y -rtsp_transport tcp -i {rtsp_uri} -vf 'fps={self.config.snapshot.fps.value},scale={self.config.snapshot.scale.value},"
             f"format=yuv420p,pad=ceil(iw/2)*2:ceil(ih/2)*2' -t {self.config.snapshot.secs.value} -c:v libx264 -c:a aac {fp}"
         )
         await self.run_ffmpeg_cmd(cmd)

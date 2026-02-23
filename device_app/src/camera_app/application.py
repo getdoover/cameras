@@ -1,5 +1,4 @@
 import asyncio
-import json
 import logging
 import time
 from datetime import datetime, timedelta
@@ -17,6 +16,7 @@ from .engines import DahuaPTZCamera
 from .engines.dahua_base import DahuaCameraBase
 from .engines.dahua_fixed import DahuaFixedCamera
 from .engines.generic import GenericRTSPCamera
+from .engines.hikvision_thermal import HikVisionThermal
 from .events import MotionDetectEvent, MotionDetectEventType
 from .power_management import CameraPowerManagement
 
@@ -37,6 +37,8 @@ class CameraApplication(Application):
 
         self.ui = CameraUI(self.config, self.app_key, self.app_display_name)
         self.ui_manager.add_children(*self.ui.fetch())
+        self.ui_manager._add_interaction(self.ui.human_detection)
+        self.ui_manager._add_interaction(self.ui.vehicle_detection)
 
         # we don't want a submodule view for cameras since the UI
         # renders it as a submodule anyway (and we'd end up with double submodules).
@@ -83,6 +85,8 @@ class CameraApplication(Application):
                 self.engine = GenericRTSPCamera(self.config)
             case CameraType.generic_ip:
                 self.engine = GenericRTSPCamera(self.config)
+            case CameraType.hikvision_thermal:
+                self.engine = HikVisionThermal(self.config)
             case _:
                 raise ValueError(f"Unknown camera type: {self.config.type.value}")
 
@@ -151,10 +155,10 @@ class CameraApplication(Application):
             await self.power_management.acquire()
 
         if data.get("action") == "accept_sdp":
-            await self.accept_sdp_offer(data.get("value"))
+            await self.accept_sdp_offer(self.app_key, data.get("stream_name"), data.get("value"))
+            return
 
         log.info(f"Received control command, forwarding to engine: {data}.")
-
         asyncio.create_task(self.engine.on_control_message(message_id, data))
         # try:
         #     await self.engine.on_control_message(data)
@@ -283,27 +287,38 @@ class CameraApplication(Application):
 
         base = self.config.rtsp_server.address.value
         auth = aiohttp.BasicAuth("demo", "demo")
-
         async with aiohttp.request("GET", f"{base}/streams", auth=auth) as resp:
             data = await resp.json()
 
+        await self.setup_rtsp_stream(self.app_key, self.config.rtsp_uri, data)
+        if self.config.thermal_rtsp_uri:
+            await self.setup_rtsp_stream(
+                f"{self.app_key}_thermal", self.config.thermal_rtsp_uri, data
+            )
+
+    async def setup_rtsp_stream(self, stream_name, rtsp_uri, streams_data):
+        base = self.config.rtsp_server.address.value
+        auth = aiohttp.BasicAuth("demo", "demo")
+
         try:
-            configured_url = data["payload"][self.app_key]["channels"]["0"]["url"]
+            configured_url = streams_data["payload"][stream_name]["channels"]["0"][
+                "url"
+            ]
         except KeyError:
             method = "add"  # doesn't exist
         else:
-            if configured_url == self.config.rtsp_uri:
+            if configured_url == rtsp_uri:
                 log.info("RTSP server stream already exists. Skipping...")
                 return  # already exists
 
             method = "edit"
 
         body = {
-            "name": self.app_key,
+            "name": stream_name,
             "channels": {
                 "0": {
-                    "name": self.app_key,
-                    "url": self.config.rtsp_uri,
+                    "name": stream_name,
+                    "url": rtsp_uri,
                     "on_demand": True,
                     "debug": False,
                 }
@@ -312,13 +327,13 @@ class CameraApplication(Application):
         log.info("Creating rtsp server stream...")
         async with aiohttp.request(
             "POST",
-            f"{base}/stream/{quote(self.app_key)}/{method}",
+            f"{base}/stream/{quote(stream_name)}/{method}",
             json=body,
             auth=auth,
         ) as resp:
             assert resp.status == 200
 
-    async def accept_sdp_offer(self, offer: str):
+    async def accept_sdp_offer(self, camera_name, stream_name, offer: str):
         base = self.config.rtsp_server.address.value
         auth = aiohttp.BasicAuth("demo", "demo")
 
@@ -334,7 +349,7 @@ class CameraApplication(Application):
         # get SDP and update camera channel with data
         async with aiohttp.request(
             "POST",
-            f"{base}/stream/{quote(self.app_key)}/channel/0/webrtc?uuid={quote(self.app_key)}&channel=0",
+            f"{base}/stream/{quote(stream_name)}/channel/0/webrtc?uuid={quote(stream_name)}&channel=0",
             json=body,
             auth=auth,
             # headers={"Content-Type": "application/json"}
@@ -346,7 +361,7 @@ class CameraApplication(Application):
                 answer = await resp.text()
                 # answer is the base64-encoded SDP answer
                 await self.device_agent.publish_to_channel_async(
-                    self.app_key, {"sdp": answer}, max_age=-1
+                    camera_name, {"sdp": answer}, max_age=-1
                 )
 
     async def on_motion_event_callback(self, event: MotionDetectEvent):

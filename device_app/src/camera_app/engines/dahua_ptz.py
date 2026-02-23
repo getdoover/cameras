@@ -174,14 +174,14 @@ class DahuaPTZCamera(DahuaCameraBase):
                 try:
                     await self.client.goto_preset(preset)
                     await self.check_for_move_complete()
-                    file = await func()
+                    file = await func(self.config.rtsp_uri)
                 except Exception as e:
                     log.info(f"Failed to take snapshot: {e}")
                 else:
                     files.append(file)
         else:
             try:
-                file = await func()
+                file = await func(self.config.rtsp_uri)
             except Exception as e:
                 log.info(f"Failed to take snapshot: {e}")
             else:
