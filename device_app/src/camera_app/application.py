@@ -155,6 +155,8 @@ class CameraApplication(Application):
             await self.power_management.acquire()
 
         if data.get("action") == "accept_sdp":
+            await self.setup_rtsp_server()
+            await self.power_management.acquire()
             await self.accept_sdp_offer(self.app_key, data.get("stream_name"), data.get("value"))
             return
 

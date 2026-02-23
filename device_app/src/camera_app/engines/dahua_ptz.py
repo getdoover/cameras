@@ -87,7 +87,7 @@ class DahuaPTZCamera(DahuaCameraBase):
         # check for power on message
         await super().on_control_message(message_id, data)
 
-        if not self.check_control_message(message_id, data):
+        if not await self.check_control_message(message_id, data):
             return
 
         log.info(f"Executing control command for camera: {data}")
