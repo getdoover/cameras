@@ -122,11 +122,11 @@ class DahuaCameraBase(CameraBase):
             log.info("Control not enabled, ignoring message.")
             return False
 
-        if self.last_processed_id and message_id < self.last_processed_id:
+        if self.last_processed_id and int(message_id) < self.last_processed_id:
             log.info("Task stale, skipping...")
             return False
 
-        self.last_processed_id = message_id
+        self.last_processed_id = int(message_id)
         return True
 
     async def ping(self, timeout: int):
