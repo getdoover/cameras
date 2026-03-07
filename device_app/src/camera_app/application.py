@@ -160,6 +160,7 @@ class CameraApplication(Application):
             await self.accept_sdp_offer(
                 self.app_key, data.get("stream_name"), data.get("value")
             )
+            log.info("Finished accepting SDP offer and published.")
             return
 
         log.info(f"Received control command, forwarding to engine: {data}.")
