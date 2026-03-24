@@ -280,7 +280,7 @@ class CameraApplication(Application):
         base = self.config.rtsp_server.address.value
         auth = aiohttp.BasicAuth("demo", "demo")
 
-        credentials = await self.device_agent.get_turn_credential()
+        credentials = await self.device_agent.fetch_turn_token()
         body = {
             "ice_servers": credentials.uris,
             "ice_username": credentials.username,

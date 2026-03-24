@@ -56,7 +56,6 @@ class CameraUI(ui.UI):
     #     ],
     # )
     async def setup(self):
-        # app_key = self.config.app_key.value
         app_key = self.app_key
         self.history = ui.CameraHistory(app_key)
 
