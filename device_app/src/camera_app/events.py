@@ -16,23 +16,14 @@ class MotionDetectEvent:
         self.type = type_
         self.data = data
 
-class GenericCameraControlEvent:
-    def __init__(self, app_key: str):
-        self.app_key = app_key
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]):
-        return cls(data["app_key"])
-
 class SDPOfferPayload:
-    def __init__(self, stream_name: str, value: str, app_key: str):
+    def __init__(self, stream_name: str, value: str):
         self.stream_name = stream_name
         self.value = value
-        self.app_key = app_key
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]):
-        return cls(payload["stream_name"], payload["value"], payload["app_key"])
+        return cls(payload["stream_name"], payload["value"])
 
 
 class FixedZoomEvent:

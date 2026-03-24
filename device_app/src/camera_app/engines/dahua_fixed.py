@@ -4,7 +4,7 @@ import logging
 from pydoover import rpc
 
 from .dahua_base import DahuaCameraBase
-from ..events import GenericCameraControlEvent, CAMERA_CONTROL_CHANNEL
+from ..events import CAMERA_CONTROL_CHANNEL
 
 log = logging.getLogger(__name__)
 
@@ -18,8 +18,8 @@ class DahuaFixedCamera(DahuaCameraBase):
             retries += 1
             await asyncio.sleep(0.1)
 
-    @rpc.handler("reset", parser=GenericCameraControlEvent.from_dict, channel=CAMERA_CONTROL_CHANNEL)
-    async def reset(self, ctx, payload: GenericCameraControlEvent):
+    @rpc.handler("reset", channel=CAMERA_CONTROL_CHANNEL)
+    async def reset(self, ctx, payload):
         await self.client.adjust_manual_zoom(zoom=-1, focus=-1)
         await self.check_for_zoom_complete()
 
