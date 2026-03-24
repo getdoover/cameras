@@ -67,8 +67,8 @@ class CameraUI(ui.UI):
             self.config.control_enabled.value,
             name=f"{app_key}_lv",
             display_name="Live View",
-            presets=CameraTags.presets,
-            active_preset=CameraTags.active_preset,
+            presets=self.tags.presets,
+            active_preset=self.tags.active_preset,
         )
 
         if CameraType(self.config.type.value) is CameraType.hikvision_thermal:
@@ -78,8 +78,8 @@ class CameraUI(ui.UI):
                 self.config.control_enabled.value,
                 name=f"{app_key}_thermal_liveview",
                 display_name="Live View (Thermal)",
-                presets=CameraTags.presets,
-                active_preset=CameraTags.active_preset,
+                presets=self.tags.presets,
+                active_preset=self.tags.active_preset,
             )
             live_views = [self.live_view, self.thermal_live_view]
         else:
