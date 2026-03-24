@@ -333,7 +333,7 @@ class CameraApplication(Application):
             case MotionDetectEventType.unknown:
                 log.warning("Unknown event detected.")
 
-    @rpc.handler("camera_snapshots", channel=CAMERA_CONTROL_CHANNEL)
+    @rpc.handler("get_immediate_snapshot", channel=CAMERA_CONTROL_CHANNEL)
     async def on_snapshot_command(self, ctx, payload):
         if self.snapshot_running:
             log.info("Skipping trigger snapshot request, snapshot task already running")
