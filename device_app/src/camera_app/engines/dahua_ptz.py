@@ -99,7 +99,7 @@ class DahuaPTZCamera(DahuaCameraBase):
         await self.check_for_move_complete()
         await self.clear_active_preset_func()
 
-    @rpc.handler("pantilt_continuous", parser=PTZControlEvent, channel=CAMERA_CONTROL_CHANNEL)
+    @rpc.handler("pantilt_continuous", parser=PTZControlEvent.from_dict, channel=CAMERA_CONTROL_CHANNEL)
     async def on_pantilt_continuous(self, ctx, payload: PTZControlEvent):
         pan = self.normalise(payload.pan, (-1, 1), (-10, 10))
         tilt = self.normalise(payload.tilt, (-1, 1), (-10, 10))
@@ -111,7 +111,7 @@ class DahuaPTZCamera(DahuaCameraBase):
         await self.clear_active_preset_func()
         # await self.set_absolute_control_disabled()
 
-    @rpc.handler("pantilt_absolute", parser=PTZControlEvent, channel=CAMERA_CONTROL_CHANNEL)
+    @rpc.handler("pantilt_absolute", parser=PTZControlEvent.from_dict, channel=CAMERA_CONTROL_CHANNEL)
     async def on_pantilt_absolute(self, ctx, payload: PTZControlEvent):
         log.info(f"pan-tilting absolute: {payload.pan}, {payload.tilt}")
         curr_pos = await self.get_position()
