@@ -303,8 +303,8 @@ class CameraApplication(Application):
             else:
                 answer = await resp.text()
                 # answer is the base64-encoded SDP answer
-                await self.device_agent.publish_to_channel_async(
-                    camera_name, {"sdp": answer}, max_age=-1
+                await self.device_agent.update_channel_aggregate(
+                    camera_name, {"sdp": answer}, max_age_secs=-1
                 )
 
     async def on_motion_event_callback(self, event: MotionDetectEvent):
