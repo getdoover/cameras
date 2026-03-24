@@ -4,7 +4,7 @@
     "camera_connection_config": {
         "camera_username": "admin",
         "camera_password": "admin123",
-        "ip_address": "192.168.50.72",
+        "ip_address": "192.168.50.141",
         "rtsp_port": 554,
         "rtsp_channel": "live",
         "control_port": 80
@@ -14,11 +14,6 @@
         "power_pin": 0,
         "off_after": 120,
         "wake_delay": 30
-    },
-    "camera_remote_component_config": {
-        "enabled": true,
-        "url": "https://getdoover.github.io/cameras/HLSLiveView.js",
-        "name": "Live View"
     },
     "camera_snapshot_config": {
         "enabled": true,

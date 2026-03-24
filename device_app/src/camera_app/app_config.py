@@ -5,75 +5,69 @@ from pydoover import config
 
 
 class CameraThermalConfig(config.Object):
-    def __init__(self):
-        super().__init__("Thermal Config")
-
-        self.enabled = config.Boolean(
-            "Enabled",
-            description="Whether thermal is enabled for this camera",
-            default=False,
-        )
-        self.channel = config.String(
-            "Channel",
-            description="RTSP channel name for thermal feed. On Hikvision thermal cameras this is usually /Streaming/Channels/201.",
-            default="Streaming/Channels/201",
-        )
+    enabled = config.Boolean(
+        "Enabled",
+        description="Whether thermal is enabled for this camera",
+        default=False,
+    )
+    channel = config.String(
+        "Channel",
+        description="RTSP channel name for thermal feed. On Hikvision thermal cameras this is usually /Streaming/Channels/201.",
+        default="Streaming/Channels/201",
+    )
 
 
 class CameraConnectionConfig(config.Object):
-    def __init__(self):
-        super().__init__("Camera Connection Config")
-        self.username = config.String(
-            "Camera Username",
-            description="Username to login to camera control",
-            default=None,
-        )
-        self.password = config.String(
-            "Camera Password",
-            description="Password to login to camera control",
-            default=None,
-        )
-        self.address = config.String(
-            "IP address", description="IP address of camera (e.g. 192.168.50.100)"
-        )
-        self.rtsp_port = config.Integer(
-            "RTSP Port", description="Port of RTSP feed on camera", default=554
-        )
-        self.rtsp_channel = config.String(
-            "RTSP Channel",
-            description="RTSP channel name. On Dahua cameras this is usually 'live'.",
-            default="live",
-        )
-        self.control_port = config.Integer(
-            "Control Port", description="Port of control page on camera", default=80
-        )
+    username = config.String(
+        "Camera Username",
+        description="Username to login to camera control",
+        default=None,
+    )
+    password = config.String(
+        "Camera Password",
+        description="Password to login to camera control",
+        default=None,
+    )
+    address = config.String(
+        "IP address", description="IP address of camera (e.g. 192.168.50.100)"
+    )
+    rtsp_port = config.Integer(
+        "RTSP Port", description="Port of RTSP feed on camera", default=554
+    )
+    rtsp_channel = config.String(
+        "RTSP Channel",
+        description="RTSP channel name. On Dahua cameras this is usually 'live'.",
+        default="live",
+    )
+    control_port = config.Integer(
+        "Control Port", description="Port of control page on camera", default=80
+    )
 
 
 class CameraPowerConfig(config.Object):
-    def __init__(self):
-        super().__init__("Camera Power Config")
+    enabled = config.Boolean(
+        "Enabled",
+        description="Whether power control is enabled for this camera",
+        default=False,
+    )
 
-        self.enabled = config.Boolean(
-            "Enabled",
-            description="Whether power control is enabled for this camera",
-            default=False,
-        )
+    pin = config.Integer(
+        "Power Pin",
+        description="Digital Output pin that controls power to camera circuit.",
+        default=0,
+    )
+    timeout = config.Integer(
+        "Off After",
+        description="Number of seconds after which the camera will be powered off",
+        default=60 * 15,
+    )
+    wake_delay = config.Integer(
+        "Wake Delay",
+        description="Seconds for camera to boot before requesting a snapshot.",
+        default=5,
+    )
 
-        self.pin = config.Integer(
-            "Power Pin",
-            description="Digital Output pin that controls power to camera circuit.",
-            default=0,
-        )
-        self.timeout = config.Integer(
-            "Off After",
-            description="Number of seconds after which the camera will be powered off",
-            default=60 * 15,
-        )
-        self.wake_delay = config.Integer(
-            "Wake Delay",
-            description="Seconds for camera to boot before requesting a snapshot.",
-            default=5,
-        )
+
 
 class Mode(Enum):
     video = "Video"
@@ -88,31 +82,28 @@ class ScaleSize(Enum):
 
 
 class CameraSnapshotConfig(config.Object):
-    def __init__(self):
-        super().__init__("Camera Snapshot Config")
-
-        self.enabled = config.Boolean("Enabled", default=True)
-        self.period = config.Integer(
-            "Period",
-            description="Number of seconds between snapshots",
-            default=60 * 60 * 4,
-        )
-        self.mode = config.Enum(
-            "Mode",
-            description="Video format. Images are generally preferred as they will load faster than videos.",
-            default=Mode.image,
-            choices=Mode,
-        )
-        self.secs = config.Integer(
-            "Duration", description="Duration of snapshot", default=6
-        )
-        self.fps = config.Integer("FPS", description="FPS of snapshot", default=5)
-        self.scale = config.Enum(
-            "Scale",
-            description="Scale of snapshot",
-            default=ScaleSize.p360,
-            choices=ScaleSize,
-        )
+    enabled = config.Boolean("Enabled", default=True)
+    period = config.Integer(
+        "Period",
+        description="Number of seconds between snapshots",
+        default=60 * 60 * 4,
+    )
+    mode = config.Enum(
+        "Mode",
+        description="Video format. Images are generally preferred as they will load faster than videos.",
+        default=Mode.image,
+        choices=Mode,
+    )
+    secs = config.Integer(
+        "Duration", description="Duration of snapshot", default=6
+    )
+    fps = config.Integer("FPS", description="FPS of snapshot", default=5)
+    scale = config.Enum(
+        "Scale",
+        description="Scale of snapshot",
+        default=ScaleSize.p360,
+        choices=ScaleSize,
+    )
 
     @property
     def mode_as_filetype(self) -> str:
@@ -126,17 +117,15 @@ class CameraSnapshotConfig(config.Object):
 
 
 class CameraRTSPServerConfig(config.Object):
-    def __init__(self):
-        super().__init__("Camera RTSP Server Config")
+    enabled = config.Boolean("Enabled", default=True)
+    address = config.String(
+        "Address",
+        description="Address of RTSP server",
+        default="http://localhost:8083",
+    )
+    username = config.String("Username", default="demo")
+    password = config.String("Password", default="demo")
 
-        self.enabled = config.Boolean("Enabled", default=True)
-        self.address = config.String(
-            "Address",
-            description="Address of RTSP server",
-            default="http://localhost:8083",
-        )
-        self.username = config.String("Username", default="demo")
-        self.password = config.String("Password", default="demo")
 
 
 class CameraType(Enum):
@@ -154,34 +143,33 @@ class ObjectDetectionType(Enum):
 
 
 class CameraConfig(config.Schema):
-    def __init__(self):
-        self.type = config.Enum(
-            "Camera Type",
-            default=CameraType.dahua_generic,
-            choices=CameraType,
-        )
+    type = config.Enum(
+        "Camera Type",
+        default=CameraType.dahua_generic,
+        choices=CameraType,
+    )
 
-        self.connection = CameraConnectionConfig()
-        self.power = CameraPowerConfig()
-        self.snapshot = CameraSnapshotConfig()
-        self.rtsp_server = CameraRTSPServerConfig()
+    connection = CameraConnectionConfig("Camera Connection Config")
+    power = CameraPowerConfig("Camera Power Config")
+    snapshot = CameraSnapshotConfig("Camera Snapshot Config")
+    rtsp_server = CameraRTSPServerConfig("Camera RTSP Server Config")
 
-        self.object_detection = config.Array(
-            "Object Detection",
-            description="Objects to detect. Leave blank to disable object detection.",
-            element=config.Enum(
-                "Object",
-                choices=ObjectDetectionType,
-                default=ObjectDetectionType.person,
-            ),
-            unique_items=True,
-        )
-        self.control_enabled = config.Boolean(
-            "Control Enabled",
-            description="Allow control (movement) of PTZ cameras.",
-            default=True,
-        )
-        self.thermal = CameraThermalConfig()
+    object_detection = config.Array(
+        "Object Detection",
+        description="Objects to detect. Leave blank to disable object detection.",
+        element=config.Enum(
+            "Object",
+            choices=ObjectDetectionType,
+            default=ObjectDetectionType.person,
+        ),
+        unique_items=True,
+    )
+    control_enabled = config.Boolean(
+        "Control Enabled",
+        description="Allow control (movement) of PTZ cameras.",
+        default=True,
+    )
+    thermal = CameraThermalConfig("Thermal Config")
 
     @property
     def rtsp_uri(self) -> str:

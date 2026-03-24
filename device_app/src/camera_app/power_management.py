@@ -24,26 +24,28 @@ class CameraPowerManagement:
             log.info("Power management is disabled. Skipping...")
             return
 
-        acquired_until_ts = self.app.get_global_tag(
-            f"camera_power_{self.config.pin.value}", 0
+        acquired_until_ts = self.app.tag_manager.get_tag(
+            f"camera_power_{self.config.pin.value}", default=0, app_key=None
         )
         acquired_until = datetime.fromtimestamp(acquired_until_ts)
         acquire_until = datetime.now() + dt
 
         # we can set this regardless in case the app got into some sort of funny state
-        await self.app.platform_iface.set_do_async(self.config.pin.value, True)
+        await self.app.platform_iface.set_do(self.config.pin.value, True)
 
         if acquired_until > acquire_until:
             log.info(
                 f"Already acquired until {acquired_until} which exceeds our timeout of {self.config.timeout.value}. "
                 f"Setting platform iface on to be sure and skipping..."
             )
-            await self.app.platform_iface.set_do_async(self.config.pin.value, True)
+            await self.app.platform_iface.set_do(self.config.pin.value, True)
             return
 
         log.info(f"Acquiring power for camera until {acquire_until}")
-        await self.app.platform_iface.set_do_async(self.config.pin.value, True)
-        await self.app.set_global_tag(f"camera_power_{self.config.pin.value}", acquire_until.timestamp())
+        await self.app.platform_iface.set_do(self.config.pin.value, True)
+        await self.app.tag_manager.set_tag(
+            f"camera_power_{self.config.pin.value}", acquired_until.timestamp()
+        )
 
     async def acquire(self):
         return await self.acquire_for(timedelta(seconds=self.config.timeout.value))
@@ -66,19 +68,29 @@ class CameraPowerManagement:
                 #    just check again and wait for the next one)
                 # 2. If there's no releases scheduled it will check every 30 seconds (less than the minimum timeout)
 
-                acquired_until_ts = self.app.get_global_tag(f"camera_power_{self.config.pin.value}", 0)
+                acquired_until_ts = self.app.tag_manager.get_tag(
+                    f"camera_power_{self.config.pin.value}",
+                    default=0,
+                    app_key=None,
+                )
                 acquired_until = datetime.fromtimestamp(acquired_until_ts)
                 if acquired_until_ts and acquired_until < datetime.now():
-                    log.info(f"Power acquired until {acquired_until} has expired. Releasing power...")
+                    log.info(
+                        f"Power acquired until {acquired_until} has expired. Releasing power..."
+                    )
                     await self.release()
-                    await self.app.set_global_tag(f"camera_power_{self.config.pin.value}", 0)
+                    await self.app.tag_manager.set_tag(
+                        f"camera_power_{self.config.pin.value}", 0, app_key=None
+                    )
                 else:
                     if acquired_until_ts == 0:
                         log.info("No acquired timestamp found. Sleeping for 60sec.")
                         await asyncio.sleep(60)
                     else:
                         log.info(f"Sleeping until acquired time: {acquired_until}")
-                        await asyncio.sleep((acquired_until - datetime.now()).total_seconds())
+                        await asyncio.sleep(
+                            (acquired_until - datetime.now()).total_seconds()
+                        )
 
             except asyncio.CancelledError:
                 log.info("Power release check cancelled")

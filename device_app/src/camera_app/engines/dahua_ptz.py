@@ -1,11 +1,14 @@
 import asyncio
 import logging
+import re
 from datetime import datetime, timezone
 
-from pydoover.docker.device_agent.models import File
+from pydoover import rpc
+from pydoover.models import File
 
 from .dahua_base import DahuaCameraBase
 from ..app_config import Mode
+from ..events import PTZControlEvent, CAMERA_CONTROL_CHANNEL
 
 log = logging.getLogger(__name__)
 
@@ -83,81 +86,79 @@ class DahuaPTZCamera(DahuaCameraBase):
         now = datetime.now(tz=timezone.utc)
         log.info(f"DT: {(now - dt).total_seconds()}sec")
 
-    async def on_control_message(self, message_id, data):
-        # check for power on message
-        await super().on_control_message(message_id, data)
+    @rpc.handler("stop", channel=CAMERA_CONTROL_CHANNEL)
+    async def on_stop(self, ctx, payload):
+        await self.client.stop_ptz()
+        await self.check_for_move_complete()
 
-        if not await self.check_control_message(message_id, data):
-            return
+    @rpc.handler("zoom", parser=int, channel=CAMERA_CONTROL_CHANNEL)
+    async def on_zoom(self, ctx, payload: int):
+        x, y, z = await self.get_position(fetch=True)
+        z = self.normalise(payload, (0, 100), (0, 1))
+        await self.client.absolute_ptz(x, y, z)
+        await self.check_for_move_complete()
+        await self.clear_active_preset_func()
 
-        log.info(f"Executing control command for camera: {data}")
+    @rpc.handler("pantilt_continuous", parser=PTZControlEvent, channel=CAMERA_CONTROL_CHANNEL)
+    async def on_pantilt_continuous(self, ctx, payload: PTZControlEvent):
+        pan = self.normalise(payload.pan, (-1, 1), (-10, 10))
+        tilt = self.normalise(payload.tilt, (-1, 1), (-10, 10))
+        # pan = self.validate_value(pan, -100, 100, -10, 10)
+        # tilt = self.validate_value(tilt, -100, 100, -10, 10)
+        log.info(f"pan-tilting: {pan}, {tilt}")
+        await self.client.continuous_ptz(pan, tilt, 0, timeout=0.5)
+        log.info("done pan-tilt-movement")
+        await self.clear_active_preset_func()
+        # await self.set_absolute_control_disabled()
 
-        action = data.get("action", "")
-        amount = data.get("value")
-        if amount is None and action != "stop":
-            return
+    @rpc.handler("pantilt_absolute", parser=PTZControlEvent, channel=CAMERA_CONTROL_CHANNEL)
+    async def on_pantilt_absolute(self, ctx, payload: PTZControlEvent):
+        log.info(f"pan-tilting absolute: {payload.pan}, {payload.tilt}")
+        curr_pos = await self.get_position()
+        await self.client.absolute_ptz(payload.pan, payload.tilt, curr_pos[2])
+        await self.check_for_move_complete()
+        await self.clear_active_preset_func()
 
-        self.snowflake_to_datetime(message_id)
+    @rpc.handler("zoom_continuous", parser=int, channel=CAMERA_CONTROL_CHANNEL)
+    async def on_zoom_continuous(self, ctx, payload: int):
+        payload = self.validate_value(payload, -100, 100, -1, 1)
+        # zoom amounts don't matter... it's just the + or - that matters (in vs out)
+        await self.client.continuous_zoom(payload)
+        await self.clear_active_preset_func()
 
-        if action == "stop":
-            await self.client.stop_ptz()
-            await self.check_for_move_complete()
-        elif action == "zoom":
-            x, y, z = await self.get_position(fetch=True)
-            z = self.normalise(amount, (0, 100), (0, 1))
-            await self.client.absolute_ptz(x, y, z)
-            await self.check_for_move_complete()
-            await self.clear_active_preset_func()
-        elif action == "pantilt_continuous":
-            pan, tilt = amount.get("pan"), amount.get("tilt")
-            pan = self.normalise(pan, (-1, 1), (-10, 10))
-            tilt = self.normalise(tilt, (-1, 1), (-10, 10))
-            # pan = self.validate_value(pan, -100, 100, -10, 10)
-            # tilt = self.validate_value(tilt, -100, 100, -10, 10)
-            log.info(f"pan-tilting: {pan}, {tilt}")
-            await self.client.continuous_ptz(pan, tilt, 0, timeout=0.5)
-            log.info("done pan-tilt-movement")
-            await self.clear_active_preset_func()
-            # await self.set_absolute_control_disabled()
-        elif action == "zoom_continuous":
-            amount = self.validate_value(amount, -100, 100, -1, 1)
-            # zoom amounts don't matter... it's just the + or - that matters (in vs out)
-            await self.client.continuous_zoom(amount)
-            await self.clear_active_preset_func()
+    @rpc.handler("goto_preset", parser=str, channel=CAMERA_CONTROL_CHANNEL)
+    async def on_goto_preset(self, ctx, payload: str):
+        log.info(f"moving to preset {payload}")
+        await self.client.goto_preset(payload)
+        # await self.set_absolute_control_disabled()
+        await self.sync_presets_func(payload)
+        await self.check_for_move_complete()
 
-        elif action == "pantilt_absolute":
-            pan, tilt = amount.get("pan"), amount.get("tilt")
-            log.info(f"pan-tilting absolute: {pan}, {tilt}")
-            curr_pos = await self.get_position()
-            await self.client.absolute_ptz(pan, tilt, curr_pos[2])
-            await self.check_for_move_complete()
-            await self.clear_active_preset_func()
-        elif "incremental" in action:
-            amount = self.validate_value(amount, -100, 100, -1, 1)
-            log.info(f"incremental moving: {action}, {amount}")
+    @rpc.handler(re.compile(r"incremental_.*"), channel=CAMERA_CONTROL_CHANNEL, parser=int)
+    async def on_incremental(self, ctx, payload: int):
+        amount = self.validate_value(payload, -100, 100, -1, 1)
+        log.info(f"incremental moving: {ctx.method}, {amount}")
 
-            if action == "incremental_pan":
-                await self.client.relative_ptz(amount, 0, 0)
-            elif action == "incremental_tilt":
-                await self.client.relative_ptz(0, amount, 0)
-            elif action == "incremental_zoom":
-                await self.client.relative_ptz(0, 0, amount)
+        if ctx.method == "incremental_pan":
+            await self.client.relative_ptz(amount, 0, 0)
+        elif ctx.method == "incremental_tilt":
+            await self.client.relative_ptz(0, amount, 0)
+        elif ctx.method == "incremental_zoom":
+            await self.client.relative_ptz(0, 0, amount)
 
-            await self.clear_active_preset_func()
-        elif action == "goto_preset":
-            log.info(f"moving to preset {amount}")
-            await self.client.goto_preset(amount)
-            # await self.set_absolute_control_disabled()
-            await self.sync_presets_func(amount)
-            await self.check_for_move_complete()
-        elif action == "create_preset":
-            log.info(f"creating preset {amount}")
-            await self.client.create_preset(amount)
-            await self.sync_presets_func(amount)
-        elif action == "delete_preset":
-            log.info(f"deleting preset {amount}")
-            await self.client.delete_preset(amount)
-            await self.sync_presets_func()
+        await self.clear_active_preset_func()
+
+    @rpc.handler("create_preset", parser=str, channel=CAMERA_CONTROL_CHANNEL)
+    async def on_create_preset(self, ctx, payload: str):
+        log.info(f"creating preset {payload}")
+        await self.client.create_preset(payload)
+        await self.sync_presets_func(payload)
+
+    @rpc.handler("delete_preset", parser=str, channel=CAMERA_CONTROL_CHANNEL)
+    async def on_delete_preset(self, ctx, payload: str):
+        log.info(f"deleting preset {payload}")
+        await self.client.delete_preset(payload)
+        await self.sync_presets_func()
 
     async def get_snapshot(self) -> list[File]:
         if Mode(self.config.snapshot.mode.value) is Mode.video:

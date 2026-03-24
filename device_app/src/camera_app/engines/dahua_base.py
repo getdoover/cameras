@@ -117,18 +117,6 @@ class DahuaCameraBase(CameraBase):
         log.info(f"Detected motion detection event: {event_type}")
         await self.on_motion_event_callback(MotionDetectEvent(event_type, data))
 
-    async def check_control_message(self, message_id, data):
-        if self.config.control_enabled.value is False:
-            log.info("Control not enabled, ignoring message.")
-            return False
-
-        if self.last_processed_id and int(message_id) < self.last_processed_id:
-            log.info("Task stale, skipping...")
-            return False
-
-        self.last_processed_id = int(message_id)
-        return True
-
     async def ping(self, timeout: int):
         start = datetime.now()
 

@@ -7,4 +7,4 @@ def main():
     """
     Run the application.
     """
-    run_app(CameraApplication(config=CameraConfig()))
+    run_app(CameraApplication())
