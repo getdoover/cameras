@@ -23,8 +23,8 @@ class DahuaFixedCamera(DahuaCameraBase):
         await self.client.adjust_manual_zoom(zoom=-1, focus=-1)
         await self.check_for_zoom_complete()
 
-    @rpc.handler("zoom", parser=int, channel=CAMERA_CONTROL_CHANNEL)
-    async def zoom(self, ctx, payload: int):
+    @rpc.handler("zoom", parser=float, channel=CAMERA_CONTROL_CHANNEL)
+    async def zoom(self, ctx, payload: float):
         zoom = payload
         log.info(f"Executing control command for camera: {payload}")
         if 1 < zoom < 100:

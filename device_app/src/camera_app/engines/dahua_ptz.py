@@ -91,8 +91,8 @@ class DahuaPTZCamera(DahuaCameraBase):
         await self.client.stop_ptz()
         await self.check_for_move_complete()
 
-    @rpc.handler("zoom", parser=int, channel=CAMERA_CONTROL_CHANNEL)
-    async def on_zoom(self, ctx, payload: int):
+    @rpc.handler("zoom", parser=float, channel=CAMERA_CONTROL_CHANNEL)
+    async def on_zoom(self, ctx, payload: float):
         x, y, z = await self.get_position(fetch=True)
         z = self.normalise(payload, (0, 100), (0, 1))
         await self.client.absolute_ptz(x, y, z)
@@ -119,8 +119,8 @@ class DahuaPTZCamera(DahuaCameraBase):
         await self.check_for_move_complete()
         await self.clear_active_preset_func()
 
-    @rpc.handler("zoom_continuous", parser=int, channel=CAMERA_CONTROL_CHANNEL)
-    async def on_zoom_continuous(self, ctx, payload: int):
+    @rpc.handler("zoom_continuous", parser=float, channel=CAMERA_CONTROL_CHANNEL)
+    async def on_zoom_continuous(self, ctx, payload: float):
         payload = self.validate_value(payload, -100, 100, -1, 1)
         # zoom amounts don't matter... it's just the + or - that matters (in vs out)
         await self.client.continuous_zoom(payload)
@@ -134,8 +134,8 @@ class DahuaPTZCamera(DahuaCameraBase):
         await self.sync_presets_func(payload)
         await self.check_for_move_complete()
 
-    @rpc.handler(re.compile(r"incremental_.*"), channel=CAMERA_CONTROL_CHANNEL, parser=int)
-    async def on_incremental(self, ctx, payload: int):
+    @rpc.handler(re.compile(r"incremental_.*"), channel=CAMERA_CONTROL_CHANNEL, parser=float)
+    async def on_incremental(self, ctx, payload: float):
         amount = self.validate_value(payload, -100, 100, -1, 1)
         log.info(f"incremental moving: {ctx.method}, {amount}")
 
