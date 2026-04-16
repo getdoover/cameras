@@ -135,6 +135,7 @@ class CameraType(Enum):
     unifi_generic = "UniFi (Generic)"
     generic_ip = "Generic IP"
     hikvision_thermal = "Hikvision (Thermal)"
+    bosch_ptz = "Bosch (PTZ)"
 
 
 class ObjectDetectionType(Enum):

@@ -15,6 +15,7 @@ from .engines import DahuaPTZCamera
 from .engines.dahua_base import DahuaCameraBase
 from .engines.dahua_fixed import DahuaFixedCamera
 from .engines.generic import GenericRTSPCamera
+from .engines.bosch_ptz import BoschPTZCamera
 from .engines.hikvision_thermal import HikVisionThermal
 from .events import (
     MotionDetectEvent,
@@ -97,6 +98,13 @@ class CameraApplication(Application):
                 self.engine = GenericRTSPCamera(self.config)
             case CameraType.generic_ip:
                 self.engine = GenericRTSPCamera(self.config)
+            case CameraType.bosch_ptz:
+                self.engine = BoschPTZCamera(
+                    self.config,
+                    self.on_motion_event_callback,
+                    self.sync_presets,
+                    self.clear_preset,
+                )
             case CameraType.hikvision_thermal:
                 self.engine = HikVisionThermal(self.config)
             case _:
