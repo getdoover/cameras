@@ -29,6 +29,20 @@
             "title": "$default",
             "type": "object",
             "properties": {
+                "dv_app_position": {
+                    "title": "Position",
+                    "x-name": "dv_app_position",
+                    "x-hidden": true,
+                    "type": [
+                        "integer",
+                        "null"
+                    ],
+                    "x-required": false,
+                    "description": "Position of Application in UI Structure. Smaller numbers are closer to the top.",
+                    "default": 100,
+                    "x-position": 0,
+                    "minimum": 0
+                },
                 "camera_type": {
                     "enum": [
                         "Dahua (PTZ)",
@@ -36,7 +50,8 @@
                         "Dahua (Generic)",
                         "UniFi (Generic)",
                         "Generic IP",
-                        "Hikvision (Thermal)"
+                        "Hikvision (Thermal)",
+                        "Bosch (PTZ)"
                     ],
                     "title": "Camera Type",
                     "x-name": "camera_type",
@@ -47,7 +62,7 @@
                     ],
                     "x-required": false,
                     "default": "Dahua (Generic)",
-                    "x-position": 0
+                    "x-position": 1
                 },
                 "camera_connection_config": {
                     "title": "Camera Connection Config",
@@ -55,7 +70,7 @@
                     "x-hidden": false,
                     "type": "object",
                     "x-required": true,
-                    "x-position": 1,
+                    "x-position": 2,
                     "properties": {
                         "camera_username": {
                             "title": "Camera Username",
@@ -145,7 +160,7 @@
                     "x-hidden": false,
                     "type": "object",
                     "x-required": true,
-                    "x-position": 2,
+                    "x-position": 3,
                     "properties": {
                         "enabled": {
                             "title": "Enabled",
@@ -211,7 +226,7 @@
                     "x-hidden": false,
                     "type": "object",
                     "x-required": true,
-                    "x-position": 3,
+                    "x-position": 4,
                     "properties": {
                         "enabled": {
                             "title": "Enabled",
@@ -312,7 +327,7 @@
                     "x-hidden": false,
                     "type": "object",
                     "x-required": true,
-                    "x-position": 4,
+                    "x-position": 5,
                     "properties": {
                         "enabled": {
                             "title": "Enabled",
@@ -376,7 +391,7 @@
                     "type": "array",
                     "x-required": true,
                     "description": "Objects to detect. Leave blank to disable object detection.",
-                    "x-position": 5,
+                    "x-position": 6,
                     "items": {
                         "enum": [
                             "Person",
@@ -405,7 +420,7 @@
                     "x-required": false,
                     "description": "Allow control (movement) of PTZ cameras.",
                     "default": true,
-                    "x-position": 6
+                    "x-position": 7
                 },
                 "thermal_config": {
                     "title": "Thermal Config",
@@ -413,7 +428,7 @@
                     "x-hidden": false,
                     "type": "object",
                     "x-required": true,
-                    "x-position": 7,
+                    "x-position": 8,
                     "properties": {
                         "enabled": {
                             "title": "Enabled",

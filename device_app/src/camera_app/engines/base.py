@@ -5,7 +5,7 @@ import logging
 import uuid
 from pathlib import Path
 
-from pydoover.docker.device_agent.models import File
+from pydoover.models import File
 from camera_app.app_config import CameraConfig, Mode
 
 OUTPUT_FILE_DIR = Path("/tmp/camera")

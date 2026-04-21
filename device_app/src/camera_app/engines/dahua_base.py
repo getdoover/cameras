@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 
 import aiohttp
 from PIL import Image
-from pydoover.docker.device_agent.models import File
+from pydoover.models import File
 
 from .base import CameraBase, MAX_MESSAGE_SIZE
 from ..clients import DahuaClient

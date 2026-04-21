@@ -112,3 +112,6 @@ class CameraUI(ui.UI):
             display_name="Tabs",
         )
         self.add_element(self.tab_container)
+
+def export():
+    pass

@@ -144,6 +144,7 @@ class ObjectDetectionType(Enum):
 
 
 class CameraConfig(config.Schema):
+    position = config.ApplicationPosition()
     type = config.Enum(
         "Camera Type",
         default=CameraType.dahua_generic,

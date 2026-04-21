@@ -3,7 +3,7 @@ import logging
 
 from datetime import datetime, timedelta
 
-from pydoover.docker.device_agent.models import File
+from pydoover.models import File
 
 from .base import CameraBase
 from ..clients import BoschClient

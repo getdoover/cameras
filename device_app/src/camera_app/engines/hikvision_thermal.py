@@ -2,7 +2,7 @@ import logging
 from typing import TYPE_CHECKING
 
 import aiohttp
-from pydoover.docker.device_agent.models import File
+from pydoover.models import File
 
 from .base import CameraBase
 from ..app_config import Mode
