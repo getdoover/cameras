@@ -44,7 +44,7 @@ class CameraPowerManagement:
         log.info(f"Acquiring power for camera until {acquire_until}")
         await self.app.platform_iface.set_do(self.config.pin.value, True)
         await self.app.tag_manager.set_tag(
-            f"camera_power_{self.config.pin.value}", acquired_until.timestamp()
+            f"camera_power_{self.config.pin.value}", acquire_until.timestamp()
         )
 
     async def acquire(self):
