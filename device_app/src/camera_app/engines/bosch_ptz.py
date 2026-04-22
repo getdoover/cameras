@@ -153,9 +153,9 @@ class BoschPTZCamera(BoschCameraBase):
                     await self.client.goto_preset(preset)
                     await self.check_for_move_complete()
                     # Camera motors have stopped, but the on-camera JPEG encoder
-                    # pipeline lags — without this the snapshot reflects the
-                    # previous preset's scene.
-                    await asyncio.sleep(1.5)
+                    # pipeline lags by 2-3s (measured on AUTODOME 5100i) —
+                    # without this the snapshot reflects the previous preset.
+                    await asyncio.sleep(3.5)
                     file = await func(self.config.rtsp_uri)
                 except Exception as e:
                     log.info(f"Failed to take snapshot: {e}")
