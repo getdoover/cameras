@@ -60,6 +60,9 @@ class BoschClient:
             self.username,
             self.password,
             wsdl_dir=WSDL_DIR,
+            # Syncs WS-Security timestamps to the camera's clock — without this,
+            # any clock skew between host and camera breaks digest auth.
+            adjust_time=True,
         )
         await self.cam.update_xaddrs()
 
