@@ -211,14 +211,23 @@ class BoschClient:
     # --- Snapshot ---
 
     async def get_snapshot(self) -> bytes:
+        # Imported lazily to avoid a client↔client circular import at module load.
+        from .dahua import DigestAuth
+
         resp = await self.media_service.GetSnapshotUri({"ProfileToken": self.profile_token})
         snapshot_uri = resp.Uri
 
-        auth = aiohttp.BasicAuth(self.username, self.password)
-        async with aiohttp.ClientSession(auth=auth) as session:
-            async with session.get(snapshot_uri, timeout=aiohttp.ClientTimeout(total=TIMEOUT_SECONDS)) as response:
+        # Bosch AUTODOME requires HTTP digest auth; aiohttp has no native digest.
+        async with aiohttp.ClientSession() as session:
+            auth = DigestAuth(self.username, self.password, session)
+            response = await auth.request(
+                "GET", snapshot_uri, timeout=aiohttp.ClientTimeout(total=TIMEOUT_SECONDS)
+            )
+            try:
                 response.raise_for_status()
                 return await response.read()
+            finally:
+                response.close()
 
     # --- Status ---
 
