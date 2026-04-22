@@ -179,6 +179,8 @@ class DahuaPTZCamera(DahuaCameraBase):
                 except Exception as e:
                     log.info(f"Failed to take snapshot: {e}")
                 else:
+                    safe_name = re.sub(r"[^A-Za-z0-9_\-]", "_", preset)
+                    file.filename = f"{safe_name}.{self.config.snapshot.mode_as_filetype}"
                     files.append(file)
         else:
             try:

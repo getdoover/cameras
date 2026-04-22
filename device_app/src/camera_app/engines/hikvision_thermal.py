@@ -52,14 +52,19 @@ class HikVisionThermal(CameraBase):
         )
 
     async def get_snapshot(self) -> list[File]:
+        ext = self.config.snapshot.mode_as_filetype
         if Mode(self.config.snapshot.mode.value) is Mode.video:
-            files = [await self.get_video_snapshot(self.config.rtsp_uri)]
-            if self.config.thermal_rtsp_uri:
-                files.append(await self.get_video_snapshot(self.config.thermal_rtsp_uri))
+            visible = await self.get_video_snapshot(self.config.rtsp_uri)
+            thermal = await self.get_video_snapshot(self.config.thermal_rtsp_uri) if self.config.thermal_rtsp_uri else None
         else:
-            files = [await self.get_still_snapshot(1)]
-            if self.config.thermal_rtsp_uri:
-                files.append(await self.get_still_snapshot(2))
+            visible = await self.get_still_snapshot(1)
+            thermal = await self.get_still_snapshot(2) if self.config.thermal_rtsp_uri else None
+
+        visible.filename = f"visible.{ext}"
+        files = [visible]
+        if thermal is not None:
+            thermal.filename = f"thermal.{ext}"
+            files.append(thermal)
 
         log.info(f"Sending {len(files)} snapshots...")
         return files

@@ -13,11 +13,6 @@ log = logging.getLogger(__name__)
 
 
 class BoschPTZCamera(BoschCameraBase):
-    # ONVIF normalized ranges (native to the protocol)
-    PAN_RANGE = (-1.0, 1.0)
-    TILT_RANGE = (-1.0, 1.0)
-    ZOOM_RANGE = (0.0, 1.0)
-
     def __init__(self, *args, **kwargs):
         self.last_position = None
         super().__init__(*args, **kwargs)
@@ -71,15 +66,15 @@ class BoschPTZCamera(BoschCameraBase):
     @rpc.handler("zoom", parser=float, channel=CAMERA_CONTROL_CHANNEL)
     async def on_zoom(self, ctx, payload: float):
         pan, tilt, _ = await self.get_position(fetch=True)
-        zoom = self.normalise(payload, (0, 100), self.ZOOM_RANGE)
+        zoom = self.normalise(payload, (0, 100), self.client.zoom_position_range)
         await self.client.absolute_move(pan, tilt, zoom)
         await self.check_for_move_complete()
         await self.clear_active_preset_func()
 
     @rpc.handler("pantilt_continuous", parser=PTZControlEvent.from_dict, channel=CAMERA_CONTROL_CHANNEL)
     async def on_pantilt_continuous(self, ctx, payload: PTZControlEvent):
-        pan = self.normalise(payload.pan, (-1, 1), self.PAN_RANGE)
-        tilt = self.normalise(payload.tilt, (-1, 1), self.TILT_RANGE)
+        pan = self.normalise(payload.pan, (-1, 1), self.client.pan_velocity_range)
+        tilt = self.normalise(payload.tilt, (-1, 1), self.client.tilt_velocity_range)
         log.info(f"pan-tilting continuous: {pan}, {tilt}")
         await self.client.continuous_move(pan, tilt, 0)
         await self.clear_active_preset_func()
@@ -88,13 +83,15 @@ class BoschPTZCamera(BoschCameraBase):
     async def on_pantilt_absolute(self, ctx, payload: PTZControlEvent):
         log.info(f"pan-tilting absolute: {payload.pan}, {payload.tilt}")
         curr_pos = await self.get_position()
-        await self.client.absolute_move(payload.pan, payload.tilt, curr_pos[2])
+        pan = self.normalise(payload.pan, (-1, 1), self.client.pan_position_range)
+        tilt = self.normalise(payload.tilt, (-1, 1), self.client.tilt_position_range)
+        await self.client.absolute_move(pan, tilt, curr_pos[2])
         await self.check_for_move_complete()
         await self.clear_active_preset_func()
 
     @rpc.handler("zoom_continuous", parser=float, channel=CAMERA_CONTROL_CHANNEL)
     async def on_zoom_continuous(self, ctx, payload: float):
-        zoom_speed = self.validate_value(payload, -100, 100, -1, 1)
+        zoom_speed = self.normalise(payload, (-100, 100), self.client.zoom_velocity_range)
         await self.client.continuous_move(0, 0, zoom_speed)
         await self.clear_active_preset_func()
 
@@ -150,6 +147,8 @@ class BoschPTZCamera(BoschCameraBase):
                 except Exception as e:
                     log.info(f"Failed to take snapshot: {e}")
                 else:
+                    safe_name = re.sub(r"[^A-Za-z0-9_\-]", "_", preset)
+                    file.filename = f"{safe_name}.{self.config.snapshot.mode_as_filetype}"
                     files.append(file)
         else:
             try:

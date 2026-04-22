@@ -55,7 +55,7 @@ class BoschCameraBase(CameraBase):
 
         return True
 
-    def close(self):
+    async def close(self):
         if self.event_subscription_task:
             self.event_subscription_task.cancel()
 

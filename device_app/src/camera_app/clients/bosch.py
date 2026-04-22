@@ -6,13 +6,19 @@ Designed for the Bosch AUTODOME IP starlight 5100i IR (NDP-5533-Z30L) PTZ camera
 
 import asyncio
 import logging
+import os
 
 import aiohttp
+import onvif
 from onvif import ONVIFCamera
 
 log = logging.getLogger(__name__)
 
 TIMEOUT_SECONDS = 20
+
+# onvif-zeep-async ships WSDLs at <pkg>/wsdl/ but its default lookup path
+# is <site-packages>/wsdl/ — pass the real location explicitly.
+WSDL_DIR = os.path.join(os.path.dirname(onvif.__file__), "wsdl")
 
 # ONVIF event topics for Bosch VCA motion detection
 MOTION_TOPICS = {
@@ -34,6 +40,15 @@ class BoschClient:
         self.events_service = None
         self.profile_token = None
 
+        # PTZ coordinate ranges — populated from GetConfigurationOptions on connect.
+        # Defaults assume the ONVIF normalized spaces (most cameras ship this way).
+        self.pan_velocity_range = (-1.0, 1.0)
+        self.tilt_velocity_range = (-1.0, 1.0)
+        self.zoom_velocity_range = (-1.0, 1.0)
+        self.pan_position_range = (-1.0, 1.0)
+        self.tilt_position_range = (-1.0, 1.0)
+        self.zoom_position_range = (0.0, 1.0)
+
         self._presets_cache: dict[str, str] = None  # {name: token}
         self._subscription = None
         self._event_task: asyncio.Task = None
@@ -44,6 +59,7 @@ class BoschClient:
             self.port,
             self.username,
             self.password,
+            wsdl_dir=WSDL_DIR,
         )
         await self.cam.update_xaddrs()
 
@@ -56,6 +72,38 @@ class BoschClient:
             raise RuntimeError("No media profiles found on camera")
         self.profile_token = profiles[0].token
         log.info(f"Connected to Bosch camera at {self.address}, profile: {self.profile_token}")
+
+        await self._load_ptz_ranges()
+
+    async def _load_ptz_ranges(self):
+        try:
+            configurations = await self.ptz_service.GetConfigurations()
+            if not configurations:
+                return
+            options = await self.ptz_service.GetConfigurationOptions(
+                {"ConfigurationToken": configurations[0].token}
+            )
+            spaces = options.Spaces
+            if spaces.ContinuousPanTiltVelocitySpace:
+                s = spaces.ContinuousPanTiltVelocitySpace[0]
+                self.pan_velocity_range = (float(s.XRange.Min), float(s.XRange.Max))
+                self.tilt_velocity_range = (float(s.YRange.Min), float(s.YRange.Max))
+            if spaces.ContinuousZoomVelocitySpace:
+                s = spaces.ContinuousZoomVelocitySpace[0]
+                self.zoom_velocity_range = (float(s.XRange.Min), float(s.XRange.Max))
+            if spaces.AbsolutePanTiltPositionSpace:
+                s = spaces.AbsolutePanTiltPositionSpace[0]
+                self.pan_position_range = (float(s.XRange.Min), float(s.XRange.Max))
+                self.tilt_position_range = (float(s.YRange.Min), float(s.YRange.Max))
+            if spaces.AbsoluteZoomPositionSpace:
+                s = spaces.AbsoluteZoomPositionSpace[0]
+                self.zoom_position_range = (float(s.XRange.Min), float(s.XRange.Max))
+            log.info(
+                f"PTZ ranges — velocity: pan={self.pan_velocity_range}, tilt={self.tilt_velocity_range}, zoom={self.zoom_velocity_range}; "
+                f"position: pan={self.pan_position_range}, tilt={self.tilt_position_range}, zoom={self.zoom_position_range}"
+            )
+        except Exception as e:
+            log.warning(f"Failed to read PTZ configuration options, using normalized defaults: {e}")
 
     # --- PTZ Methods ---
 
@@ -92,13 +140,16 @@ class BoschClient:
         }
         await self.ptz_service.RelativeMove(request)
 
-    async def continuous_move(self, pan: float, tilt: float, zoom: float):
+    async def continuous_move(self, pan: float, tilt: float, zoom: float, timeout: str = "PT1S"):
+        # Timeout is xsd:duration — if no new ContinuousMove arrives within this window
+        # the camera stops itself. Guards against runaway if the stop packet is lost.
         request = self.ptz_service.create_type("ContinuousMove")
         request.ProfileToken = self.profile_token
         request.Velocity = {
             "PanTilt": {"x": pan, "y": tilt},
             "Zoom": {"x": zoom},
         }
+        request.Timeout = timeout
         await self.ptz_service.ContinuousMove(request)
 
     async def stop(self, pan_tilt: bool = True, zoom: bool = True):
