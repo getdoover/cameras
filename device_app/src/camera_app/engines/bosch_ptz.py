@@ -42,21 +42,30 @@ class BoschPTZCamera(BoschCameraBase):
         self.last_position = pos
         return pos
 
-    async def check_for_move_complete(self):
-        retries = 0
-        move_status = None
-        while move_status != "IDLE" and retries < 30:
-            status = await self.client.get_ptz_status()
-            if hasattr(status, "MoveStatus"):
-                ms = status.MoveStatus
-                if hasattr(ms, "PanTilt"):
-                    move_status = str(ms.PanTilt).upper()
-                elif hasattr(ms, "Zoom"):
-                    move_status = str(ms.Zoom).upper()
-                else:
-                    move_status = str(ms).upper()
-            retries += 1
-            await asyncio.sleep(0.1)
+    async def check_for_move_complete(self, timeout: float = 10.0):
+        # ONVIF GotoPreset / AbsoluteMove return before the camera has actually
+        # started moving — an immediate GetStatus reports the pre-move IDLE
+        # state. Give the camera a beat, then detect completion via position
+        # stability (camera-agnostic, doesn't rely on MoveStatus reporting).
+        await asyncio.sleep(0.3)
+
+        last_pos = None
+        stable = 0
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while loop.time() < deadline:
+            try:
+                pos = await self.client.get_ptz_position()
+            except Exception:
+                return
+            if last_pos is not None and all(abs(p - l) < 1e-3 for p, l in zip(pos, last_pos)):
+                stable += 1
+                if stable >= 2:
+                    return
+            else:
+                stable = 0
+            last_pos = pos
+            await asyncio.sleep(0.15)
 
     @rpc.handler("stop", channel=CAMERA_CONTROL_CHANNEL)
     async def on_stop(self, ctx, payload):
