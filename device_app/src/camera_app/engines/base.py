@@ -68,7 +68,7 @@ class CameraBase:
 
     async def get_still_snapshot(self, rtsp_uri: str) -> File:
         fp = self.get_output_filepath(str(uuid.uuid4()), "jpg")
-        cmd = f"ffmpeg -y -rtsp_transport tcp -i {rtsp_uri} -vf 'scale={self.config.snapshot.scale.value}' -frames:v 1 {fp}"
+        cmd = f"ffmpeg -y -rtsp_transport tcp -i {rtsp_uri} -vf 'scale={self.config.snapshot.scale.value.value}' -frames:v 1 {fp}"
         await self.run_ffmpeg_cmd(cmd)
         return File(
             filename="snapshot.jpg",
@@ -84,7 +84,7 @@ class CameraBase:
         # ffmpeg -y -rtsp_transport tcp -i rtsp://10.144.239.221:554/s0 -vf
         # scale=420:-1 -r 10 -t 6 -vcodec libx265 -tag:v hvc1 -c:a aac output.mp4
         cmd = (
-            f"ffmpeg -y -rtsp_transport tcp -i {rtsp_uri} -vf 'fps={self.config.snapshot.fps.value},scale={self.config.snapshot.scale.value},"
+            f"ffmpeg -y -rtsp_transport tcp -i {rtsp_uri} -vf 'fps={self.config.snapshot.fps.value},scale={self.config.snapshot.scale.value.value},"
             f"format=yuv420p,pad=ceil(iw/2)*2:ceil(ih/2)*2' -t {self.config.snapshot.secs.value} -c:v libx264 -c:a aac {fp}"
         )
         await self.run_ffmpeg_cmd(cmd)
