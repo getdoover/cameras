@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import TYPE_CHECKING
 
@@ -54,8 +55,15 @@ class HikVisionThermal(CameraBase):
     async def get_snapshot(self) -> list[File]:
         ext = self.config.snapshot.mode_as_filetype
         if Mode(self.config.snapshot.mode.value) is Mode.video:
-            visible = await self.get_video_snapshot(self.config.rtsp_uri)
-            thermal = await self.get_video_snapshot(self.config.thermal_rtsp_uri) if self.config.thermal_rtsp_uri else None
+            # Run both ffmpeg recordings concurrently so the visible and thermal clips cover the same wall-clock window.
+            if self.config.thermal_rtsp_uri:
+                visible, thermal = await asyncio.gather(
+                    self.get_video_snapshot(self.config.rtsp_uri),
+                    self.get_video_snapshot(self.config.thermal_rtsp_uri),
+                )
+            else:
+                visible = await self.get_video_snapshot(self.config.rtsp_uri)
+                thermal = None
         else:
             visible = await self.get_still_snapshot(1)
             thermal = await self.get_still_snapshot(2) if self.config.thermal_rtsp_uri else None

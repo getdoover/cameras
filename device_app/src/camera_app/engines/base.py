@@ -83,10 +83,17 @@ class CameraBase:
         # possible alternative, allegedly h265 is the "new" best high-compression format.
         # ffmpeg -y -rtsp_transport tcp -i rtsp://10.144.239.221:554/s0 -vf
         # scale=420:-1 -r 10 -t 6 -vcodec libx265 -tag:v hvc1 -c:a aac output.mp4
-        cmd = (
-            f"ffmpeg -y -rtsp_transport tcp -i {rtsp_uri} -vf 'fps={self.config.snapshot.fps.value},scale={self.config.snapshot.scale.value.value},"
-            f"format=yuv420p,pad=ceil(iw/2)*2:ceil(ih/2)*2' -t {self.config.snapshot.secs.value} -c:v libx264 -c:a aac {fp}"
-        )
+        if self.config.snapshot.native_h264.value:
+            # Stream-copy avoids decode/re-encode CPU cost; filters can't be applied to a copied stream.
+            cmd = (
+                f"ffmpeg -y -rtsp_transport tcp -i {rtsp_uri} "
+                f"-t {self.config.snapshot.secs.value} -c:v copy -c:a aac {fp}"
+            )
+        else:
+            cmd = (
+                f"ffmpeg -y -rtsp_transport tcp -i {rtsp_uri} -vf 'fps={self.config.snapshot.fps.value},scale={self.config.snapshot.scale.value.value},"
+                f"format=yuv420p,pad=ceil(iw/2)*2:ceil(ih/2)*2' -t {self.config.snapshot.secs.value} -c:v libx264 -c:a aac {fp}"
+            )
         await self.run_ffmpeg_cmd(cmd)
         return File(
             filename="snapshot.mp4",

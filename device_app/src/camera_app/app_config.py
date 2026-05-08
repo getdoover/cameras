@@ -14,6 +14,7 @@ class CameraThermalConfig(config.Object):
         "Channel",
         description="RTSP channel name for thermal feed. On Hikvision thermal cameras this is usually /Streaming/Channels/201.",
         default="Streaming/Channels/201",
+        advanced=True,
     )
 
 
@@ -32,15 +33,22 @@ class CameraConnectionConfig(config.Object):
         "IP address", description="IP address of camera (e.g. 192.168.50.100)"
     )
     rtsp_port = config.Integer(
-        "RTSP Port", description="Port of RTSP feed on camera", default=554
+        "RTSP Port",
+        description="Port of RTSP feed on camera",
+        default=554,
+        advanced=True,
     )
     rtsp_channel = config.String(
         "RTSP Channel",
         description="RTSP channel name. On Dahua cameras this is usually 'live'.",
         default="live",
+        advanced=True,
     )
     control_port = config.Integer(
-        "Control Port", description="Port of control page on camera", default=80
+        "Control Port",
+        description="Port of control page on camera",
+        default=80,
+        advanced=True,
     )
 
 
@@ -60,13 +68,14 @@ class CameraPowerConfig(config.Object):
         "Off After",
         description="Number of seconds after which the camera will be powered off",
         default=60 * 15,
+        advanced=True,
     )
     wake_delay = config.Integer(
         "Wake Delay",
         description="Seconds for camera to boot before requesting a snapshot.",
-        default=5,
+        default=60,
+        advanced=True,
     )
-
 
 
 class Mode(Enum):
@@ -95,14 +104,29 @@ class CameraSnapshotConfig(config.Object):
         choices=Mode,
     )
     secs = config.Integer(
-        "Duration", description="Duration of snapshot", default=6
+        "Duration",
+        description="Duration of snapshot",
+        default=6,
+        advanced=True,
     )
-    fps = config.Integer("FPS", description="FPS of snapshot", default=5)
+    fps = config.Integer(
+        "FPS",
+        description="FPS of snapshot",
+        default=10,
+        advanced=True,
+    )
     scale = config.Enum(
         "Scale",
         description="Scale of snapshot",
-        default=ScaleSize.p360,
+        default=ScaleSize.p720,
         choices=ScaleSize,
+        advanced=True,
+    )
+    native_h264 = config.Boolean(
+        "Native H264",
+        description="Camera streams native H264, so video snapshots can be stream-copied instead of re-encoded. Disable if the camera streams a different codec or if scale/fps must be applied. Note: when enabled, the Scale and FPS settings are ignored for video snapshots.",
+        default=True,
+        advanced=True,
     )
 
     @property
@@ -125,7 +149,6 @@ class CameraRTSPServerConfig(config.Object):
     )
     username = config.String("Username", default="demo")
     password = config.String("Password", default="demo")
-
 
 
 class CameraType(Enum):
@@ -154,7 +177,10 @@ class CameraConfig(config.Schema):
     connection = CameraConnectionConfig("Camera Connection Config")
     power = CameraPowerConfig("Camera Power Config")
     snapshot = CameraSnapshotConfig("Camera Snapshot Config")
-    rtsp_server = CameraRTSPServerConfig("Camera RTSP Server Config")
+    rtsp_server = CameraRTSPServerConfig(
+        "Camera RTSP Server Config",
+        advanced=True,
+    )
 
     object_detection = config.Array(
         "Object Detection",
