@@ -120,7 +120,11 @@ class CameraApplication(Application):
         if self.engine:
             await self.engine.close()
 
-    async def on_user_connection(self, event: AggregateUpdateEvent):
+    async def on_aggregate_update(self, event: AggregateUpdateEvent):
+        if event.channel.name != "doover_ui_fastmode":
+            # we only care about fastmode updates
+            return
+
         await asyncio.sleep(0.1)
         if self.tag_manager.is_being_observed:
             log.info("Enabling power for user observation.")
