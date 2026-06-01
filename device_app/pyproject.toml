@@ -8,8 +8,7 @@ dependencies = [
     "aiohttp>=3.12.7",
     "async-timeout>=5.0.1",
     "onvif-zeep-async>=4.0.4",
-    "pillow==10.4.0",
-    "pydoover==1.0.0a5",
+    "pydoover>=1.2.0",
 ]
 
 [project.scripts]
@@ -30,6 +29,3 @@ dev = [
     "pytest-asyncio>=0.26.0",
     "requests>=2.32.3",
 ]
-
-[tool.uv.sources]
-pydoover = { git = "https://github.com/getdoover/pydoover" }

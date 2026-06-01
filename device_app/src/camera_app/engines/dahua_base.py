@@ -8,7 +8,6 @@ import re
 from datetime import datetime, timedelta
 
 import aiohttp
-from PIL import Image
 from pydoover.models import File
 
 from .base import CameraBase, MAX_MESSAGE_SIZE

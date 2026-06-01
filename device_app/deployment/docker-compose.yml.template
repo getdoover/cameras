@@ -1,0 +1,18 @@
+{#-
+  ffmpeg lives only in the "-full" image. It's needed when EITHER:
+    * snapshot mode is "Video" -- every camera records video via ffmpeg, or
+    * the camera is a generic RTSP type (UniFi / Generic IP) -- these always go
+      through ffmpeg, even for still images.
+  All other types (Dahua PTZ/Fixed/Generic, Hikvision Thermal, Bosch PTZ) grab
+  still images over the camera's HTTP API, so the slim "main" image is enough.
+  Mirrors the runtime guard in src/camera_app/engines/base.py:ensure_ffmpeg.
+-#}
+{%- set needs_ffmpeg = camera_snapshot_config.mode == "Video" or camera_type in ["UniFi (Generic)", "Generic IP"] -%}
+services:
+  cameras:
+    image: ghcr.io/getdoover/cameras:{{ "main-full" if needs_ffmpeg else "main" }}
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - APP_KEY=$APP_KEY
+      - HEALTHCHECK_PORT=$HEALTHCHECK_PORT

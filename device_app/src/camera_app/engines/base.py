@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import shutil
 from datetime import datetime, timedelta
 import logging
 import uuid
@@ -13,6 +14,22 @@ MAX_MESSAGE_SIZE = 125_000
 
 
 log = logging.getLogger(__name__)
+
+
+def ensure_ffmpeg() -> None:
+    """Fail with a clear message when ffmpeg is needed but missing.
+
+    ffmpeg is only bundled in the 'full' image variant. The default 'slim'
+    image supports image (still) snapshots on Dahua/Hikvision/Bosch cameras
+    via their HTTP API, but cannot do video snapshots or generic RTSP cameras.
+    """
+    if shutil.which("ffmpeg") is None:
+        raise RuntimeError(
+            "ffmpeg is not installed in this image. Video snapshots and generic "
+            "RTSP cameras require the 'full' image variant (use the '-full' tag, "
+            "e.g. ghcr.io/getdoover/cameras:main-full). Dahua/Hikvision/Bosch "
+            "image snapshots work on the default 'slim' image."
+        )
 
 
 class CameraBase:
@@ -103,6 +120,7 @@ class CameraBase:
         )
 
     async def run_ffmpeg_cmd(self, cmd):
+        ensure_ffmpeg()
         self.ensure_output_dir()
         log.info(f"running cmd: {cmd}")
         proc = await asyncio.create_subprocess_shell(cmd)
