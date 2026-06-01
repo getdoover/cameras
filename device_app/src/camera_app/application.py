@@ -259,7 +259,7 @@ class CameraApplication(Application):
             configured_url = streams_data["payload"][stream_name]["channels"]["0"][
                 "url"
             ]
-        except KeyError:
+        except (KeyError, TypeError):
             method = "add"  # doesn't exist
         else:
             if configured_url == rtsp_uri:
