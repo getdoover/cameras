@@ -275,6 +275,7 @@ class CameraApplication(Application):
                     "name": stream_name,
                     "url": rtsp_uri,
                     "on_demand": True,
+                    "audio": True,
                     "debug": False,
                 }
             },
