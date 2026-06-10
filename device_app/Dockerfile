@@ -27,24 +27,27 @@ COPY --from=ghcr.io/astral-sh/uv:0.7.3 /uv /uvx /bin/
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
 ENV UV_PYTHON_DOWNLOADS=0
 
-# give the app access to our pre-installed system packages
+# Resolve base-provided packages from the system instead of reinstalling them.
 RUN uv venv --system-site-packages
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=uv.lock,target=uv.lock \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
-    uv sync --locked --no-install-project --no-dev
+    SKIP=$(uv pip freeze --system | sed -E 's/[[:space:]@=].*//; s/^/--no-install-package /' | tr '\n' ' ') && \
+    uv sync --locked --no-install-project --no-dev $SKIP
 
 COPY . /app
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked --no-dev
+    SKIP=$(uv pip freeze --system | sed -E 's/[[:space:]@=].*//; s/^/--no-install-package /' | tr '\n' ' ') && \
+    uv sync --locked --no-dev $SKIP
 
 
 # --- ffmpeg-fetch: download a static ffmpeg binary (full variant only) --------
+# The binary is fully static, so it runs unchanged on the musl-based alpine
+# image (and at ~49MB is smaller than alpine's native `apk add ffmpeg`, ~103MB).
 FROM base AS ffmpeg-fetch
 ARG TARGETARCH
-RUN apt update && apt install -y --no-install-recommends curl xz-utils ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+RUN apk add --no-cache xz
 RUN set -eux; \
     case "$TARGETARCH" in \
         arm64) FF_ARCH=arm64 ;; \
@@ -59,10 +62,9 @@ RUN set -eux; \
 
 # --- runtime: common runtime layer shared by both variants -------------------
 FROM base AS runtime
-# iputils-ping covers the base ping() path (generic RTSP cameras); API cameras
+# iputils covers the base ping() path (generic RTSP cameras); API cameras
 # ping over HTTP and don't need it.
-RUN apt update && apt install -y --no-install-recommends iputils-ping \
-    && rm -rf /var/lib/apt/lists/*
+RUN apk add --no-cache iputils
 COPY --from=builder /app /app
 ENV PATH="/app/.venv/bin:$PATH"
 CMD ["doover-app-run"]
