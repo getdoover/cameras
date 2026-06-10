@@ -8,7 +8,7 @@ dependencies = [
     "aiohttp>=3.12.7",
     "async-timeout>=5.0.1",
     "onvif-zeep-async>=4.0.4",
-    "pydoover>=1.2.0",
+    "pydoover>=1.4.2",
 ]
 
 [project.scripts]
