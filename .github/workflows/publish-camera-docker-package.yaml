@@ -93,3 +93,17 @@ jobs:
           subject-name: ghcr.io/${{ github.repository }}
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign image (key-pair, offline-verifiable)
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.DOOVER_PUBLIC_COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ""
+          COSIGN_EXPERIMENTAL: "1"
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          cosign sign --yes --tlog-upload=false --registry-referrers-mode oci-1-1 \
+            --key env://COSIGN_PRIVATE_KEY \
+            "${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
