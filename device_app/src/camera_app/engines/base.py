@@ -51,6 +51,30 @@ class CameraBase:
     @staticmethod
     def ensure_output_dir() -> None:
         OUTPUT_FILE_DIR.mkdir(parents=True, exist_ok=True)
+        # Safety net: each snapshot deletes its own temp file, but a crash
+        # between writing and unlinking could leave orphans that accumulate
+        # forever (the filenames are random UUIDs). Sweep anything stale.
+        cutoff = datetime.now() - timedelta(hours=1)
+        for f in OUTPUT_FILE_DIR.iterdir():
+            try:
+                if f.is_file() and datetime.fromtimestamp(f.stat().st_mtime) < cutoff:
+                    f.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    @staticmethod
+    def _read_snapshot(fp: Path, filename: str, content_type: str) -> File:
+        if not fp.exists() or fp.stat().st_size == 0:
+            # ffmpeg can leave behind a 0-byte file when the camera is
+            # unreachable; treat that as a failed snapshot rather than
+            # returning an empty File.
+            raise RuntimeError(f"ffmpeg produced no output at {fp}")
+        return File(
+            filename=filename,
+            data=fp.read_bytes(),
+            size=fp.stat().st_size,
+            content_type=content_type,
+        )
 
     async def on_control_message(self, message_id, data):
         pass
@@ -86,13 +110,11 @@ class CameraBase:
     async def get_still_snapshot(self, rtsp_uri: str) -> File:
         fp = self.get_output_filepath(str(uuid.uuid4()), "jpg")
         cmd = f"ffmpeg -y -rtsp_transport tcp -analyzeduration 10M -probesize 10M -i {rtsp_uri} -vf 'scale={self.config.snapshot.scale.value.value}' -frames:v 1 {fp}"
-        await self.run_ffmpeg_cmd(cmd)
-        return File(
-            filename="snapshot.jpg",
-            data=fp.read_bytes(),
-            size=fp.stat().st_size,
-            content_type="image/jpeg",
-        )
+        try:
+            await self.run_ffmpeg_cmd(cmd)
+            return self._read_snapshot(fp, "snapshot.jpg", "image/jpeg")
+        finally:
+            fp.unlink(missing_ok=True)
 
     async def get_video_snapshot(self, rtsp_uri: str) -> File:
         fp = self.get_output_filepath(str(uuid.uuid4()), "mp4")
@@ -111,13 +133,11 @@ class CameraBase:
                 f"ffmpeg -y -rtsp_transport tcp -analyzeduration 10M -probesize 10M -i {rtsp_uri} -vf 'fps={self.config.snapshot.fps.value},scale={self.config.snapshot.scale.value.value},"
                 f"format=yuv420p,pad=ceil(iw/2)*2:ceil(ih/2)*2' -t {self.config.snapshot.secs.value} -c:v libx264 -c:a aac {fp}"
             )
-        await self.run_ffmpeg_cmd(cmd)
-        return File(
-            filename="snapshot.mp4",
-            data=fp.read_bytes(),
-            size=fp.stat().st_size,
-            content_type="video/mp4",
-        )
+        try:
+            await self.run_ffmpeg_cmd(cmd)
+            return self._read_snapshot(fp, "snapshot.mp4", "video/mp4")
+        finally:
+            fp.unlink(missing_ok=True)
 
     async def run_ffmpeg_cmd(self, cmd):
         ensure_ffmpeg()
