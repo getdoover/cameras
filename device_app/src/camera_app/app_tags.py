@@ -8,6 +8,7 @@ class CameraTags(Tags):
     presets = Tag("array[string]", [])
     active_preset = Tag("string", "")
     last_cam_snapshot = Tag("number", 0)
+    last_plate = Tag("string", "")
 
     # async def setup(self):
     #     self.add_tag(f"camera_power_{self.config.power.pin.value}", Tag("number", 0))

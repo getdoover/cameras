@@ -1,3 +1,4 @@
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
 
@@ -158,7 +159,109 @@ class CameraType(Enum):
     unifi_generic = "UniFi (Generic)"
     generic_ip = "Generic IP"
     hikvision_thermal = "Hikvision (Thermal)"
+    hikvision_anpr = "Hikvision (ANPR)"
+    hikvision_acusense = "Hikvision (AcuSense)"
     bosch_ptz = "Bosch (PTZ)"
+
+
+class CameraANPRConfig(config.Object):
+    enabled = config.Boolean(
+        "Enabled",
+        description="Enable on-camera ANPR (license plate + vehicle detection). "
+        "Only available on Hikvision ANPR/DeepinView '/P' models with road-traffic mode.",
+        default=False,
+    )
+    min_confidence = config.Integer(
+        "Minimum Confidence",
+        description="Ignore plate reads below this confidence (0-100).",
+        default=0,
+        advanced=True,
+    )
+
+
+class CameraAlarmConfig(config.Object):
+    """Night-time intruder alarm driven by basic motion detection (VMD).
+
+    On Hikvision ANPR models there is no on-camera person classification, so the
+    night intruder trigger is plain motion. Between night_start_hour and
+    night_end_hour the app pulses an alarm-output relay (external siren/strobe)
+    and emits a notification on motion; outside that window motion is ignored.
+    """
+
+    intruder_alarm_enabled = config.Boolean(
+        "Intruder Alarm Enabled",
+        description="At night, pulse the alarm output (external siren/strobe) and "
+        "send a notification when motion is detected.",
+        default=False,
+    )
+    output_port = config.Integer(
+        "Alarm Output Port",
+        description="Camera alarm-output relay to pulse for the external siren/strobe.",
+        default=1,
+        advanced=True,
+    )
+    pulse_secs = config.Integer(
+        "Alarm Pulse Duration",
+        description="Seconds to hold the alarm-output relay on per trigger.",
+        default=10,
+        advanced=True,
+    )
+    beep_enabled = config.Boolean(
+        "Camera Buzzer",
+        description="Also sound the camera's built-in buzzer on night motion "
+        "(fires locally even if doover is offline).",
+        default=True,
+        advanced=True,
+    )
+    white_light_deterrent = config.Boolean(
+        "Flash Light",
+        description="Flash the camera's built-in light (ColorVu white light on "
+        "AcuSense) on a smart event at night (built-in, fires even if doover is "
+        "offline).",
+        default=True,
+        advanced=True,
+    )
+    audio_alarm = config.Boolean(
+        "Audible Alarm",
+        description="On cameras with a built-in speaker (e.g. AcuSense /SRB), sound "
+        "the audible siren on a smart event at night. Combined with the flash light "
+        "this uses the camera's built-in flash+siren active response.",
+        default=True,
+        advanced=True,
+    )
+    night_start_hour = config.Integer(
+        "Night Start Hour",
+        description="Hour (0-23, camera/site local time) the intruder alarm arms.",
+        default=18,
+    )
+    night_end_hour = config.Integer(
+        "Night End Hour",
+        description="Hour (0-23, camera/site local time) the intruder alarm disarms.",
+        default=6,
+    )
+    event_clips_enabled = config.Boolean(
+        "Event Video Clips",
+        description="On an intruder event at night, upload video of the event to "
+        "doover (instead of a single still). Uses the camera's own microSD recording "
+        "where a card is fitted, otherwise records the stream with ffmpeg (which "
+        "needs the 'full' image). AcuSense only.",
+        default=False,
+        advanced=True,
+    )
+    event_clip_interval = config.Integer(
+        "Event Clip Interval",
+        description="Seconds between event clips: how often the camera's SD card is "
+        "checked for a new recording, or the length of each ffmpeg-recorded clip.",
+        default=5,
+        advanced=True,
+    )
+    event_clip_cooldown = config.Integer(
+        "Event Clip Cooldown",
+        description="Stop fetching event clips this many seconds after the last "
+        "detection.",
+        default=15,
+        advanced=True,
+    )
 
 
 class ObjectDetectionType(Enum):
@@ -192,12 +295,22 @@ class CameraConfig(config.Schema):
         ),
         unique_items=True,
     )
+    sensitivity = config.Integer(
+        "Detection Sensitivity",
+        description="On-camera intrusion (field) detection sensitivity (0-100). Higher "
+        "detects smaller/further/faster targets but risks more false alarms. Hikvision "
+        "AcuSense only.",
+        default=50,
+        advanced=True,
+    )
     control_enabled = config.Boolean(
         "Control Enabled",
         description="Allow control (movement) of PTZ cameras.",
         default=True,
     )
     thermal = CameraThermalConfig("Thermal Config")
+    anpr = CameraANPRConfig("ANPR Config")
+    alarm = CameraAlarmConfig("Intruder Alarm Config")
 
     @property
     def rtsp_uri(self) -> str:
@@ -227,6 +340,18 @@ class CameraConfig(config.Schema):
             ObjectDetectionType(e.value) is ObjectDetectionType.vehicle
             for e in self.object_detection.elements
         )
+
+    def is_night(self, now: datetime = None) -> bool:
+        """True if the current hour is within the intruder-alarm night window."""
+        hour = (now or datetime.now()).hour
+        start = self.alarm.night_start_hour.value
+        end = self.alarm.night_end_hour.value
+        if start == end:
+            return False
+        if start < end:
+            return start <= hour < end
+        # Window wraps midnight (e.g. 18 -> 6).
+        return hour >= start or hour < end
 
 
 def export():

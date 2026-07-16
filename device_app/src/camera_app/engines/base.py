@@ -116,7 +116,10 @@ class CameraBase:
         finally:
             fp.unlink(missing_ok=True)
 
-    async def get_video_snapshot(self, rtsp_uri: str) -> File:
+    async def get_video_snapshot(self, rtsp_uri: str, secs: int = None) -> File:
+        # `secs` lets callers (e.g. the intruder event-clip loop) ask for a clip of
+        # a specific length; snapshots use the configured duration.
+        secs = secs or self.config.snapshot.secs.value
         fp = self.get_output_filepath(str(uuid.uuid4()), "mp4")
 
         # possible alternative, allegedly h265 is the "new" best high-compression format.
@@ -126,12 +129,12 @@ class CameraBase:
             # Stream-copy avoids decode/re-encode CPU cost; filters can't be applied to a copied stream.
             cmd = (
                 f"ffmpeg -y -rtsp_transport tcp -analyzeduration 10M -probesize 10M -i {rtsp_uri} "
-                f"-t {self.config.snapshot.secs.value} -c:v copy -c:a aac {fp}"
+                f"-t {secs} -c:v copy -c:a aac {fp}"
             )
         else:
             cmd = (
                 f"ffmpeg -y -rtsp_transport tcp -analyzeduration 10M -probesize 10M -i {rtsp_uri} -vf 'fps={self.config.snapshot.fps.value},scale={self.config.snapshot.scale.value.value},"
-                f"format=yuv420p,pad=ceil(iw/2)*2:ceil(ih/2)*2' -t {self.config.snapshot.secs.value} -c:v libx264 -c:a aac {fp}"
+                f"format=yuv420p,pad=ceil(iw/2)*2:ceil(ih/2)*2' -t {secs} -c:v libx264 -c:a aac {fp}"
             )
         try:
             await self.run_ffmpeg_cmd(cmd)

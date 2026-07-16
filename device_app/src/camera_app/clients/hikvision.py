@@ -7,11 +7,13 @@ Written by Josh Bramley, Doover.
 """
 
 import logging
+import re
 import socket
 import asyncio
+import uuid
 import xml.etree.ElementTree as ET
-
-from typing import Any
+from datetime import datetime, timezone
+from xml.sax.saxutils import escape
 
 import aiohttp
 import async_timeout
@@ -248,10 +250,509 @@ class HikvisionClient:
         except aiohttp.ClientResponseError:
             return {}
 
+    # -- ANPR (Road Traffic / vehicle + license plate) --
+
+    async def get_vehicle_detection(self, channel: int = 1) -> dict:
+        """Get the road-traffic vehicle/ANPR detection config."""
+        try:
+            return await self.get(f"/ISAPI/Traffic/channels/{channel}/vehicleDetect")
+        except aiohttp.ClientResponseError:
+            return {}
+
+    async def enable_vehicle_detection(self, enabled: bool, channel: int = 1) -> dict:
+        """
+        Enable/disable on-camera ANPR (vehicle + license plate).
+
+        The lane/scene calibration is left untouched — we only flip the
+        top-level <enabled> flag, so we GET the current config and PUT it back
+        with just that field changed (the config is large and nested, and the
+        camera rejects partial bodies).
+        """
+        raw = (await self.get_bytes(
+            f"/ISAPI/Traffic/channels/{channel}/vehicleDetect"
+        )).decode(errors="ignore")
+        value = "true" if enabled else "false"
+        # Only the first <enabled> is the top-level toggle; per-scene <enabled>
+        # flags deeper in the body must be preserved.
+        new = re.sub(r"<enabled>.*?</enabled>", f"<enabled>{value}</enabled>", raw, count=1)
+        return await self.put(
+            f"/ISAPI/Traffic/channels/{channel}/vehicleDetect", body=new
+        )
+
+    # -- Alarm output relay (external siren / strobe) --
+
+    async def trigger_io_output(self, port: int = 1, active: bool = True) -> dict:
+        """Manually drive an alarm-output relay high (active) or low."""
+        state = "high" if active else "low"
+        body = (
+            f'<IOPortData version="2.0" xmlns="{ISAPI_NS}">'
+            f"<outputState>{state}</outputState></IOPortData>"
+        )
+        return await self.put(f"/ISAPI/System/IO/outputs/{port}/trigger", body=body)
+
+    async def pulse_io_output(self, port: int = 1, duration: float = 5.0) -> None:
+        """
+        Pulse an alarm-output relay for ``duration`` seconds.
+
+        We drive it high, wait, then low, rather than relying on the relay's own
+        pulse config so the duration is controlled by us and independent of how
+        the camera's PowerOnState happens to be set.
+        """
+        await self.trigger_io_output(port, active=True)
+        try:
+            await asyncio.sleep(duration)
+        finally:
+            await self.trigger_io_output(port, active=False)
+
+    # -- Motion -> beep linkage (doover-independent local alarm) --
+
+    _BEEP_NOTIFICATION = (
+        "<EventTriggerNotification><id>beep</id>"
+        "<notificationMethod>beep</notificationMethod>"
+        "<notificationRecurrence>beginning</notificationRecurrence>"
+        "</EventTriggerNotification>"
+    )
+
+    async def set_motion_beep_linkage(self, enabled: bool, channel: int = 1) -> dict:
+        """
+        Arm/disarm the camera's own buzzer on motion (VMD).
+
+        This firmware's VMD event trigger only accepts record/center/beep
+        notification methods — alarm-output (relay) linkage is NOT supported via
+        the API, so the external siren/strobe must be pulsed by the app instead
+        (see :meth:`pulse_io_output`). ``beep`` is the one linkage that fires
+        locally even if doover is offline. We GET-modify-PUT the raw trigger so
+        any existing record/center notifications are preserved.
+        """
+        trigger_id = f"VMD-{channel}"
+        raw = (await self.get_bytes(
+            f"/ISAPI/Event/triggers/{trigger_id}"
+        )).decode(errors="ignore")
+
+        has_beep = "<notificationMethod>beep</notificationMethod>" in raw
+        if enabled and not has_beep:
+            raw = raw.replace(
+                "</EventTriggerNotificationList>",
+                f"{self._BEEP_NOTIFICATION}</EventTriggerNotificationList>",
+                1,
+            )
+        elif not enabled and has_beep:
+            raw = re.sub(
+                r"<EventTriggerNotification>\s*<id>beep</id>.*?</EventTriggerNotification>",
+                "",
+                raw,
+                count=1,
+                flags=re.DOTALL,
+            )
+        else:
+            return {"status": "unchanged"}
+
+        return await self.put(f"/ISAPI/Event/triggers/{trigger_id}", body=raw)
+
+    # -- AcuSense perimeter analytics (line / intrusion, human/vehicle) --
+
+    async def get_field_detection(self, channel: int = 1) -> dict:
+        """Get the intrusion (field) detection config."""
+        try:
+            return await self.get(f"/ISAPI/Smart/FieldDetection/{channel}")
+        except aiohttp.ClientResponseError:
+            return {}
+
+    def _default_field_detection_body(
+        self, enabled: bool, targets: list, sensitivity: int, channel: int
+    ) -> str:
+        """Build a full FieldDetection config with one full-frame region.
+
+        Used when the camera has no intrusion rule configured yet. Coordinates are
+        Hikvision normalized screen units (0-1000), and the region is a rectangle
+        inset slightly from the edges so it covers the whole scene. NOTE: the exact
+        element names (``sensitivityLevel``, ``timeThreshold``) and the normalized
+        coordinate range vary by firmware — verify against a real GET of
+        ``/ISAPI/Smart/FieldDetection/{channel}`` and adjust if the camera rejects
+        this body.
+        """
+        value = "true" if enabled else "false"
+        target = ",".join(targets) if targets else "human,vehicle"
+        corners = ((10, 10), (990, 10), (990, 990), (10, 990))
+        coords = "".join(
+            f"<RegionCoordinates><positionX>{x}</positionX>"
+            f"<positionY>{y}</positionY></RegionCoordinates>"
+            for x, y in corners
+        )
+        return (
+            f'<FieldDetection version="2.0" xmlns="{ISAPI_NS}">'
+            f"<enabled>{value}</enabled>"
+            f"<normalizedScreenSize>"
+            f"<normalizedScreenWidth>1000</normalizedScreenWidth>"
+            f"<normalizedScreenHeight>1000</normalizedScreenHeight>"
+            f"</normalizedScreenSize>"
+            f"<FieldDetectionRegionList>"
+            f"<FieldDetectionRegion>"
+            f"<id>1</id><enabled>true</enabled>"
+            f"<sensitivityLevel>{sensitivity}</sensitivityLevel>"
+            f"<timeThreshold>5</timeThreshold>"
+            f"<RegionCoordinatesList>{coords}</RegionCoordinatesList>"
+            f"<detectionTarget>{target}</detectionTarget>"
+            f"</FieldDetectionRegion>"
+            f"</FieldDetectionRegionList>"
+            f"</FieldDetection>"
+        )
+
+    async def set_field_detection(
+        self,
+        enabled: bool,
+        targets: list = None,
+        sensitivity: int = 50,
+        channel: int = 1,
+    ) -> dict:
+        """
+        Create/enable intrusion (field) detection and set its target + sensitivity.
+
+        If the camera already has a rule (with its own region/calibration) we
+        GET-modify-PUT it, preserving the region and only touching the enable flags,
+        target filter and sensitivity. If there is no rule yet we PUT a default
+        full-frame region so the feature works out of the box. ``targets`` is a list
+        of Hikvision target tokens (``human``, ``vehicle``, ...).
+        """
+        try:
+            raw = (await self.get_bytes(
+                f"/ISAPI/Smart/FieldDetection/{channel}"
+            )).decode(errors="ignore")
+        except Exception:
+            raw = ""
+
+        if "<FieldDetectionRegion" not in raw:
+            # No rule configured on the camera — create a default full-frame one.
+            body = self._default_field_detection_body(
+                enabled, targets, sensitivity, channel
+            )
+            return await self.put(
+                f"/ISAPI/Smart/FieldDetection/{channel}", body=body
+            )
+
+        value = "true" if enabled else "false"
+        # First <enabled> is the rule; second is region 1.
+        raw = re.sub(r"<enabled>.*?</enabled>", f"<enabled>{value}</enabled>", raw, count=2)
+        if targets:
+            raw = re.sub(
+                r"<detectionTarget>.*?</detectionTarget>",
+                f"<detectionTarget>{','.join(targets)}</detectionTarget>",
+                raw,
+                count=1,
+            )
+        if "<sensitivityLevel>" in raw:
+            raw = re.sub(
+                r"<sensitivityLevel>.*?</sensitivityLevel>",
+                f"<sensitivityLevel>{sensitivity}</sensitivityLevel>",
+                raw,
+                count=1,
+            )
+        return await self.put(f"/ISAPI/Smart/FieldDetection/{channel}", body=raw)
+
+    async def get_line_detection(self, channel: int = 1) -> dict:
+        """Get the line-crossing detection config."""
+        try:
+            return await self.get(f"/ISAPI/Smart/LineDetection/{channel}")
+        except aiohttp.ClientResponseError:
+            return {}
+
+    # -- ColorVu supplement light (built-in white-light deterrent) --
+
+    async def set_supplement_light_mode(self, mode: str, channel: int = 1) -> dict:
+        """
+        Set the ColorVu supplement-light mode.
+
+        ``eventIntelligence`` keeps the IR light on for normal night vision and
+        flashes the white light on a smart event (the built-in deterrent);
+        ``colorVuWhiteLight`` is always-on white; ``irLight`` is IR only;
+        ``close`` is off.
+        """
+        raw = (await self.get_bytes(
+            f"/ISAPI/Image/channels/{channel}/supplementLight"
+        )).decode(errors="ignore")
+        raw = re.sub(
+            r"<supplementLightMode>.*?</supplementLightMode>",
+            f"<supplementLightMode>{mode}</supplementLightMode>",
+            raw,
+            count=1,
+        )
+        return await self.put(f"/ISAPI/Image/channels/{channel}/supplementLight", body=raw)
+
+    async def get_supplement_light_mode(self, channel: int = 1) -> str:
+        cfg = {}
+        try:
+            cfg = await self.get(f"/ISAPI/Image/channels/{channel}/supplementLight")
+        except aiohttp.ClientResponseError:
+            pass
+        return cfg.get("supplementLightMode", "")
+
+    async def set_smart_alarm_linkage(
+        self,
+        enabled: bool,
+        methods: list = None,
+        event: str = "fielddetection",
+        index: int = 1,
+    ) -> dict:
+        """
+        Arm/disarm the built-in flash/siren "active response" on a smart-event
+        trigger (e.g. ``fielddetection-1``).
+
+        ``methods`` is a subset of ``{"whiteLight", "audio", "record"}``. When both
+        ``whiteLight`` and ``audio`` are requested we use the camera's combined
+        ``LightAudioAlarm`` token (strobe flash + audible siren together — the /SRB
+        active response); a single one maps to the ``whiteLight`` or ``audio`` token.
+        ``record`` links the event to on-camera recording (to the microSD card), which
+        is what makes event clips fetchable later via ContentMgmt. These responses fire
+        on-camera, independent of doover. We GET-modify-PUT the trigger so any existing
+        center notifications are preserved, first stripping the linkage tokens we manage
+        so re-arming is idempotent.
+        """
+        methods = set(methods or [])
+        tokens = []
+        if {"whiteLight", "audio"} <= methods:
+            tokens.append("LightAudioAlarm")
+        elif "whiteLight" in methods:
+            tokens.append("whiteLight")
+        elif "audio" in methods:
+            tokens.append("audio")
+        if "record" in methods:
+            tokens.append("record")
+
+        trigger_id = f"{event}-{index}"
+        raw = (await self.get_bytes(
+            f"/ISAPI/Event/triggers/{trigger_id}"
+        )).decode(errors="ignore")
+
+        for tok in ("LightAudioAlarm", "whiteLight", "audio", "record"):
+            raw = re.sub(
+                rf"<EventTriggerNotification>\s*<id>{tok}</id>.*?</EventTriggerNotification>",
+                "",
+                raw,
+                flags=re.DOTALL,
+            )
+
+        if enabled and tokens:
+            notifs = "".join(
+                f"<EventTriggerNotification><id>{t}</id>"
+                f"<notificationMethod>{t}</notificationMethod>"
+                f"<notificationRecurrence>beginning</notificationRecurrence>"
+                f"</EventTriggerNotification>"
+                for t in tokens
+            )
+            raw = raw.replace(
+                "</EventTriggerNotificationList>",
+                f"{notifs}</EventTriggerNotificationList>",
+                1,
+            )
+        return await self.put(f"/ISAPI/Event/triggers/{trigger_id}", body=raw)
+
+    # -- Native arming schedule (so linkages fire on-camera, doover-independent) --
+
+    DAYS = (
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+        "Sunday",
+    )
+
+    # Endpoints that carry a smart-event arming schedule vary across firmware, so
+    # we try each in turn and keep the first that the camera accepts.
+    _SCHEDULE_ENDPOINTS = (
+        "/ISAPI/Event/schedules/{trigger_id}",
+        "/ISAPI/Event/triggers/{trigger_id}/schedule",
+    )
+
+    @staticmethod
+    def _night_time_segments(start_hour: int, end_hour: int) -> list:
+        """Daily (begin, end) segments covering the night window.
+
+        A window that wraps midnight (e.g. 18 -> 6) can't be expressed as one
+        segment, so it becomes two on every day: 00:00-06:00 and 18:00-24:00.
+        """
+        if start_hour == end_hour:
+            return []
+        if start_hour < end_hour:
+            return [(f"{start_hour:02d}:00:00", f"{end_hour:02d}:00:00")]
+        segments = []
+        if end_hour > 0:
+            segments.append(("00:00:00", f"{end_hour:02d}:00:00"))
+        if start_hour < 24:
+            segments.append((f"{start_hour:02d}:00:00", "24:00:00"))
+        return segments
+
+    def _arming_schedule_body(self, start_hour: int, end_hour: int) -> str:
+        segments = self._night_time_segments(start_hour, end_hour)
+        days = "".join(
+            f"<TimeRange><Day>{day}</Day><TimeSegmentList>"
+            + "".join(
+                f"<TimeSegment><BeginTime>{begin}</BeginTime>"
+                f"<EndTime>{end}</EndTime></TimeSegment>"
+                for begin, end in segments
+            )
+            + "</TimeSegmentList></TimeRange>"
+            for day in self.DAYS
+        )
+        return (
+            f'<Schedule version="2.0" xmlns="{ISAPI_NS}">'
+            f"<ScheduleType>Time</ScheduleType>"
+            f"<TimeRangeList>{days}</TimeRangeList>"
+            f"</Schedule>"
+        )
+
+    async def set_event_arming_schedule(
+        self,
+        start_hour: int,
+        end_hour: int,
+        event: str = "fielddetection",
+        index: int = 1,
+    ) -> bool:
+        """
+        Write the camera's native arming schedule for a smart event.
+
+        With this set, the event's linkages (flash / siren / record) only fire inside
+        the window and do so *on-camera* — no doover involvement, so the deterrent
+        still works while the device is offline.
+
+        NOTE: the resource that carries a smart-event arming schedule is firmware
+        dependent and is not exposed at all on some builds, so this is best-effort:
+        we try each candidate endpoint and return whether any succeeded. Callers must
+        fall back to app-driven arming when this returns False.
+        """
+        body = self._arming_schedule_body(start_hour, end_hour)
+        trigger_id = f"{event}-{index}"
+        for template in self._SCHEDULE_ENDPOINTS:
+            endpoint = template.format(trigger_id=trigger_id)
+            try:
+                await self.put(endpoint, body=body)
+            except Exception as e:
+                _LOGGER.debug(f"Arming schedule not accepted at {endpoint}: {e}")
+                continue
+            _LOGGER.info(f"Native arming schedule written at {endpoint}.")
+            return True
+        return False
+
+    # -- On-camera storage (microSD) --
+
+    # Storage the camera reports but can't record to yet (no card, or a card that
+    # needs formatting) — treated as "no storage" so callers fall back.
+    _USABLE_STORAGE_STATUS = ("ok", "idle")
+
+    async def get_storage(self) -> list:
+        """List the camera's storage volumes (microSD, NAS, ...).
+
+        Returns a flattened dict per volume, with keys like ``status``,
+        ``capacity`` (MB), ``freeSpace`` and ``hddType``.
+        """
+        try:
+            raw = await self.get_bytes("/ISAPI/ContentMgmt/Storage")
+        except Exception as e:
+            _LOGGER.debug(f"Failed to read storage config: {e}")
+            return []
+
+        try:
+            root = ET.fromstring(raw.decode(errors="ignore"))
+        except ET.ParseError:
+            return []
+
+        return [
+            _xml_to_dict(element)
+            for element in root.iter()
+            if _strip_ns(element.tag) == "hdd"
+        ]
+
+    async def has_recording_storage(self) -> bool:
+        """
+        Whether the camera has storage it can actually record events to.
+
+        A card that is absent, unformatted or erroring reports a non-usable status
+        (or zero capacity), in which case the ``record`` linkage would silently write
+        nothing — so callers should fall back to pulling video another way.
+        """
+        for volume in await self.get_storage():
+            status = (volume.get("status") or "").strip().lower()
+            try:
+                capacity = int(volume.get("capacity") or 0)
+            except (TypeError, ValueError):
+                capacity = 0
+
+            if capacity > 0 and status in self._USABLE_STORAGE_STATUS:
+                _LOGGER.info(
+                    f"Camera storage available: type={volume.get('hddType')} "
+                    f"status={status} capacity={capacity}MB "
+                    f"free={volume.get('freeSpace')}MB"
+                )
+                return True
+        return False
+
+    # -- On-camera (microSD) recordings --
+
+    @staticmethod
+    def _isapi_time(value: datetime) -> str:
+        return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    async def search_recordings(
+        self,
+        start: datetime,
+        end: datetime,
+        track_id: int = 101,
+        max_results: int = 10,
+    ) -> list:
+        """
+        Search the camera's own storage (microSD) for recordings in a time window.
+
+        Returns a list of flattened match dicts, each carrying a
+        ``mediaSegmentDescriptor.playbackURI`` that :meth:`download_recording` can
+        fetch. ``track_id`` 101 is channel 1's main stream.
+        """
+        body = (
+            f'<CMSearchDescription version="2.0" xmlns="{ISAPI_NS}">'
+            f"<searchID>{uuid.uuid4()}</searchID>"
+            f"<trackIDList><trackID>{track_id}</trackID></trackIDList>"
+            f"<timeSpanList><timeSpan>"
+            f"<startTime>{self._isapi_time(start)}</startTime>"
+            f"<endTime>{self._isapi_time(end)}</endTime>"
+            f"</timeSpan></timeSpanList>"
+            f"<maxResults>{max_results}</maxResults>"
+            # Hikvision's own schema misspells "Position" — do not "fix" this.
+            f"<searchResultPostion>0</searchResultPostion>"
+            f"<metadataList><metadataDescriptor>"
+            f"//recordType.meta.std-cgi.com"
+            f"</metadataDescriptor></metadataList>"
+            f"</CMSearchDescription>"
+        )
+        raw = await self.post_bytes("/ISAPI/ContentMgmt/search", body)
+        try:
+            root = ET.fromstring(raw.decode(errors="ignore"))
+        except ET.ParseError:
+            return []
+
+        matches = []
+        for element in root.iter():
+            if _strip_ns(element.tag) == "searchMatchItem":
+                matches.append(_xml_to_dict(element))
+        return matches
+
+    async def download_recording(self, playback_uri: str) -> bytes:
+        """Download a recording segment (mp4 bytes) by its ``playbackURI``."""
+        body = (
+            f'<downloadRequest version="1.0" xmlns="{ISAPI_NS}">'
+            f"<playbackURI>{escape(playback_uri)}</playbackURI>"
+            f"</downloadRequest>"
+        )
+        return await self.post_bytes("/ISAPI/ContentMgmt/download", body)
+
     async def stream_events(self, callback, heartbeat: int = 5):
         """
         Subscribe to the ISAPI event notification stream (alertStream).
-        This is a long-lived HTTP connection that returns multipart XML events.
+
+        A long-lived HTTP connection returning ``multipart/mixed`` parts (the
+        boundary is the literal string ``boundary``). Each part is either an
+        ``application/xml`` ``<EventNotificationAlert>`` or, for ANPR, a trailing
+        ``image/jpeg`` part we ignore. We accumulate a buffer and hand each
+        complete ``<EventNotificationAlert>`` block to :meth:`_process_event`.
         """
         url = f"{self._base}/ISAPI/Event/notification/alertStream"
         if not (self._username or self._password):
@@ -265,24 +766,21 @@ class HikvisionClient:
 
             buffer = b""
             async for data, _ in response.content.iter_chunks():
-                if b"--boundary" in data:
-                    parts = data.split(b"--boundary")
-                    buffer += parts[0]
-                    if buffer.strip():
-                        await self._process_event(callback, buffer)
-
-                    for part in parts[1:-1]:
-                        if part.strip():
-                            await self._process_event(callback, part)
-
-                    buffer = parts[-1]
-                else:
-                    buffer += data
+                buffer += data
+                # Extract every complete alert block currently in the buffer.
+                while b"</EventNotificationAlert>" in buffer:
+                    end = buffer.index(b"</EventNotificationAlert>") + len(
+                        b"</EventNotificationAlert>"
+                    )
+                    block, buffer = buffer[:end], buffer[end:]
+                    await self._process_event(callback, block)
 
         except asyncio.CancelledError:
-            pass
+            raise
         except Exception:
             _LOGGER.debug("Event stream disconnected, reconnecting...")
+            if response is not None:
+                response.close()
             await asyncio.sleep(1)
             return await self.stream_events(callback, heartbeat)
         finally:
@@ -290,15 +788,13 @@ class HikvisionClient:
                 response.close()
 
     async def _process_event(self, callback, data: bytes):
-        """Parse and forward an event from the alert stream."""
+        """Parse and forward a single <EventNotificationAlert> from the stream."""
         try:
-            # Find the XML portion of the multipart chunk
             text = data.decode(errors="ignore")
-            xml_start = text.find("<")
-            if xml_start == -1:
+            start = text.find("<EventNotificationAlert")
+            if start == -1:
                 return
-            xml_text = text[xml_start:]
-            root = ET.fromstring(xml_text)
+            root = ET.fromstring(text[start:])
             event = _xml_to_dict(root)
 
             if asyncio.iscoroutinefunction(callback):
@@ -319,6 +815,27 @@ class HikvisionClient:
             try:
                 auth = DigestAuth(self._username, self._password, self._session)
                 response = await auth.request("GET", self._base + url)
+                response.raise_for_status()
+                return await response.read()
+            finally:
+                if response is not None:
+                    response.close()
+
+    async def post_bytes(self, url: str, body: str = None) -> bytes:
+        """POST request with an XML body, returning raw bytes.
+
+        Used by the ContentMgmt search/download endpoints, which take an XML request
+        body and return either XML (search) or binary mp4 (download).
+        """
+        async with async_timeout.timeout(TIMEOUT_SECONDS):
+            response = None
+            try:
+                auth = DigestAuth(self._username, self._password, self._session)
+                kwargs = {}
+                if body:
+                    kwargs["data"] = body
+                    kwargs["headers"] = {"Content-Type": "application/xml"}
+                response = await auth.request("POST", self._base + url, **kwargs)
                 response.raise_for_status()
                 return await response.read()
             finally:

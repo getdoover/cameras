@@ -17,7 +17,10 @@ from .engines.dahua_fixed import DahuaFixedCamera
 from .engines.generic import GenericRTSPCamera
 from .engines.bosch_ptz import BoschPTZCamera
 from .engines.hikvision_thermal import HikVisionThermal
+from .engines.hikvision_anpr import HikvisionANPRCamera
+from .engines.hikvision_acusense import HikvisionAcuSenseCamera
 from .events import (
+    ANPREvent,
     MotionDetectEvent,
     MotionDetectEventType,
     SDPOfferPayload,
@@ -30,6 +33,9 @@ log = logging.getLogger()
 GET_NOW_CMD_NAME = "camera_snapshots"
 LAST_SNAPSHOT_CMD_NAME = "last_cam_snapshot"
 UI_CONNECT_POWERON_TIMEOUT_SEC = 60 * 15  # 15min
+# How far before an intruder event to search the camera's SD card, to cover the
+# camera's pre-record buffer.
+EVENT_CLIP_LOOKBACK_SEC = 10
 
 
 class CameraApplication(Application):
@@ -60,6 +66,11 @@ class CameraApplication(Application):
 
         self.snapshot_running = None
         self._shutdown_at = None
+
+        # Event-clip loop state: while an intruder event keeps re-firing we keep
+        # pulling new SD recordings; the loop exits once the cooldown lapses.
+        self._intruder_clip_task = None
+        self._last_intruder_event_at = None
 
         # the below is probably a "fix in doover 2.0" problem to have some better / more native
         # camera feels
@@ -107,6 +118,21 @@ class CameraApplication(Application):
                 )
             case CameraType.hikvision_thermal:
                 self.engine = HikVisionThermal(self.config)
+            case CameraType.hikvision_anpr:
+                self.engine = HikvisionANPRCamera(
+                    self.config,
+                    self.on_motion_event_callback,
+                    self.on_anpr_event_callback,
+                    self.sync_presets,
+                    self.clear_preset,
+                )
+            case CameraType.hikvision_acusense:
+                self.engine = HikvisionAcuSenseCamera(
+                    self.config,
+                    self.on_motion_event_callback,
+                    self.sync_presets,
+                    self.clear_preset,
+                )
             case _:
                 raise ValueError(f"Unknown camera type: {self.config.type.value}")
 
@@ -117,6 +143,8 @@ class CameraApplication(Application):
         await self.sync_presets()
 
     async def close(self):
+        if self._intruder_clip_task:
+            self._intruder_clip_task.cancel()
         if self.engine:
             await self.engine.close()
 
@@ -152,9 +180,27 @@ class CameraApplication(Application):
         log.info("Finished accepting SDP offer and published.")
 
     async def main_loop(self):
+        await self.update_alarm_schedule()
+
         if self.check_snapshot_can_run():
             log.info("Running snapshot from main loop.")
             await self.lock_snapshot_and_run()
+
+    async def update_alarm_schedule(self):
+        """Arm/disarm the camera's native night alarm based on the time window.
+
+        Only a fallback for AcuSense: when the camera accepted a native arming
+        schedule at setup, it gates the linkage itself and arm_night_deterrent
+        no-ops. The relay pulse happens per-event (see on_motion_event_callback).
+        Both arm calls are idempotent, so running every loop is cheap.
+        """
+        if not self.config.alarm.intruder_alarm_enabled.value:
+            return
+        night = self.config.is_night()
+        if isinstance(self.engine, HikvisionANPRCamera):
+            await self.engine.arm_night_alarm(night)
+        elif isinstance(self.engine, HikvisionAcuSenseCamera):
+            await self.engine.arm_night_deterrent(night)
 
     def check_snapshot_can_run(self):
         if self.config.snapshot.enabled.value is False:
@@ -320,9 +366,155 @@ class CameraApplication(Application):
                     camera_name, {"sdp": answer}, max_age_secs=-1
                 )
 
+    async def publish_camera_event(self, kind: str, **extra):
+        """Publish a structured event to the ``camera_event`` channel.
+
+        This is the hook doover automations subscribe to (publish onward, etc.).
+        ``kind`` is the event class — "intruder", "person", "vehicle", "anpr" — and
+        callers add whatever detail is relevant to that kind.
+        """
+        payload = {
+            "kind": kind,
+            "app_key": self.app_key,
+            "display_name": self.app_display_name,
+            **extra,
+        }
+        try:
+            await self.create_message("camera_event", payload)
+        except Exception as e:
+            log.warning(f"Failed to publish camera_event: {e}", exc_info=e)
+
+    async def run_event_clip_loop(self):
+        """Pull new SD-card recordings while an intruder event stays active.
+
+        How each clip is captured is the engine's business (SD card vs ffmpeg); we
+        just keep asking for the next one. Runs until ``event_clip_cooldown`` seconds
+        pass with no new detection; each new detection pushes
+        ``_last_intruder_event_at`` forward and extends the loop.
+        """
+        interval = self.config.alarm.event_clip_interval.value
+        cooldown = self.config.alarm.event_clip_cooldown.value
+        # ffmpeg mode spends the interval recording, so waiting again would leave a
+        # gap between clips; SD mode returns immediately and must pace itself.
+        paces_itself = self.engine.event_clip_mode == "ffmpeg"
+        # The camera pre-records a few seconds before the trigger, so the event's
+        # segment can start before this loop does — look back far enough to match it.
+        started_at = datetime.now(tz=timezone.utc) - timedelta(seconds=EVENT_CLIP_LOOKBACK_SEC)
+        self.engine.reset_clip_tracking()
+
+        try:
+            await self.power_management.acquire()
+            while True:
+                last = self._last_intruder_event_at
+                if (
+                    last is None
+                    or (datetime.now(tz=timezone.utc) - last).total_seconds() > cooldown
+                ):
+                    break
+
+                try:
+                    clip = await self.engine.get_event_clip(started_at)
+                except Exception as e:
+                    log.warning(f"Failed to capture event clip: {e}", exc_info=e)
+                    clip = None
+
+                if clip:
+                    log.info(f"Uploading event clip ({clip.size} bytes).")
+                    try:
+                        await self.device_agent.create_message(self.app_key, {}, [clip])
+                    except Exception as e:
+                        log.warning(f"Failed to publish event clip: {e}", exc_info=e)
+
+                if not paces_itself:
+                    await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            raise
+        finally:
+            self._intruder_clip_task = None
+
+    def start_event_clip_loop(self):
+        """Start the clip loop if it isn't already running for this event."""
+        if self._intruder_clip_task and not self._intruder_clip_task.done():
+            return  # already running — the extended timestamp keeps it alive
+        self._intruder_clip_task = asyncio.create_task(self.run_event_clip_loop())
+
+    async def on_anpr_event_callback(self, event: ANPREvent):
+        log.info(f"ANPR event: plate={event.plate}, vehicle={event.vehicle_type}.")
+        if event.plate:
+            await self.tags.last_plate.set(event.plate)
+        await self.lock_snapshot_and_run()
+
+        await self.publish_camera_event(
+            "anpr",
+            plate=event.plate,
+            vehicle_type=event.vehicle_type,
+            confidence=event.confidence,
+        )
+
+        plate = event.plate or "unknown"
+        payload = {
+            "message": f"{self.app_display_name} detected vehicle plate {plate}.",
+            "topic": "anpr_event",
+            "severity": "Info",
+        }
+        await self.create_message("notifications", payload)
+
     async def on_motion_event_callback(self, event: MotionDetectEvent):
         log.info(f"Motion event detected, type: {event.type}.")
+
+        # Night intruder handling — applies to the Hikvision event cameras when
+        # their intruder alarm is armed and we're in the night window. Covers
+        # unclassified motion (ANPR VMD) and classified person/vehicle (AcuSense).
+        intruder_engine = isinstance(
+            self.engine, (HikvisionANPRCamera, HikvisionAcuSenseCamera)
+        )
+        if (
+            intruder_engine
+            and self.config.alarm.intruder_alarm_enabled.value
+            and self.config.is_night()
+        ):
+            label = {
+                MotionDetectEventType.person: "a person",
+                MotionDetectEventType.vehicle: "a vehicle",
+            }.get(event.type, "motion")
+
+            # Automations hook off this; publish before the slow media work so a
+            # downstream automation isn't waiting on a snapshot/clip upload.
+            await self.publish_camera_event(
+                "intruder", target=event.type.value, label=label
+            )
+
+            # Event clips are captured by a background loop that outlives this
+            # callback; a re-fire just extends it. When the engine couldn't resolve
+            # a capture mode we keep the old single-snapshot behaviour.
+            if getattr(self.engine, "event_clip_mode", None):
+                self._last_intruder_event_at = datetime.now(tz=timezone.utc)
+                self.start_event_clip_loop()
+            else:
+                await self.lock_snapshot_and_run()
+
+            # The camera's own deterrent (flash / siren) is already armed natively;
+            # the app pulses the external siren/strobe relay too.
+            if hasattr(self.engine, "fire_alarm"):
+                await self.engine.fire_alarm()
+
+            payload = {
+                "message": f"{self.app_display_name} detected {label} (possible intruder).",
+                "topic": "motion_event_intruder",
+                "severity": "Warning",
+            }
+            await self.create_message("notifications", payload)
+            return
+
+        # Outside the night window (or alarm disabled), raw unclassified motion
+        # is not actionable — only classified person/vehicle events continue below.
+        if event.type is MotionDetectEventType.motion:
+            return
+
         await self.lock_snapshot_and_run()
+
+        if event.type in (MotionDetectEventType.person, MotionDetectEventType.vehicle):
+            await self.publish_camera_event(event.type.value, target=event.type.value)
 
         match event.type:
             case MotionDetectEventType.person:

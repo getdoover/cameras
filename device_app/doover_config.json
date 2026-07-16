@@ -51,6 +51,8 @@
                         "UniFi (Generic)",
                         "Generic IP",
                         "Hikvision (Thermal)",
+                        "Hikvision (ANPR)",
+                        "Hikvision (AcuSense)",
                         "Bosch (PTZ)"
                     ],
                     "title": "Camera Type",
@@ -432,6 +434,20 @@
                     },
                     "uniqueItems": true
                 },
+                "detection_sensitivity": {
+                    "title": "Detection Sensitivity",
+                    "x-name": "detection_sensitivity",
+                    "x-hidden": false,
+                    "type": [
+                        "integer",
+                        "null"
+                    ],
+                    "x-required": false,
+                    "description": "On-camera intrusion (field) detection sensitivity (0-100). Higher detects smaller/further/faster targets but risks more false alarms. Hikvision AcuSense only.",
+                    "default": 50,
+                    "x-position": 7,
+                    "x-advanced": true
+                },
                 "control_enabled": {
                     "title": "Control Enabled",
                     "x-name": "control_enabled",
@@ -443,7 +459,7 @@
                     "x-required": false,
                     "description": "Allow control (movement) of PTZ cameras.",
                     "default": true,
-                    "x-position": 7
+                    "x-position": 8
                 },
                 "thermal_config": {
                     "title": "Thermal Config",
@@ -451,7 +467,7 @@
                     "x-hidden": false,
                     "type": "object",
                     "x-required": true,
-                    "x-position": 8,
+                    "x-position": 9,
                     "properties": {
                         "enabled": {
                             "title": "Enabled",
@@ -485,6 +501,212 @@
                     "required": [],
                     "x-collapsible": true,
                     "x-defaultCollapsed": false
+                },
+                "anpr_config": {
+                    "title": "ANPR Config",
+                    "x-name": "anpr_config",
+                    "x-hidden": false,
+                    "type": "object",
+                    "x-required": true,
+                    "x-position": 10,
+                    "properties": {
+                        "enabled": {
+                            "title": "Enabled",
+                            "x-name": "enabled",
+                            "x-hidden": false,
+                            "type": [
+                                "boolean",
+                                "null"
+                            ],
+                            "x-required": false,
+                            "description": "Enable on-camera ANPR (license plate + vehicle detection). Only available on Hikvision ANPR/DeepinView '/P' models with road-traffic mode.",
+                            "default": false,
+                            "x-position": 1
+                        },
+                        "minimum_confidence": {
+                            "title": "Minimum Confidence",
+                            "x-name": "minimum_confidence",
+                            "x-hidden": false,
+                            "type": [
+                                "integer",
+                                "null"
+                            ],
+                            "x-required": false,
+                            "description": "Ignore plate reads below this confidence (0-100).",
+                            "default": 0,
+                            "x-position": 2,
+                            "x-advanced": true
+                        }
+                    },
+                    "additionalElements": true,
+                    "required": [],
+                    "x-collapsible": true,
+                    "x-defaultCollapsed": false
+                },
+                "intruder_alarm_config": {
+                    "title": "Intruder Alarm Config",
+                    "x-name": "intruder_alarm_config",
+                    "x-hidden": false,
+                    "type": "object",
+                    "x-required": true,
+                    "x-position": 11,
+                    "properties": {
+                        "intruder_alarm_enabled": {
+                            "title": "Intruder Alarm Enabled",
+                            "x-name": "intruder_alarm_enabled",
+                            "x-hidden": false,
+                            "type": [
+                                "boolean",
+                                "null"
+                            ],
+                            "x-required": false,
+                            "description": "At night, pulse the alarm output (external siren/strobe) and send a notification when motion is detected.",
+                            "default": false,
+                            "x-position": 1
+                        },
+                        "alarm_output_port": {
+                            "title": "Alarm Output Port",
+                            "x-name": "alarm_output_port",
+                            "x-hidden": false,
+                            "type": [
+                                "integer",
+                                "null"
+                            ],
+                            "x-required": false,
+                            "description": "Camera alarm-output relay to pulse for the external siren/strobe.",
+                            "default": 1,
+                            "x-position": 2,
+                            "x-advanced": true
+                        },
+                        "alarm_pulse_duration": {
+                            "title": "Alarm Pulse Duration",
+                            "x-name": "alarm_pulse_duration",
+                            "x-hidden": false,
+                            "type": [
+                                "integer",
+                                "null"
+                            ],
+                            "x-required": false,
+                            "description": "Seconds to hold the alarm-output relay on per trigger.",
+                            "default": 10,
+                            "x-position": 3,
+                            "x-advanced": true
+                        },
+                        "camera_buzzer": {
+                            "title": "Camera Buzzer",
+                            "x-name": "camera_buzzer",
+                            "x-hidden": false,
+                            "type": [
+                                "boolean",
+                                "null"
+                            ],
+                            "x-required": false,
+                            "description": "Also sound the camera's built-in buzzer on night motion (fires locally even if doover is offline).",
+                            "default": true,
+                            "x-position": 4,
+                            "x-advanced": true
+                        },
+                        "flash_light": {
+                            "title": "Flash Light",
+                            "x-name": "flash_light",
+                            "x-hidden": false,
+                            "type": [
+                                "boolean",
+                                "null"
+                            ],
+                            "x-required": false,
+                            "description": "Flash the camera's built-in light (ColorVu white light on AcuSense) on a smart event at night (built-in, fires even if doover is offline).",
+                            "default": true,
+                            "x-position": 5,
+                            "x-advanced": true
+                        },
+                        "audible_alarm": {
+                            "title": "Audible Alarm",
+                            "x-name": "audible_alarm",
+                            "x-hidden": false,
+                            "type": [
+                                "boolean",
+                                "null"
+                            ],
+                            "x-required": false,
+                            "description": "On cameras with a built-in speaker (e.g. AcuSense /SRB), sound the audible siren on a smart event at night. Combined with the flash light this uses the camera's built-in flash+siren active response.",
+                            "default": true,
+                            "x-position": 6,
+                            "x-advanced": true
+                        },
+                        "night_start_hour": {
+                            "title": "Night Start Hour",
+                            "x-name": "night_start_hour",
+                            "x-hidden": false,
+                            "type": [
+                                "integer",
+                                "null"
+                            ],
+                            "x-required": false,
+                            "description": "Hour (0-23, camera/site local time) the intruder alarm arms.",
+                            "default": 18,
+                            "x-position": 7
+                        },
+                        "night_end_hour": {
+                            "title": "Night End Hour",
+                            "x-name": "night_end_hour",
+                            "x-hidden": false,
+                            "type": [
+                                "integer",
+                                "null"
+                            ],
+                            "x-required": false,
+                            "description": "Hour (0-23, camera/site local time) the intruder alarm disarms.",
+                            "default": 6,
+                            "x-position": 8
+                        },
+                        "event_video_clips": {
+                            "title": "Event Video Clips",
+                            "x-name": "event_video_clips",
+                            "x-hidden": false,
+                            "type": [
+                                "boolean",
+                                "null"
+                            ],
+                            "x-required": false,
+                            "description": "On an intruder event at night, upload video of the event to doover (instead of a single still). Uses the camera's own microSD recording where a card is fitted, otherwise records the stream with ffmpeg (which needs the 'full' image). AcuSense only.",
+                            "default": false,
+                            "x-position": 9,
+                            "x-advanced": true
+                        },
+                        "event_clip_interval": {
+                            "title": "Event Clip Interval",
+                            "x-name": "event_clip_interval",
+                            "x-hidden": false,
+                            "type": [
+                                "integer",
+                                "null"
+                            ],
+                            "x-required": false,
+                            "description": "Seconds between event clips: how often the camera's SD card is checked for a new recording, or the length of each ffmpeg-recorded clip.",
+                            "default": 5,
+                            "x-position": 10,
+                            "x-advanced": true
+                        },
+                        "event_clip_cooldown": {
+                            "title": "Event Clip Cooldown",
+                            "x-name": "event_clip_cooldown",
+                            "x-hidden": false,
+                            "type": [
+                                "integer",
+                                "null"
+                            ],
+                            "x-required": false,
+                            "description": "Stop fetching event clips this many seconds after the last detection.",
+                            "default": 15,
+                            "x-position": 11,
+                            "x-advanced": true
+                        }
+                    },
+                    "additionalElements": true,
+                    "required": [],
+                    "x-collapsible": true,
+                    "x-defaultCollapsed": false
                 }
             },
             "additionalElements": true,
@@ -494,7 +716,9 @@
                 "camera_snapshot_config",
                 "camera_rtsp_server_config",
                 "object_detection",
-                "thermal_config"
+                "thermal_config",
+                "anpr_config",
+                "intruder_alarm_config"
             ]
         },
         "lambda_config": {},

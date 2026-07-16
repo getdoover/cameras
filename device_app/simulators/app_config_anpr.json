@@ -1,0 +1,50 @@
+{
+    "camera_name": "anpr_cam",
+    "camera_type": "Hikvision (ANPR)",
+    "camera_connection_config": {
+        "camera_username": "admin",
+        "camera_password": "doover321",
+        "ip_address": "192.168.50.209",
+        "rtsp_port": 554,
+        "rtsp_channel": "Streaming/Channels/101",
+        "control_port": 80
+    },
+    "camera_power_config": {
+        "enabled": false,
+        "power_pin": 0,
+        "off_after": 120,
+        "wake_delay": 30
+    },
+    "camera_snapshot_config": {
+        "enabled": true,
+        "period": 600,
+        "mode": "Image",
+        "duration": 1,
+        "fps": 5,
+        "scale": "720:-1"
+    },
+    "camera_rtsp_server_config": {
+        "enabled": true,
+        "address": "http://localhost:8083",
+        "username": "demo",
+        "password": "demo"
+    },
+    "object_detection": [],
+    "control_enabled": true,
+    "thermal_config": {
+        "enabled": false,
+        "channel": ""
+    },
+    "anpr_config": {
+        "enabled": true,
+        "minimum_confidence": 0
+    },
+    "intruder_alarm_config": {
+        "intruder_alarm_enabled": true,
+        "alarm_output_port": 1,
+        "alarm_pulse_duration": 10,
+        "camera_buzzer": true,
+        "night_start_hour": 18,
+        "night_end_hour": 6
+    }
+}
