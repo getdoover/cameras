@@ -158,7 +158,9 @@ class CameraApplication(Application):
         await self.engine.setup()
         await self.setup_rtsp_server()
         await self.sync_presets()
-        await self.publish_detection_zones()
+        # log_update=False: starting up isn't somebody changing the zones, so it
+        # shouldn't land in the audit log.
+        await self.publish_detection_zones(log_update=False)
 
     async def close(self):
         if self._intruder_clip_task:
@@ -653,32 +655,33 @@ class CameraApplication(Application):
 
         return state
 
-    async def publish_detection_zones(self):
-        """Seed the command's value so the editor has something to draw on startup.
+    async def publish_detection_zones(self, error: str = None, log_update: bool = True):
+        """Read the camera's zones and publish them as the command's own value.
 
-        The zones live in the `ui_cmds` aggregate as the command's own value — same
-        as any other interaction, where the value is the current state. After this,
-        it's kept up to date by the handler's reply (auto_update).
+        The zones live in the `ui_cmds` aggregate as the command's value — same as any
+        other interaction, where the value is the current state — so this is both how
+        the editor gets its initial state and how it learns what a write actually did.
         """
-        # log_update=False: starting up isn't somebody changing the zones, so it
-        # shouldn't land in the audit log.
-        await self.ui.set_detection_zones.set(
-            await self.build_zone_state(), log_update=False
-        )
+        state = await self.build_zone_state(error)
+        await self.ui.set_detection_zones.set(state, log_update=log_update)
+        return state
 
-    @ui.handler(SET_ZONES_CMD, parser=DetectionZonesPayload.from_dict)
+    @ui.handler(SET_ZONES_CMD, parser=DetectionZonesPayload.from_dict, auto_update=False)
     async def on_set_detection_zones(self, ctx, payload: DetectionZonesPayload):
-        """Write detection zones to the camera and report back what actually stuck.
+        """Write detection zones to the camera and publish what actually stuck.
 
         Runs over `ui_cmds` so the commands system records who changed the zones and
-        when. The return value is written back to this command's own value by
-        auto_update — so the reply *is* the new state, and the frontend reads it from
-        the same place it wrote to.
+        when.
+
+        auto_update is off deliberately. It would write the *request* back as the new
+        value (it's handed the parsed payload, not what we return) — which is both the
+        echo we're trying to avoid, and unserialisable here since our parser hands
+        back a DetectionZonesPayload. So we publish the read-back ourselves.
         """
         if not self.engine.ZONE_CAPABILITIES["supported"]:
             error = f"{self.config.type.value} does not support detection zones"
             log.info(f"Rejecting zone write: {error}")
-            return await self.build_zone_state(error=error)
+            return await self.publish_detection_zones(error=error)
 
         error = None
         try:
@@ -687,7 +690,7 @@ class CameraApplication(Application):
             log.warning(f"Failed to set detection zones: {e}", exc_info=e)
             error = str(e)
 
-        return await self.build_zone_state(error=error)
+        return await self.publish_detection_zones(error=error)
 
     async def sync_presets(self, active_preset: str = None):
         if self.config.control_enabled.value:

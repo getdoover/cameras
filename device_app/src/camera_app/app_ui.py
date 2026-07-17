@@ -114,7 +114,9 @@ class CameraUI(ui.UI):
         # Switch's value is its current state — so there's no separate read path.
         # See CameraApplication.on_set_detection_zones.
         self.set_detection_zones = ui.Interaction(
-            "Set Detection Zones", name=SET_ZONES_CMD, show_activity=True
+            "Set Detection Zones",
+            name=SET_ZONES_CMD,
+            hidden=True,
         )
 
         self.tab_container = ui.TabContainer(
@@ -124,6 +126,7 @@ class CameraUI(ui.UI):
         )
         self.add_element(self.tab_container)
         self.add_element(self.set_detection_zones)
+
 
 def export():
     pass

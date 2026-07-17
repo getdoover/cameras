@@ -92,6 +92,46 @@ def test_zone_native_roundtrip():
     assert dahua._to_native(1.0, 1.0) == (8191, 8191)
 
 
+def test_set_zones_blanks_unused_slots():
+    """Dropping a zone must delete it, not leave the old polygon behind.
+
+    The camera keeps all four region slots, so a slot left out of the body silently
+    keeps whatever it had - zones would be editable but never deletable.
+    """
+    import asyncio
+    import types
+    from camera_app.engines.hikvision_acusense import HikvisionAcuSenseCamera
+    from camera_app.events import DetectionZone, DetectionTarget
+
+    cam = HikvisionAcuSenseCamera.__new__(HikvisionAcuSenseCamera)
+    cam.config = types.SimpleNamespace(sensitivity=types.SimpleNamespace(value=50))
+
+    written = {}
+
+    async def fake_write(regions, channel=1):
+        written["regions"] = regions
+
+    cam.client = types.SimpleNamespace(set_field_detection_regions=fake_write)
+
+    zone = DetectionZone(
+        id=1,
+        points=[(0.0, 0.0), (0.5, 0.0), (0.5, 0.5)],
+        targets=[DetectionTarget.person],
+        sensitivity=70,
+    )
+    asyncio.run(cam.set_detection_zones([zone]))
+
+    regions = written["regions"]
+    # Every slot is written, not just the one we set.
+    assert len(regions) == HikvisionAcuSenseCamera.ZONE_CAPABILITIES["max_zones"]
+    assert [r["id"] for r in regions] == [1, 2, 3, 4]
+    # The real zone keeps its points; the rest are blanked to clear them.
+    assert len(regions[0]["points"]) == 3
+    assert regions[0]["sensitivity"] == 70
+    assert regions[0]["targets"] == ["human"]
+    assert all(r["points"] == [] for r in regions[1:])
+
+
 def test_zone_capabilities_advertised():
     from camera_app.engines.hikvision_acusense import HikvisionAcuSenseCamera
     from camera_app.engines.generic import GenericRTSPCamera

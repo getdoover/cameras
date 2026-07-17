@@ -509,7 +509,20 @@ class HikvisionAcuSenseCamera(CameraBase):
                 }
             )
 
-        log.info(f"Writing {len(regions)} detection zone(s) to the camera.")
+        # The camera keeps every region slot it has, so one we simply leave out of
+        # the body holds on to its old polygon — zones could be edited but never
+        # deleted. Blank the slots we aren't using so dropping a zone removes it.
+        for index in range(len(regions) + 1, max_zones + 1):
+            regions.append(
+                {
+                    "id": index,
+                    "points": [],
+                    "targets": list(RULE_TARGETS),
+                    "sensitivity": self.config.sensitivity.value,
+                }
+            )
+
+        log.info(f"Writing {len(zones)} detection zone(s) to the camera.")
         await self.client.set_field_detection_regions(regions)
 
     async def get_thumbnail(self) -> File:

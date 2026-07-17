@@ -555,12 +555,13 @@ class HikvisionClient:
         Replace the intrusion rule's regions.
 
         ``regions`` is a list of dicts with ``id``, ``points`` (native 0..1000 (x, y)
-        tuples), ``targets`` (Hikvision tokens) and ``sensitivity``.
+        tuples), ``targets`` (Hikvision tokens) and ``sensitivity``. A region with no
+        points clears that slot — callers should pass every slot they want blanked,
+        since one left out of the body keeps whatever it had.
 
         The rule-level ``<enabled>`` is preserved from the current config. Note the
         camera ignores each region's own ``<enabled>`` — it answers OK and leaves it
-        false — so a region can't be individually switched off this way; leave a zone
-        out entirely to remove it.
+        false — so a region can't be individually switched off this way.
         """
         raw = (await self.get_bytes(
             f"/ISAPI/Smart/FieldDetection/{channel}"
