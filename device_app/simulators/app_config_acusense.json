@@ -48,8 +48,8 @@
         "audible_alarm": true,
         "night_start_hour": 18,
         "night_end_hour": 6,
-        "event_video_clips": true,
-        "event_clip_interval": 5,
-        "event_clip_cooldown": 15
+        "event_video": true,
+        "event_video_cooldown": 15,
+        "event_video_max_length": 120
     }
 }

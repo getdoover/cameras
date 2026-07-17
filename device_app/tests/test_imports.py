@@ -42,6 +42,69 @@ def test_night_time_segments():
     assert HikvisionClient._night_time_segments(20, 0) == [("20:00:00", "24:00:00")]
 
 
+def test_detection_zone_payload():
+    from camera_app.events import DetectionTarget, DetectionZone, DetectionZonesPayload
+
+    payload = DetectionZonesPayload.from_dict(
+        {
+            "zones": [
+                {
+                    "id": 1,
+                    "name": "gate",
+                    "enabled": True,
+                    "points": [[0.1, 0.2], [0.9, 0.2], [0.9, 0.8]],
+                    "targets": ["person", "vehicle", "wormhole"],
+                    "sensitivity": 60,
+                }
+            ]
+        }
+    )
+    zone = payload.zones[0]
+    assert zone.id == 1 and zone.name == "gate" and zone.sensitivity == 60
+    # An unknown target from a newer frontend is dropped, not fatal.
+    assert zone.targets == [DetectionTarget.person, DetectionTarget.vehicle]
+    assert zone.to_dict()["points"] == [[0.1, 0.2], [0.9, 0.2], [0.9, 0.8]]
+
+    # A UI drag can overshoot the frame; coords are clamped rather than rejected.
+    out = DetectionZone.from_dict({"id": 1, "points": [[-0.5, 1.7], [0.5, 0.5], [1, 0]]})
+    assert out.points == [(0.0, 1.0), (0.5, 0.5), (1.0, 0.0)]
+
+
+def test_zone_native_roundtrip():
+    from camera_app.engines.hikvision_acusense import HikvisionAcuSenseCamera
+    from camera_app.engines.dahua_base import DahuaCameraBase
+
+    hik = HikvisionAcuSenseCamera.__new__(HikvisionAcuSenseCamera)
+    dahua = DahuaCameraBase.__new__(DahuaCameraBase)
+
+    for cam in (hik, dahua):
+        for point in ((0.0, 0.0), (0.5, 0.5), (1.0, 1.0), (0.25, 0.75)):
+            x, y = cam._from_native(*cam._to_native(*point))
+            assert abs(x - point[0]) < 0.001, (cam, point)
+            assert abs(y - point[1]) < 0.001, (cam, point)
+
+    # Hikvision's y axis is flipped relative to our top-left origin, so the top of
+    # the frame must map to the far end of its range - not to 0.
+    assert hik._to_native(0.0, 0.0) == (0, 1000)
+    assert hik._to_native(1.0, 1.0) == (1000, 0)
+    # Dahua shares our top-left origin, so no flip.
+    assert dahua._to_native(0.0, 0.0) == (0, 0)
+    assert dahua._to_native(1.0, 1.0) == (8191, 8191)
+
+
+def test_zone_capabilities_advertised():
+    from camera_app.engines.hikvision_acusense import HikvisionAcuSenseCamera
+    from camera_app.engines.generic import GenericRTSPCamera
+
+    caps = HikvisionAcuSenseCamera.ZONE_CAPABILITIES
+    assert caps["supported"] and caps["max_zones"] == 4
+    assert (caps["min_points"], caps["max_points"]) == (3, 10)
+    # The camera ignores a region's enabled flag, so the UI must not offer a toggle.
+    assert caps["supports_disable"] is False
+    # A camera with no zone support must say so, so the UI hides the editor.
+    assert GenericRTSPCamera.ZONE_CAPABILITIES["supported"] is False
+
+
 def test_arming_schedule_body():
     import xml.etree.ElementTree as ET
     from camera_app.clients.hikvision import HikvisionClient

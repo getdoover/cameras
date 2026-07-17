@@ -455,6 +455,76 @@ class DahuaClient:
         """
         return await self.get_config("VideoAnalyseRule")
 
+    async def get_ivs_regions(self, channel: int = 0) -> list:
+        """
+        Read the IVS rules' detection regions in native (0..8191) coordinates.
+
+        Returns one dict per rule with ``index``, ``name``, ``enabled``, ``type``,
+        ``points`` and ``targets``. The config comes back flattened as
+        ``table.VideoAnalyseRule[0][1].Config.DetectRegion[2][0]=4096``, so this
+        reassembles it into rules and points.
+
+        NOTE: unverified — written against Dahua's config layout but never run
+        against a real Dahua camera.
+        """
+        cfg = await self.get_ivs_rules()
+        prefix = rf"table\.VideoAnalyseRule\[{channel}\]\[(\d+)\]\."
+        rules = {}
+
+        for key, value in cfg.items():
+            match = re.match(prefix + r"(.*)", key)
+            if not match:
+                continue
+            index, field = int(match.group(1)), match.group(2)
+            rule = rules.setdefault(
+                index,
+                {"index": index, "points": {}, "targets": [], "name": None,
+                 "enabled": False, "type": None},
+            )
+
+            if field == "Enable":
+                rule["enabled"] = str(value).lower() == "true"
+            elif field == "Name":
+                rule["name"] = value
+            elif field == "Type":
+                rule["type"] = value
+            else:
+                point = re.match(r"Config\.DetectRegion\[(\d+)\]\[(\d+)\]", field)
+                if point:
+                    idx, axis = int(point.group(1)), int(point.group(2))
+                    rule["points"].setdefault(idx, [0, 0])[axis] = int(value)
+                    continue
+                target = re.match(r"Config\.(?:ObjectTypes|TrackTargets)\[(\d+)\]", field)
+                if target:
+                    rule["targets"].append(value)
+
+        result = []
+        for rule in sorted(rules.values(), key=lambda r: r["index"]):
+            rule["points"] = [tuple(p) for _, p in sorted(rule["points"].items())]
+            result.append(rule)
+        return result
+
+    async def set_ivs_region(
+        self, index: int, points: list, channel: int = 0, targets: list = None
+    ) -> dict:
+        """
+        Write one IVS rule's detection region, in native (0..8191) coordinates.
+
+        Only the region (and optionally the target filter) is touched — the rule's
+        type, name and size filters are left as configured on the camera.
+
+        NOTE: unverified — see :meth:`get_ivs_regions`.
+        """
+        base = f"VideoAnalyseRule[{channel}][{index}]"
+        items = [
+            (f"{base}.Config.DetectRegion[{i}][{axis}]", str(value))
+            for i, point in enumerate(points)
+            for axis, value in enumerate(point)
+        ]
+        for i, target in enumerate(targets or []):
+            items.append((f"{base}.Config.ObjectTypes[{i}]", target))
+        return await self.batch_set_config(*items)
+
     async def set_all_ivs_rules(self, channel: int, enabled: bool):
         """
         Sets all IVS rules to enabled or disabled

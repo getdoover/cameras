@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 
 import aiohttp
-from pydoover import rpc
+from pydoover import rpc, ui
 from pydoover.docker import Application
 from pydoover.models import EventSubscription, AggregateUpdateEvent
 
@@ -21,10 +21,12 @@ from .engines.hikvision_anpr import HikvisionANPRCamera
 from .engines.hikvision_acusense import HikvisionAcuSenseCamera
 from .events import (
     ANPREvent,
+    DetectionZonesPayload,
     MotionDetectEvent,
     MotionDetectEventType,
     SDPOfferPayload,
     CAMERA_CONTROL_CHANNEL,
+    SET_ZONES_CMD,
 )
 from .power_management import CameraPowerManagement
 
@@ -36,6 +38,21 @@ UI_CONNECT_POWERON_TIMEOUT_SEC = 60 * 15  # 15min
 # How far before an intruder event to search the camera's SD card, to cover the
 # camera's pre-record buffer.
 EVENT_CLIP_LOOKBACK_SEC = 10
+
+# Why a snapshot/video was captured, attached to the message payload so a gallery can
+# label or filter it. The detection reasons mirror the `camera_event` channel's
+# `kind`, so the media and the automation event agree on what happened.
+REASON_SCHEDULE = "schedule"  # the periodic snapshot timer
+REASON_MANUAL = "manual"  # somebody asked for one
+REASON_INTRUDER = "intruder"  # a detection inside the night alarm window
+SNAPSHOT_REASONS = (
+    REASON_SCHEDULE,
+    REASON_MANUAL,
+    REASON_INTRUDER,
+    "person",
+    "vehicle",
+    "anpr",
+)
 
 
 class CameraApplication(Application):
@@ -67,8 +84,8 @@ class CameraApplication(Application):
         self.snapshot_running = None
         self._shutdown_at = None
 
-        # Event-clip loop state: while an intruder event keeps re-firing we keep
-        # pulling new SD recordings; the loop exits once the cooldown lapses.
+        # Event-video state: recording runs for as long as the intruder keeps
+        # re-triggering, and stops once the cooldown lapses with no new detection.
         self._intruder_clip_task = None
         self._last_intruder_event_at = None
 
@@ -141,6 +158,7 @@ class CameraApplication(Application):
         await self.engine.setup()
         await self.setup_rtsp_server()
         await self.sync_presets()
+        await self.publish_detection_zones()
 
     async def close(self):
         if self._intruder_clip_task:
@@ -223,10 +241,10 @@ class CameraApplication(Application):
 
         return False
 
-    async def lock_snapshot_and_run(self):
+    async def lock_snapshot_and_run(self, reason: str = REASON_SCHEDULE):
         self.snapshot_running = True
         try:
-            await self.run_snapshot()
+            await self.run_snapshot(reason)
         except Exception as e:
             log.error(f"Error getting snapshot: {str(e)}", exc_info=e)
         self.snapshot_running = False
@@ -237,7 +255,9 @@ class CameraApplication(Application):
         # might as well update presets when we're fetching snapshots...
         await self.sync_presets()
 
-    async def run_snapshot(self, retries: int = 3, ping_timeout: int = 20):
+    async def run_snapshot(
+        self, reason: str = REASON_SCHEDULE, retries: int = 3, ping_timeout: int = 20
+    ):
         await self.power_management.acquire()
 
         # await a successful ping to the camera
@@ -281,7 +301,7 @@ class CameraApplication(Application):
             return False
 
         try:
-            await self.device_agent.create_message(self.app_key, {}, files)
+            await self.upload_media(files[0], reason)
         except Exception as e:
             log.warning(f"Failed to publish snapshot: {e}", exc_info=e)
         else:
@@ -372,6 +392,45 @@ class CameraApplication(Application):
                     camera_name, {"sdp": answer}, max_age_secs=-1
                 )
 
+    async def upload_media(self, media, reason: str, thumbnail=None):
+        """Publish a snapshot/video, with a thumbnail and a payload describing both.
+
+        The message payload names which attachment is which, so a gallery or preview
+        timeline can pick the thumbnail without hardcoding filenames, and says why
+        the capture happened, e.g.::
+
+            {"media": "snapshot.mp4", "thumbnail": "thumbnail.jpg",
+             "reason": "person", "night": true}
+
+        ``reason`` is one of :data:`SNAPSHOT_REASONS`, and matches the ``kind`` of the
+        matching ``camera_event`` message.
+
+        ``night`` is only present when the camera states it outright; when it's
+        absent the image itself can be inspected (an IR frame is monochrome), which
+        is left to the consumer rather than paying for it on the device.
+        """
+        if thumbnail is None:
+            try:
+                thumbnail = await self.engine.get_thumbnail()
+            except Exception as e:
+                log.warning(f"Failed to get thumbnail: {e}", exc_info=e)
+
+        files = [media]
+        payload = {"media": media.filename, "reason": reason}
+        if thumbnail:
+            files.append(thumbnail)
+            payload["thumbnail"] = thumbnail.filename
+
+        try:
+            night = await self.engine.detect_night()
+        except Exception as e:
+            log.warning(f"Failed to read day/night state: {e}", exc_info=e)
+            night = None
+        if night is not None:
+            payload["night"] = night
+
+        await self.device_agent.create_message(self.app_key, payload, files)
+
     async def publish_camera_event(self, kind: str, **extra):
         """Publish a structured event to the ``camera_event`` channel.
 
@@ -390,65 +449,82 @@ class CameraApplication(Application):
         except Exception as e:
             log.warning(f"Failed to publish camera_event: {e}", exc_info=e)
 
-    async def run_event_clip_loop(self):
-        """Pull new SD-card recordings while an intruder event stays active.
+    async def watch_for_event_end(self, stop: asyncio.Event):
+        """Set ``stop`` once the intruder event has gone quiet.
 
-        How each clip is captured is the engine's business (SD card vs ffmpeg); we
-        just keep asking for the next one. Runs until ``event_clip_cooldown`` seconds
-        pass with no new detection; each new detection pushes
-        ``_last_intruder_event_at`` forward and extends the loop.
+        Each detection pushes ``_last_intruder_event_at`` forward, so an intruder who
+        keeps setting the camera off keeps the recording running.
         """
-        interval = self.config.alarm.event_clip_interval.value
         cooldown = self.config.alarm.event_clip_cooldown.value
-        # ffmpeg mode spends the interval recording, so waiting again would leave a
-        # gap between clips; SD mode returns immediately and must pace itself.
-        paces_itself = self.engine.event_clip_mode == "ffmpeg"
-        # The camera pre-records a few seconds before the trigger, so the event's
-        # segment can start before this loop does — look back far enough to match it.
-        started_at = datetime.now(tz=timezone.utc) - timedelta(seconds=EVENT_CLIP_LOOKBACK_SEC)
-        self.engine.reset_clip_tracking()
+        while True:
+            last = self._last_intruder_event_at
+            if (
+                last is None
+                or (datetime.now(tz=timezone.utc) - last).total_seconds() > cooldown
+            ):
+                stop.set()
+                return
+            await asyncio.sleep(1)
+
+    async def run_event_video(self):
+        """Capture the whole intruder event as one video and upload it.
+
+        Recording runs until the event goes quiet (or hits the max-length cap), then
+        uploads a single file — rather than chopping the event into fixed-length
+        clips. How it's captured is the engine's business (SD card vs ffmpeg).
+        """
+        # The camera pre-records a few seconds before the trigger, so its recording of
+        # the event starts before we do — look back far enough to catch that.
+        started_at = datetime.now(tz=timezone.utc) - timedelta(
+            seconds=EVENT_CLIP_LOOKBACK_SEC
+        )
+        stop = asyncio.Event()
+        watcher = asyncio.create_task(self.watch_for_event_end(stop))
+        thumbnail = None
 
         try:
             await self.power_management.acquire()
-            while True:
-                last = self._last_intruder_event_at
-                if (
-                    last is None
-                    or (datetime.now(tz=timezone.utc) - last).total_seconds() > cooldown
-                ):
-                    break
-
-                try:
-                    clip = await self.engine.get_event_clip(started_at)
-                except Exception as e:
-                    log.warning(f"Failed to capture event clip: {e}", exc_info=e)
-                    clip = None
-
-                if clip:
-                    log.info(f"Uploading event clip ({clip.size} bytes).")
-                    try:
-                        await self.device_agent.create_message(self.app_key, {}, [clip])
-                    except Exception as e:
-                        log.warning(f"Failed to publish event clip: {e}", exc_info=e)
-
-                if not paces_itself:
-                    await asyncio.sleep(interval)
+            recorder = asyncio.create_task(
+                self.engine.record_event_video(
+                    started_at, stop, self.config.alarm.event_clip_max_secs.value
+                )
+            )
+            # Grab the preview while the recording runs, so it catches the intruder
+            # at the trigger rather than an empty scene once they've left.
+            try:
+                thumbnail = await self.engine.get_thumbnail()
+            except Exception as e:
+                log.warning(f"Failed to get event thumbnail: {e}", exc_info=e)
+            video = await recorder
         except asyncio.CancelledError:
             raise
+        except Exception as e:
+            log.warning(f"Failed to capture event video: {e}", exc_info=e)
+            video = None
         finally:
+            watcher.cancel()
             self._intruder_clip_task = None
 
-    def start_event_clip_loop(self):
-        """Start the clip loop if it isn't already running for this event."""
+        if not video:
+            return
+
+        log.info(f"Uploading event video ({video.size} bytes).")
+        try:
+            await self.upload_media(video, REASON_INTRUDER, thumbnail=thumbnail)
+        except Exception as e:
+            log.warning(f"Failed to publish event video: {e}", exc_info=e)
+
+    def start_event_video(self):
+        """Start recording this event, unless it's already being recorded."""
         if self._intruder_clip_task and not self._intruder_clip_task.done():
-            return  # already running — the extended timestamp keeps it alive
-        self._intruder_clip_task = asyncio.create_task(self.run_event_clip_loop())
+            return  # already recording — the extended timestamp keeps it going
+        self._intruder_clip_task = asyncio.create_task(self.run_event_video())
 
     async def on_anpr_event_callback(self, event: ANPREvent):
         log.info(f"ANPR event: plate={event.plate}, vehicle={event.vehicle_type}.")
         if event.plate:
             await self.tags.last_plate.set(event.plate)
-        await self.lock_snapshot_and_run()
+        await self.lock_snapshot_and_run("anpr")
 
         await self.publish_camera_event(
             "anpr",
@@ -490,14 +566,14 @@ class CameraApplication(Application):
                 "intruder", target=event.type.value, label=label
             )
 
-            # Event clips are captured by a background loop that outlives this
-            # callback; a re-fire just extends it. When the engine couldn't resolve
-            # a capture mode we keep the old single-snapshot behaviour.
+            # Event video is captured by a background task that outlives this
+            # callback; a re-fire just extends the recording. When the engine couldn't
+            # resolve a capture mode we keep the single-snapshot behaviour.
             if getattr(self.engine, "event_clip_mode", None):
                 self._last_intruder_event_at = datetime.now(tz=timezone.utc)
-                self.start_event_clip_loop()
+                self.start_event_video()
             else:
-                await self.lock_snapshot_and_run()
+                await self.lock_snapshot_and_run(REASON_INTRUDER)
 
             # The camera's own deterrent (flash / siren) is already armed natively;
             # the app pulses the external siren/strobe relay too.
@@ -517,7 +593,7 @@ class CameraApplication(Application):
         if event.type is MotionDetectEventType.motion:
             return
 
-        await self.lock_snapshot_and_run()
+        await self.lock_snapshot_and_run(event.type.value)
 
         if event.type in (MotionDetectEventType.person, MotionDetectEventType.vehicle):
             await self.publish_camera_event(event.type.value, target=event.type.value)
@@ -551,8 +627,67 @@ class CameraApplication(Application):
             return {self.app_key: "Snapshot already in progress"}
 
         log.info("Snapshot command received")
-        await self.lock_snapshot_and_run()
+        await self.lock_snapshot_and_run(REASON_MANUAL)
         return {self.app_key: "success"}
+
+    async def build_zone_state(self, error: str = None) -> dict:
+        """Read the camera's current zones, plus what it can do with them.
+
+        Always reads back off the camera rather than echoing what was asked for:
+        these cameras will answer OK and then quietly ignore a field (Hikvision drops
+        a region's `enabled`, for one), so an echo would show the frontend a state
+        that doesn't exist.
+        """
+        state = {"capabilities": self.engine.ZONE_CAPABILITIES, "zones": []}
+        if error:
+            state["error"] = error
+
+        if self.engine.ZONE_CAPABILITIES["supported"]:
+            try:
+                zones = await self.engine.get_detection_zones()
+            except Exception as e:
+                log.warning(f"Failed to read detection zones: {e}", exc_info=e)
+                state.setdefault("error", str(e))
+            else:
+                state["zones"] = [z.to_dict() for z in zones]
+
+        return state
+
+    async def publish_detection_zones(self):
+        """Seed the command's value so the editor has something to draw on startup.
+
+        The zones live in the `ui_cmds` aggregate as the command's own value — same
+        as any other interaction, where the value is the current state. After this,
+        it's kept up to date by the handler's reply (auto_update).
+        """
+        # log_update=False: starting up isn't somebody changing the zones, so it
+        # shouldn't land in the audit log.
+        await self.ui.set_detection_zones.set(
+            await self.build_zone_state(), log_update=False
+        )
+
+    @ui.handler(SET_ZONES_CMD, parser=DetectionZonesPayload.from_dict)
+    async def on_set_detection_zones(self, ctx, payload: DetectionZonesPayload):
+        """Write detection zones to the camera and report back what actually stuck.
+
+        Runs over `ui_cmds` so the commands system records who changed the zones and
+        when. The return value is written back to this command's own value by
+        auto_update — so the reply *is* the new state, and the frontend reads it from
+        the same place it wrote to.
+        """
+        if not self.engine.ZONE_CAPABILITIES["supported"]:
+            error = f"{self.config.type.value} does not support detection zones"
+            log.info(f"Rejecting zone write: {error}")
+            return await self.build_zone_state(error=error)
+
+        error = None
+        try:
+            await self.engine.set_detection_zones(payload.zones)
+        except Exception as e:
+            log.warning(f"Failed to set detection zones: {e}", exc_info=e)
+            error = str(e)
+
+        return await self.build_zone_state(error=error)
 
     async def sync_presets(self, active_preset: str = None):
         if self.config.control_enabled.value:

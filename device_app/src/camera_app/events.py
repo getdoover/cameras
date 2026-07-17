@@ -4,6 +4,14 @@ from typing import Any
 
 CAMERA_CONTROL_CHANNEL = "camera_control"
 
+# Detection zones are written with this command, which goes over `ui_cmds` rather
+# than the camera control channel so it runs through the commands system and picks up
+# its audit logging. It needs a matching interaction in the UI tree (see
+# app_ui.CameraUI) — the UI command manager looks the interaction up by name to build
+# the handler's context. There's no matching "get": the command's own value in the
+# `ui_cmds` aggregate holds the current zones, as it would for any other interaction.
+SET_ZONES_CMD = "set_detection_zones"
+
 
 class MotionDetectEventType(Enum):
     vehicle = "vehicle"
@@ -72,6 +80,99 @@ class ANPREvent:
             direction=g("ANPR.direction"),
             data=alert,
         )
+
+class DetectionTarget(Enum):
+    """What a zone should detect, in app terms.
+
+    Vendors each have their own vocabulary (Hikvision ``human``, Dahua ``Human``);
+    engines map to/from these so the frontend only ever sees one set of names.
+    """
+
+    person = "person"
+    vehicle = "vehicle"
+    animal = "animal"
+    other = "other"
+
+
+class DetectionZone:
+    """A detection zone in a device-agnostic coordinate space.
+
+    ``points`` are ``(x, y)`` pairs of floats in ``0..1``, with the origin at the
+    **top-left** of the frame, x increasing right and y increasing down — the same
+    space a frontend overlay on a video element uses. That way the UI sends back
+    exactly what the user drew and never has to know about the camera underneath;
+    each engine converts to its own native space (Hikvision 0..1000, Dahua 0..8191)
+    and flips axes where needed.
+    """
+
+    def __init__(
+        self,
+        id: int,
+        points: list,
+        enabled: bool = True,
+        name: str = None,
+        targets: list = None,
+        sensitivity: int = None,
+    ):
+        self.id = id
+        self.points = points
+        self.enabled = enabled
+        self.name = name
+        self.targets = targets or []
+        self.sensitivity = sensitivity
+
+    @staticmethod
+    def _clamp(value: float) -> float:
+        # A UI drag can overshoot the frame edge; cameras reject out-of-range
+        # coordinates, so pull them back rather than fail the whole write.
+        return min(1.0, max(0.0, float(value)))
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "DetectionZone":
+        points = [
+            (cls._clamp(p[0]), cls._clamp(p[1])) for p in payload.get("points", [])
+        ]
+        targets = []
+        for t in payload.get("targets", []):
+            try:
+                targets.append(DetectionTarget(t))
+            except ValueError:
+                pass  # unknown target from a newer frontend - ignore, don't fail
+
+        sensitivity = payload.get("sensitivity")
+        return cls(
+            id=int(payload.get("id", 1)),
+            points=points,
+            enabled=bool(payload.get("enabled", True)),
+            name=payload.get("name"),
+            targets=targets,
+            sensitivity=int(sensitivity) if sensitivity is not None else None,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = {
+            "id": self.id,
+            "enabled": self.enabled,
+            "points": [[round(x, 4), round(y, 4)] for x, y in self.points],
+            "targets": [t.value for t in self.targets],
+        }
+        if self.name is not None:
+            payload["name"] = self.name
+        if self.sensitivity is not None:
+            payload["sensitivity"] = self.sensitivity
+        return payload
+
+
+class DetectionZonesPayload:
+    """Payload for the ``set_detection_zones`` command."""
+
+    def __init__(self, zones: list):
+        self.zones = zones
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "DetectionZonesPayload":
+        return cls([DetectionZone.from_dict(z) for z in payload.get("zones", [])])
+
 
 class SDPOfferPayload:
     def __init__(self, stream_name: str, value: str):

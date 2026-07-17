@@ -95,25 +95,113 @@ a notification.
 | **Intruder Alarm › Flash Light** | Flash the camera's built-in light on a smart event at night | `true` |
 | **Intruder Alarm › Audible Alarm** | Sound the built-in siren on a smart event at night (with the flash light, uses the combined flash+siren active response) | `true` |
 | **Intruder Alarm › Night Start / End Hour** | Hour window (site-local) the alarm is armed | `18` / `6` |
-| **Intruder Alarm › Event Video Clips** | Upload video of the event instead of a single still | `false` |
-| **Intruder Alarm › Event Clip Interval** | Seconds between clips (SD poll interval, or ffmpeg clip length) | `5` |
-| **Intruder Alarm › Event Clip Cooldown** | Stop capturing clips this long after the last detection | `15` |
+| **Intruder Alarm › Event Video** | Upload a video of the event instead of a single still | `false` |
+| **Intruder Alarm › Event Video Cooldown** | Stop recording this long after the last detection | `15` |
+| **Intruder Alarm › Event Video Max Length** | Hard cap on a single event video (seconds) | `120` |
 
-**Event video clips** upload video for the duration of an intruder event. At startup the app probes the
-camera's storage (ISAPI `ContentMgmt/Storage`) and picks the best capture mode automatically:
+**Event video** captures an intruder event as **one continuous video**, not a series of clips. Recording
+starts on the first detection and keeps running for as long as the intruder keeps triggering the camera —
+each detection pushes the cooldown out — then the whole thing uploads as a single file. **Event Video Max
+Length** is the backstop so one persistent event can't record forever.
+
+At startup the app probes the camera's storage (ISAPI `ContentMgmt/Storage`) and picks a capture mode:
 
 | Camera storage | Mode | How it works |
 |---|---|---|
-| microSD fitted + formatted | **`sd`** | Adds a `record` linkage so the **camera** records the event to its card; the app fetches finalised segments over `ContentMgmt` and uploads each once. **No ffmpeg** (works on `slim`), and the camera records even if doover is offline. |
-| No/unformatted card, ffmpeg present | **`ffmpeg`** | The app records the RTSP stream itself in `Event Clip Interval`-second clips. Needs the **`full`** image; nothing is recorded while doover is down. |
+| microSD fitted + formatted | **`sd`** | Adds a `record` linkage so the **camera** records the event to its card; once the event ends the app pulls that span back in one download. **No ffmpeg** (works on `slim`), and the camera records even if doover is offline. |
+| No/unformatted card, ffmpeg present | **`ffmpeg`** | The app records the RTSP stream itself for the length of the event. Needs the **`full`** image (the deployment template selects it automatically); nothing is recorded while doover is down. |
 | No card, no ffmpeg (`slim`) | *off* | Falls back to the single-snapshot behaviour. |
 
-The chosen mode is logged at startup. In `sd` mode expect the first clip to lag the detection — the
-camera only indexes a segment once it has finished writing it, and segment length is set by the camera's
-own recording config, not by `Event Clip Interval`.
+The chosen mode is logged at startup. A card that is present but unformatted/erroring counts as **no**
+storage — the `record` linkage would arm and silently write nothing.
 
 > Note: face access-control is not supported by this model (no face engine); ANPR/plates stay with the
 > `/P` DeepinView camera. PPE/hard-hat still needs server-side inference.
+
+<br/>
+
+### Snapshot & video messages
+
+Every snapshot/video is published to the app's own channel with a **thumbnail** attached alongside the
+full-size media, plus a payload describing them — so a gallery or preview timeline doesn't have to
+download the full image, or hardcode filenames:
+
+```json
+{"media": "snapshot.jpg", "thumbnail": "thumbnail.jpg", "reason": "person", "night": true}
+```
+
+| Field | Meaning |
+|---|---|
+| `media` | Filename of the full-size attachment (`snapshot.jpg`, `snapshot.mp4`, `event.mp4`) |
+| `thumbnail` | Filename of the preview attachment. Absent if one couldn't be made |
+| `reason` | Why it was captured: `schedule`, `manual`, `intruder`, `person`, `vehicle`, `anpr` — matches the `camera_event` `kind` |
+| `night` | `true`/`false` — **only present when the camera states it outright** (see below) |
+
+On Hikvision the thumbnail is free: the camera's **sub-stream** picture is already thumbnail-sized
+(640×360, ~18KB vs 1920×1080/~117KB), so it's one extra HTTP GET with **no ffmpeg** — thumbnails work on
+the `slim` image. Other camera types scale a frame with ffmpeg, and simply get no thumbnail if ffmpeg
+isn't present. For an intruder event the thumbnail is grabbed **at the trigger**, while the video is
+still recording, so it shows the intruder rather than an empty scene.
+
+**`night`** comes from the camera's IR-cut filter state (`ircutFilter`), which is ground truth — a
+grey/foggy *daylight* scene looks washed out too, so the image alone can mislead. The field is omitted
+when the camera won't commit (mode `auto`/`schedule` describe how it decides, not what it decided, and
+non-Hikvision cameras aren't asked). When it's absent, work it out from the thumbnail client-side:
+
+> A night frame is **not** reliably a dark one — with the IR illuminator on, one measured *brighter*
+> (avg luma 136) than a full-colour test pattern (125). What gives it away is that it carries no colour:
+> average saturation sits at ~0. Key off **saturation**, not brightness.
+
+<br/>
+
+### Object detection zones
+
+Zones live entirely on the **`set_detection_zones`** command, over `ui_cmds` — its value in the aggregate
+is the current state (just as a switch's value is its current state), and the command writes it. There's
+no separate read path. The shape is identical across Hikvision and Dahua; the frontend never sees a vendor
+coordinate space.
+
+**Read — the command's value (`$cmds.app().set_detection_zones`):**
+
+```json
+{
+  "capabilities": {
+    "supported": true, "max_zones": 4, "min_points": 3, "max_points": 10,
+    "targets": ["person", "vehicle", "animal", "other"],
+    "supports_sensitivity": true, "supports_per_zone_targets": true,
+    "supports_disable": false
+  },
+  "zones": [
+    {"id": 1, "enabled": true, "points": [[0.1,0.1],[0.9,0.1],[0.9,0.9],[0.1,0.9]],
+     "targets": ["person","vehicle"], "sensitivity": 70}
+  ]
+}
+```
+
+**Write — the same command.** Send `{"zones": [...]}`; the reply is the shape above and becomes the
+command's new value, so you read it back from where you wrote it. Going through `ui_cmds` means the
+commands system records who changed the zones and when. The value is seeded at startup (without an audit
+entry — starting up isn't somebody editing zones).
+
+| Field | Meaning |
+|---|---|
+| `points` | `[x, y]` pairs, **normalised `0.0`–`1.0`, origin top-left, y down** — the same space as an overlay on the video element. Engines convert to native (Hikvision `0–1000`, Dahua `0–8191`) |
+| `id` | Zone/rule slot. Hikvision renumbers by position; on Dahua this must match an existing IVS rule |
+| `targets` | Any of `person`, `vehicle`, `animal`, `other` — check `capabilities.targets` for what this camera accepts |
+| `enabled` | Only meaningful when `capabilities.supports_disable` |
+| `sensitivity` | `0`–`100`. Only when `capabilities.supports_sensitivity` |
+
+**Always drive the editor off `capabilities`** rather than assuming:
+
+- `max_zones` / `min_points` / `max_points` — Hikvision genuinely rejects a 2-point or 11-point zone
+- `supports_disable: false` on Hikvision — it accepts a region `enabled` change, replies OK, and **ignores
+  it**. Offer *delete*, not a toggle
+- `supported: false` — hide the editor entirely
+
+Out-of-range points are clamped rather than rejected, so a drag past the frame edge won't fail the write.
+**The response is a read-back from the camera, not an echo** — this firmware will answer OK and silently
+drop a field, so trust what comes back, not what you sent. On failure the reply carries an `error` string
+alongside the unchanged zones.
 
 <br/>
 

@@ -240,26 +240,27 @@ class CameraAlarmConfig(config.Object):
         default=6,
     )
     event_clips_enabled = config.Boolean(
-        "Event Video Clips",
-        description="On an intruder event at night, upload video of the event to "
-        "doover (instead of a single still). Uses the camera's own microSD recording "
-        "where a card is fitted, otherwise records the stream with ffmpeg (which "
-        "needs the 'full' image). AcuSense only.",
+        "Event Video",
+        description="On an intruder event at night, upload a video of the event to "
+        "doover (instead of a single still). Recording runs for as long as the "
+        "intruder keeps being detected, and uploads as one video. Uses the camera's "
+        "own microSD recording where a card is fitted, otherwise records the stream "
+        "with ffmpeg (which needs the 'full' image). AcuSense only.",
         default=False,
         advanced=True,
     )
-    event_clip_interval = config.Integer(
-        "Event Clip Interval",
-        description="Seconds between event clips: how often the camera's SD card is "
-        "checked for a new recording, or the length of each ffmpeg-recorded clip.",
-        default=5,
+    event_clip_cooldown = config.Integer(
+        "Event Video Cooldown",
+        description="Stop recording this many seconds after the last detection. Each "
+        "new detection extends the recording.",
+        default=15,
         advanced=True,
     )
-    event_clip_cooldown = config.Integer(
-        "Event Clip Cooldown",
-        description="Stop fetching event clips this many seconds after the last "
-        "detection.",
-        default=15,
+    event_clip_max_secs = config.Integer(
+        "Event Video Max Length",
+        description="Hard limit on a single event video, in seconds. Stops one "
+        "long-running event from recording (and uploading) forever.",
+        default=120,
         advanced=True,
     )
 

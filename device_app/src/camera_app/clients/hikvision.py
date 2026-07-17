@@ -28,6 +28,10 @@ TIMEOUT_SECONDS = 20
 ISAPI_NS = "http://www.hikvision.com/ver20/XMLSchema"
 NS = {"hik": ISAPI_NS}
 
+# Hikvision expresses smart-detection coordinates against a virtual screen of this
+# size rather than the real resolution (reported as <normalizedScreenSize>).
+NORMALIZED_SCREEN = 1000
+
 
 def _strip_ns(tag: str) -> str:
     """Strip XML namespace from a tag name."""
@@ -85,12 +89,18 @@ class HikvisionClient:
         stream_id = channel * 100 + subtype + 1
         return f"rtsp://{self._username}:{self._password}@{self._address}:{self._rtsp_port}/Streaming/Channels/{stream_id}"
 
-    async def get_snapshot(self, channel: int = 1) -> bytes:
+    async def get_snapshot(self, channel: int = 1, subtype: int = 0) -> bytes:
         """
         Takes a snapshot from the camera and returns binary JPEG data.
-        Channel 101 = ch1 main stream, 102 = ch1 sub stream, etc.
+
+        ``subtype`` picks the stream, as for :meth:`get_rtsp_stream_url`: 0=main
+        (101), 1=sub (102). The sub stream is a ready-made thumbnail — measured
+        640x360 / ~18KB against 1920x1080 / ~117KB on the main stream — so it saves
+        scaling one ourselves. Note this firmware ignores the
+        ``videoResolutionWidth``/``Height`` query params, so picking the stream is
+        the only way to ask for a smaller picture.
         """
-        stream_id = channel * 100 + 1
+        stream_id = channel * 100 + subtype + 1
         return await self.get_bytes(f"/ISAPI/Streaming/Channels/{stream_id}/picture")
 
     async def get_status(self) -> bool:
@@ -484,6 +494,93 @@ class HikvisionClient:
             )
         return await self.put(f"/ISAPI/Smart/FieldDetection/{channel}", body=raw)
 
+    async def get_field_detection_regions(self, channel: int = 1) -> list:
+        """
+        Read the intrusion rule's regions in native (0..1000) coordinates.
+
+        Returns one dict per region with ``id``, ``enabled``, ``points``,
+        ``targets`` and ``sensitivity``. The camera always reports its full set of
+        region slots, so unconfigured ones come back with no points.
+        """
+        try:
+            raw = await self.get_bytes(f"/ISAPI/Smart/FieldDetection/{channel}")
+            root = ET.fromstring(raw.decode(errors="ignore"))
+        except (ET.ParseError, Exception):
+            return []
+
+        regions = []
+        for element in root.iter():
+            if _strip_ns(element.tag) != "FieldDetectionRegion":
+                continue
+
+            region = {"points": [], "targets": [], "sensitivity": None}
+            for child in element.iter():
+                tag = _strip_ns(child.tag)
+                text = (child.text or "").strip()
+                if tag == "id" and "id" not in region:
+                    region["id"] = int(text or 0)
+                elif tag == "enabled":
+                    region["enabled"] = text == "true"
+                elif tag == "sensitivityLevel":
+                    region["sensitivity"] = int(text or 0)
+                elif tag == "detectionTarget":
+                    region["targets"] = [t for t in text.split(",") if t]
+                elif tag == "RegionCoordinates":
+                    coords = _xml_to_dict(child)
+                    region["points"].append(
+                        (int(coords.get("positionX", 0)), int(coords.get("positionY", 0)))
+                    )
+            regions.append(region)
+        return regions
+
+    @staticmethod
+    def _field_detection_region(region: dict) -> str:
+        coords = "".join(
+            f"<RegionCoordinates><positionX>{x}</positionX>"
+            f"<positionY>{y}</positionY></RegionCoordinates>"
+            for x, y in region["points"]
+        )
+        return (
+            f"<FieldDetectionRegion><id>{region['id']}</id>"
+            f"<enabled>true</enabled>"
+            f"<sensitivityLevel>{region['sensitivity']}</sensitivityLevel>"
+            f"<timeThreshold>{region.get('time_threshold', 1)}</timeThreshold>"
+            f"<RegionCoordinatesList>{coords}</RegionCoordinatesList>"
+            f"<detectionTarget>{','.join(region['targets'])}</detectionTarget>"
+            f"</FieldDetectionRegion>"
+        )
+
+    async def set_field_detection_regions(self, regions: list, channel: int = 1) -> dict:
+        """
+        Replace the intrusion rule's regions.
+
+        ``regions`` is a list of dicts with ``id``, ``points`` (native 0..1000 (x, y)
+        tuples), ``targets`` (Hikvision tokens) and ``sensitivity``.
+
+        The rule-level ``<enabled>`` is preserved from the current config. Note the
+        camera ignores each region's own ``<enabled>`` — it answers OK and leaves it
+        false — so a region can't be individually switched off this way; leave a zone
+        out entirely to remove it.
+        """
+        raw = (await self.get_bytes(
+            f"/ISAPI/Smart/FieldDetection/{channel}"
+        )).decode(errors="ignore")
+        match = re.search(r"<enabled>(.*?)</enabled>", raw)
+        rule_enabled = match.group(1) if match else "true"
+
+        blocks = "".join(self._field_detection_region(r) for r in regions)
+        body = (
+            f'<FieldDetection version="2.0" xmlns="{ISAPI_NS}">'
+            f"<id>{channel}</id><enabled>{rule_enabled}</enabled>"
+            f"<normalizedScreenSize>"
+            f"<normalizedScreenWidth>{NORMALIZED_SCREEN}</normalizedScreenWidth>"
+            f"<normalizedScreenHeight>{NORMALIZED_SCREEN}</normalizedScreenHeight>"
+            f"</normalizedScreenSize>"
+            f"<FieldDetectionRegionList>{blocks}</FieldDetectionRegionList>"
+            f"</FieldDetection>"
+        )
+        return await self.put(f"/ISAPI/Smart/FieldDetection/{channel}", body=body)
+
     async def get_line_detection(self, channel: int = 1) -> dict:
         """Get the line-crossing detection config."""
         try:
@@ -823,6 +920,23 @@ class HikvisionClient:
             if _strip_ns(element.tag) == "searchMatchItem":
                 matches.append(_xml_to_dict(element))
         return matches
+
+    def bound_playback_uri(
+        self, uri: str, start: datetime, end: datetime
+    ) -> str:
+        """Re-point a playbackURI's time range at ``start``..``end``.
+
+        A search hands back the URI of the whole segment the event fell inside, which
+        can be far longer than the event. The URI carries its span as query params, so
+        narrowing them makes the camera return only the part we want.
+        """
+        for param, value in (("starttime", start), ("endtime", end)):
+            replacement = f"{param}={self._isapi_time(value).replace('-', '').replace(':', '')}"
+            if re.search(rf"{param}=[^&]*", uri):
+                uri = re.sub(rf"{param}=[^&]*", replacement, uri)
+            else:
+                uri += ("&" if "?" in uri else "?") + replacement
+        return uri
 
     async def download_recording(self, playback_uri: str) -> bytes:
         """Download a recording segment (mp4 bytes) by its ``playbackURI``."""

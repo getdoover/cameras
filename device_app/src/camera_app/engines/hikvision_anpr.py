@@ -23,7 +23,7 @@ from datetime import datetime, timedelta
 import aiohttp
 from pydoover.models import File
 
-from .base import CameraBase
+from .base import CameraBase, THUMBNAIL_FILENAME
 from ..clients import HikvisionClient
 from ..events import ANPREvent, MotionDetectEvent, MotionDetectEventType
 
@@ -161,6 +161,35 @@ class HikvisionANPRCamera(CameraBase):
             size=len(snap),
             content_type="image/jpeg",
         )
+
+    async def get_thumbnail(self) -> File:
+        """The camera's sub-stream picture is already thumbnail-sized, so take that
+        rather than spending an ffmpeg pass scaling the main stream down."""
+        try:
+            snap = await self.client.get_snapshot(channel=1, subtype=1)
+        except Exception as e:
+            log.info(f"Couldn't fetch sub-stream thumbnail: {e}")
+            return None
+        return File(
+            filename=THUMBNAIL_FILENAME,
+            data=snap,
+            size=len(snap),
+            content_type="image/jpeg",
+        )
+
+    async def detect_night(self) -> bool:
+        """Ask the camera whether its IR-cut filter is engaged; None if it won't say
+        (``auto``/``schedule`` describe how it decides, not what it decided)."""
+        try:
+            cfg = await self.client.get_ir_cut_filter()
+        except Exception as e:
+            log.info(f"Couldn't read the camera's day/night state: {e}")
+            return None
+
+        mode = (cfg.get("IrcutFilterType") or "").strip().lower()
+        if mode in ("day", "night"):
+            return mode == "night"
+        return None
 
     async def ping(self, timeout: int):
         start = datetime.now()

@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import shutil
+import signal
 from datetime import datetime, timedelta
 import logging
 import uuid
@@ -11,6 +12,10 @@ from camera_app.app_config import CameraConfig, Mode
 
 OUTPUT_FILE_DIR = Path("/tmp/camera")
 MAX_MESSAGE_SIZE = 125_000
+
+# Preview image uploaded alongside each snapshot/video for gallery + timeline use.
+THUMBNAIL_FILENAME = "thumbnail.jpg"
+THUMBNAIL_WIDTH = 640
 
 
 log = logging.getLogger(__name__)
@@ -33,10 +38,38 @@ def ensure_ffmpeg() -> None:
 
 
 class CameraBase:
+    # What this camera can do with detection zones, so the frontend can constrain
+    # drawing (point limits, how many zones) instead of guessing and being silently
+    # rejected. Engines that support zones override this; the default advertises
+    # none, which is how the UI knows not to offer the editor.
+    ZONE_CAPABILITIES = {
+        "supported": False,
+        "max_zones": 0,
+        "min_points": 0,
+        "max_points": 0,
+        "targets": [],
+        "supports_sensitivity": False,
+        "supports_per_zone_targets": False,
+        "supports_disable": False,
+    }
+
     def __init__(self, config: "CameraConfig"):
         self.config = config
 
         self.ensure_output_dir()
+
+    # -- Detection zones (device-agnostic; see events.DetectionZone) --
+
+    async def get_detection_zones(self) -> list:
+        """Return the camera's current zones as :class:`DetectionZone` objects."""
+        return []
+
+    async def set_detection_zones(self, zones: list) -> None:
+        """Write ``zones`` to the camera. Overridden by engines that support it."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support detection zones"
+        )
+
 
     async def setup(self):
         pass
@@ -107,6 +140,44 @@ class CameraBase:
 
         return [data]
 
+    async def get_thumbnail(self) -> File:
+        """A small preview image for the gallery / timeline, or None if we can't.
+
+        Grabs a single frame off the stream and scales it down. Cameras whose HTTP
+        API can hand us a small image directly (e.g. Hikvision's sub-stream) should
+        override this — it saves an ffmpeg pass and works on the slim image.
+        """
+        if shutil.which("ffmpeg") is None:
+            # Not worth failing a snapshot over; the gallery can fall back to the
+            # full-size media.
+            return None
+
+        fp = self.get_output_filepath(str(uuid.uuid4()), "jpg")
+        cmd = (
+            f"ffmpeg -y -rtsp_transport tcp -analyzeduration 10M -probesize 10M "
+            f"-i {self.config.rtsp_uri} -frames:v 1 "
+            f"-vf 'scale={THUMBNAIL_WIDTH}:-1' {fp}"
+        )
+        try:
+            await self.run_ffmpeg_cmd(cmd)
+            return self._read_snapshot(fp, THUMBNAIL_FILENAME, "image/jpeg")
+        except Exception as e:
+            log.info(f"Couldn't build a thumbnail: {e}")
+            return None
+        finally:
+            fp.unlink(missing_ok=True)
+
+    async def detect_night(self) -> bool:
+        """Whether the camera is currently producing a night (IR) image.
+
+        None means "can't tell from the camera" — the flag is then left off the
+        payload and consumers work it out from the thumbnail instead. An IR frame is
+        monochrome, so near-zero colour saturation gives it away; note it is NOT
+        reliably dark (with the illuminator on, a night frame measured *brighter*
+        than a colour test pattern), so brightness alone gets it backwards.
+        """
+        return None
+
     async def get_still_snapshot(self, rtsp_uri: str) -> File:
         fp = self.get_output_filepath(str(uuid.uuid4()), "jpg")
         cmd = f"ffmpeg -y -rtsp_transport tcp -analyzeduration 10M -probesize 10M -i {rtsp_uri} -vf 'scale={self.config.snapshot.scale.value.value}' -frames:v 1 {fp}"
@@ -117,8 +188,8 @@ class CameraBase:
             fp.unlink(missing_ok=True)
 
     async def get_video_snapshot(self, rtsp_uri: str, secs: int = None) -> File:
-        # `secs` lets callers (e.g. the intruder event-clip loop) ask for a clip of
-        # a specific length; snapshots use the configured duration.
+        # `secs` lets callers ask for a video of a specific length; snapshots use the
+        # configured duration.
         secs = secs or self.config.snapshot.secs.value
         fp = self.get_output_filepath(str(uuid.uuid4()), "mp4")
 
@@ -140,6 +211,54 @@ class CameraBase:
             await self.run_ffmpeg_cmd(cmd)
             return self._read_snapshot(fp, "snapshot.mp4", "video/mp4")
         finally:
+            fp.unlink(missing_ok=True)
+
+    async def record_video_until(
+        self, rtsp_uri: str, stop: asyncio.Event, max_secs: int
+    ) -> File:
+        """Record one continuous mp4 until ``stop`` is set, or ``max_secs`` elapses.
+
+        Used for intruder event video, where the length isn't known up front — the
+        recording runs for as long as the intruder keeps triggering detections. The
+        ``-t`` cap is a backstop in case we never get told to stop.
+
+        ffmpeg is interrupted rather than killed: an mp4 only gets its trailer (and
+        so becomes playable) when ffmpeg shuts down cleanly, and SIGKILL would leave
+        an unplayable file.
+        """
+        ensure_ffmpeg()
+        self.ensure_output_dir()
+        fp = self.get_output_filepath(str(uuid.uuid4()), "mp4")
+
+        if self.config.snapshot.native_h264.value:
+            encode = "-c:v copy -c:a aac"
+        else:
+            encode = (
+                f"-vf 'fps={self.config.snapshot.fps.value},"
+                f"scale={self.config.snapshot.scale.value.value},format=yuv420p,"
+                f"pad=ceil(iw/2)*2:ceil(ih/2)*2' -c:v libx264 -c:a aac"
+            )
+        cmd = (
+            f"ffmpeg -y -rtsp_transport tcp -analyzeduration 10M -probesize 10M "
+            f"-i {rtsp_uri} -t {max_secs} {encode} {fp}"
+        )
+        log.info(f"running cmd: {cmd}")
+        proc = await asyncio.create_subprocess_shell(cmd)
+
+        try:
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=max_secs)
+            except asyncio.TimeoutError:
+                log.info(f"Event video hit the {max_secs}s cap.")
+
+            if proc.returncode is None:
+                proc.send_signal(signal.SIGINT)
+            await proc.wait()
+            return self._read_snapshot(fp, "event.mp4", "video/mp4")
+        finally:
+            if proc.returncode is None:
+                proc.kill()
+                await proc.wait()
             fp.unlink(missing_ok=True)
 
     async def run_ffmpeg_cmd(self, cmd):

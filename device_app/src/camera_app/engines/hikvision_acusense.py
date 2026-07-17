@@ -28,9 +28,15 @@ from datetime import datetime, timedelta, timezone
 import aiohttp
 from pydoover.models import File
 
-from .base import CameraBase
+from .base import CameraBase, THUMBNAIL_FILENAME
 from ..clients import HikvisionClient
-from ..events import MotionDetectEvent, MotionDetectEventType
+from ..clients.hikvision import NORMALIZED_SCREEN
+from ..events import (
+    DetectionTarget,
+    DetectionZone,
+    MotionDetectEvent,
+    MotionDetectEventType,
+)
 
 
 log = logging.getLogger(__name__)
@@ -48,8 +54,34 @@ SMART_EVENT_TYPES = {
 # downstream, not what the camera looks for.
 RULE_TARGETS = ["human", "vehicle"]
 
+# App target vocabulary <-> Hikvision's tokens (from the camera's advertised
+# detectionTarget opt="all,human,vehicle,animal,others").
+TARGET_TO_HIK = {
+    DetectionTarget.person: "human",
+    DetectionTarget.vehicle: "vehicle",
+    DetectionTarget.animal: "animal",
+    DetectionTarget.other: "others",
+}
+HIK_TO_TARGET = {v: k for k, v in TARGET_TO_HIK.items()}
+
 
 class HikvisionAcuSenseCamera(CameraBase):
+    # Read off this camera's own /ISAPI/Smart/FieldDetection/1/capabilities:
+    # 4 region slots, 3-10 points each, sensitivity 1-100.
+    ZONE_CAPABILITIES = {
+        "supported": True,
+        "max_zones": 4,
+        "min_points": 3,
+        "max_points": 10,
+        "targets": [t.value for t in TARGET_TO_HIK],
+        "supports_sensitivity": True,
+        "supports_per_zone_targets": True,
+        # The camera answers OK to a region <enabled> change and then ignores it, so
+        # a zone can't be switched off - it has to be removed. The frontend should
+        # offer delete rather than a toggle.
+        "supports_disable": False,
+    }
+
     def __init__(
         self,
         config,
@@ -75,9 +107,6 @@ class HikvisionAcuSenseCamera(CameraBase):
         # fetch over ContentMgmt), "ffmpeg" (we record the RTSP stream ourselves),
         # or None (clips off / not possible). Resolved in setup().
         self.event_clip_mode: str = None
-        # playbackURIs already uploaded, so a re-fetch during one event doesn't
-        # upload the same SD segment twice.
-        self._fetched_clip_uris: set = set()
 
     async def setup(self):
         self._session = aiohttp.ClientSession()
@@ -326,55 +355,65 @@ class HikvisionAcuSenseCamera(CameraBase):
 
     # -- On-camera event clips (microSD -> ContentMgmt -> doover) --
 
-    def reset_clip_tracking(self) -> None:
-        """Forget uploaded segments, so the next event starts fetching afresh."""
-        self._fetched_clip_uris.clear()
-
-    async def get_event_clip(self, since: datetime) -> File:
+    async def record_event_video(
+        self, since: datetime, stop: asyncio.Event, max_secs: int
+    ) -> File:
         """
-        Return the next event clip, or None if there isn't one to send yet.
+        Capture one video covering an intruder event, as a single file.
 
-        In ``sd`` mode this polls the camera's recordings and returns quickly (often
-        with None while a segment is still being written). In ``ffmpeg`` mode it
-        blocks for the clip length and returns that clip, so callers shouldn't add
-        their own delay on top.
+        ``stop`` is set by the caller once the event has gone quiet, so the video
+        lasts as long as the intruder kept triggering detections (bounded by
+        ``max_secs``).
+
+        In ``ffmpeg`` mode we record the RTSP stream live for that whole span. In
+        ``sd`` mode the camera has been recording it all along (the ``record``
+        linkage), so we just wait for the event to finish and then pull the span back
+        in one download.
         """
-        if self.event_clip_mode == "sd":
-            return await self._fetch_sd_clip(since)
         if self.event_clip_mode == "ffmpeg":
-            return await self.get_video_snapshot(
-                self.config.rtsp_uri,
-                secs=self.config.alarm.event_clip_interval.value,
+            return await self.record_video_until(
+                self.config.rtsp_uri, stop, max_secs
             )
+        if self.event_clip_mode == "sd":
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=max_secs)
+            except asyncio.TimeoutError:
+                pass
+            return await self._fetch_sd_video(since, datetime.now(tz=timezone.utc))
         return None
 
-    async def _fetch_sd_clip(self, since: datetime) -> File:
+    async def _fetch_sd_video(self, start: datetime, end: datetime) -> File:
         """
-        Fetch the next not-yet-uploaded SD recording covering ``since`` -> now.
+        Download the camera's own recording of ``start`` -> ``end`` as one file.
 
-        Returns None when the camera has no new finalised segment yet — the camera
-        only indexes a segment once it has finished writing it, so expect the first
-        clip of an event to lag the detection.
+        The camera stores recordings in fixed-length segments, so a search can return
+        several, and any one of them can be far longer than the event. We therefore
+        take the playbackURI it gives us and re-point its time range at the event,
+        which makes the camera mux exactly that span for us.
+
+        NOTE: unverified — the camera this was built against has no card fitted, so
+        this path has never run against real recordings.
         """
-        matches = await self.client.search_recordings(
-            since, datetime.now(tz=timezone.utc)
-        )
+        matches = await self.client.search_recordings(start, end)
         for match in matches:
             uri = match.get("mediaSegmentDescriptor.playbackURI")
-            if not uri or uri in self._fetched_clip_uris:
+            if not uri:
                 continue
 
-            data = await self.client.download_recording(uri)
+            data = await self.client.download_recording(
+                self.client.bound_playback_uri(uri, start, end)
+            )
             if not data:
                 continue
 
-            self._fetched_clip_uris.add(uri)
             return File(
                 filename="event.mp4",
                 data=data,
                 size=len(data),
                 content_type="video/mp4",
             )
+
+        log.info("Camera reported no recording for the event window.")
         return None
 
     async def get_still_snapshot(self, rtsp_uri: str) -> File:
@@ -386,6 +425,131 @@ class HikvisionAcuSenseCamera(CameraBase):
             size=len(snap),
             content_type="image/jpeg",
         )
+
+    # -- Detection zones --
+
+    def _to_native(self, x: float, y: float) -> tuple:
+        """Normalised (0..1, top-left origin) -> Hikvision's 0..1000 screen."""
+        return (
+            round(x * NORMALIZED_SCREEN),
+            round(self._flip_y(y) * NORMALIZED_SCREEN),
+        )
+
+    def _from_native(self, x: int, y: int) -> tuple:
+        """Hikvision's 0..1000 screen -> normalised (0..1, top-left origin)."""
+        return (
+            x / NORMALIZED_SCREEN,
+            self._flip_y(y / NORMALIZED_SCREEN),
+        )
+
+    @staticmethod
+    def _flip_y(y: float) -> float:
+        """Convert between top-left and Hikvision's y axis.
+
+        Kept as one function, called from both directions, so if the axis turns out
+        to be the other way up it's a single change rather than a hunt. Involutive:
+        flip(flip(y)) == y.
+        """
+        return 1.0 - y
+
+    async def get_detection_zones(self) -> list:
+        cfg = await self.client.get_field_detection_regions()
+        zones = []
+        for region in cfg:
+            points = [self._from_native(x, y) for x, y in region["points"]]
+            if not points:
+                continue  # an unconfigured slot - the camera keeps 4 of them
+            zones.append(
+                DetectionZone(
+                    id=region["id"],
+                    points=points,
+                    enabled=region["enabled"],
+                    targets=[
+                        HIK_TO_TARGET[t]
+                        for t in region["targets"]
+                        if t in HIK_TO_TARGET
+                    ],
+                    sensitivity=region["sensitivity"],
+                )
+            )
+        return zones
+
+    async def set_detection_zones(self, zones: list) -> None:
+        max_zones = self.ZONE_CAPABILITIES["max_zones"]
+        if len(zones) > max_zones:
+            raise ValueError(f"This camera supports at most {max_zones} zones")
+
+        regions = []
+        for index, zone in enumerate(zones, start=1):
+            if not (
+                self.ZONE_CAPABILITIES["min_points"]
+                <= len(zone.points)
+                <= self.ZONE_CAPABILITIES["max_points"]
+            ):
+                raise ValueError(
+                    f"Zone {zone.id} needs between "
+                    f"{self.ZONE_CAPABILITIES['min_points']} and "
+                    f"{self.ZONE_CAPABILITIES['max_points']} points, got "
+                    f"{len(zone.points)}"
+                )
+
+            targets = [TARGET_TO_HIK[t] for t in zone.targets if t in TARGET_TO_HIK]
+            regions.append(
+                {
+                    # The camera addresses regions by slot, so renumber rather than
+                    # trusting whatever ids the frontend sent.
+                    "id": index,
+                    "points": [self._to_native(x, y) for x, y in zone.points],
+                    "targets": targets or list(RULE_TARGETS),
+                    "sensitivity": (
+                        zone.sensitivity
+                        if zone.sensitivity is not None
+                        else self.config.sensitivity.value
+                    ),
+                }
+            )
+
+        log.info(f"Writing {len(regions)} detection zone(s) to the camera.")
+        await self.client.set_field_detection_regions(regions)
+
+    async def get_thumbnail(self) -> File:
+        """Grab the camera's sub-stream picture rather than scaling one ourselves.
+
+        It's already thumbnail-sized (640x360, ~18KB vs 1920x1080/~117KB on the main
+        stream), so this is a single HTTP GET with no ffmpeg — meaning thumbnails
+        work on the slim image.
+        """
+        try:
+            snap = await self.client.get_snapshot(channel=1, subtype=1)
+        except Exception as e:
+            log.info(f"Couldn't fetch sub-stream thumbnail: {e}")
+            return None
+        return File(
+            filename=THUMBNAIL_FILENAME,
+            data=snap,
+            size=len(snap),
+            content_type="image/jpeg",
+        )
+
+    async def detect_night(self) -> bool:
+        """Ask the camera whether its IR-cut filter is engaged.
+
+        This beats inspecting the image: a grey/foggy daylight scene is also washed
+        out, but the filter's position is ground truth. Only ``day``/``night`` are an
+        answer — ``auto``/``schedule`` describe how the camera decides, not what it
+        decided, so those return None and the consumer works it out from the
+        thumbnail instead.
+        """
+        try:
+            cfg = await self.client.get_ir_cut_filter()
+        except Exception as e:
+            log.info(f"Couldn't read the camera's day/night state: {e}")
+            return None
+
+        mode = (cfg.get("IrcutFilterType") or "").strip().lower()
+        if mode in ("day", "night"):
+            return mode == "night"
+        return None
 
     async def ping(self, timeout: int):
         start = datetime.now()

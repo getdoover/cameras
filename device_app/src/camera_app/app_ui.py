@@ -2,6 +2,7 @@ from pydoover import ui
 
 from .app_config import CameraConfig, CameraType
 from .app_tags import CameraTags
+from .events import SET_ZONES_CMD
 
 
 class CameraUI(ui.UI):
@@ -106,12 +107,23 @@ class CameraUI(ui.UI):
             ),
         )
 
+        # Carries JSON rather than a simple value, so it's a plain interaction the
+        # zone editor drives. It has to be in the tree for the UI command manager to
+        # resolve the handler (it looks the interaction up by name to build the
+        # handler's context). Its *value* is the current zone state, the same way a
+        # Switch's value is its current state — so there's no separate read path.
+        # See CameraApplication.on_set_detection_zones.
+        self.set_detection_zones = ui.Interaction(
+            "Set Detection Zones", name=SET_ZONES_CMD, show_activity=True
+        )
+
         self.tab_container = ui.TabContainer(
             children=[self.history, *live_views, container],
             name="tabs",
             display_name="Tabs",
         )
         self.add_element(self.tab_container)
+        self.add_element(self.set_detection_zones)
 
 def export():
     pass

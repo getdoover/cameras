@@ -660,45 +660,45 @@
                             "default": 6,
                             "x-position": 8
                         },
-                        "event_video_clips": {
-                            "title": "Event Video Clips",
-                            "x-name": "event_video_clips",
+                        "event_video": {
+                            "title": "Event Video",
+                            "x-name": "event_video",
                             "x-hidden": false,
                             "type": [
                                 "boolean",
                                 "null"
                             ],
                             "x-required": false,
-                            "description": "On an intruder event at night, upload video of the event to doover (instead of a single still). Uses the camera's own microSD recording where a card is fitted, otherwise records the stream with ffmpeg (which needs the 'full' image). AcuSense only.",
+                            "description": "On an intruder event at night, upload a video of the event to doover (instead of a single still). Recording runs for as long as the intruder keeps being detected, and uploads as one video. Uses the camera's own microSD recording where a card is fitted, otherwise records the stream with ffmpeg (which needs the 'full' image). AcuSense only.",
                             "default": false,
                             "x-position": 9,
                             "x-advanced": true
                         },
-                        "event_clip_interval": {
-                            "title": "Event Clip Interval",
-                            "x-name": "event_clip_interval",
+                        "event_video_cooldown": {
+                            "title": "Event Video Cooldown",
+                            "x-name": "event_video_cooldown",
                             "x-hidden": false,
                             "type": [
                                 "integer",
                                 "null"
                             ],
                             "x-required": false,
-                            "description": "Seconds between event clips: how often the camera's SD card is checked for a new recording, or the length of each ffmpeg-recorded clip.",
-                            "default": 5,
+                            "description": "Stop recording this many seconds after the last detection. Each new detection extends the recording.",
+                            "default": 15,
                             "x-position": 10,
                             "x-advanced": true
                         },
-                        "event_clip_cooldown": {
-                            "title": "Event Clip Cooldown",
-                            "x-name": "event_clip_cooldown",
+                        "event_video_max_length": {
+                            "title": "Event Video Max Length",
+                            "x-name": "event_video_max_length",
                             "x-hidden": false,
                             "type": [
                                 "integer",
                                 "null"
                             ],
                             "x-required": false,
-                            "description": "Stop fetching event clips this many seconds after the last detection.",
-                            "default": 15,
+                            "description": "Hard limit on a single event video, in seconds. Stops one long-running event from recording (and uploading) forever.",
+                            "default": 120,
                             "x-position": 11,
                             "x-advanced": true
                         }
