@@ -302,6 +302,34 @@ class CameraBase:
                 await proc.wait()
             fp.unlink(missing_ok=True)
 
+    async def remux_to_mp4(self, data: bytes, name: str) -> File:
+        """Repackage a camera's recorded bytes into an mp4 that will actually play.
+
+        Hikvision's ContentMgmt download doesn't hand back an mp4 — it's Hikvision's
+        own ``IMKH`` container wrapping an MPEG program stream, which no player will
+        touch. ffmpeg's PS demuxer reads it regardless (it skips the IMKH header), so
+        the video is stream-copied straight across.
+
+        The audio is the one thing that has to be re-encoded: these cameras record
+        G.711 (``pcm_mulaw``), which mp4 cannot carry — a plain ``-c copy`` fails
+        outright with "Could not find tag for codec pcm_mulaw".
+        """
+        ensure_ffmpeg()
+        self.ensure_output_dir()
+        src = self.get_output_filepath(str(uuid.uuid4()), "ps")
+        dst = self.get_output_filepath(str(uuid.uuid4()), "mp4")
+        src.write_bytes(data)
+
+        cmd = (
+            f"ffmpeg -y -i {src} -c:v copy -c:a aac -movflags +faststart {dst}"
+        )
+        try:
+            await self.run_ffmpeg_cmd(cmd)
+            return self._read_snapshot(dst, f"{name}.mp4", "video/mp4")
+        finally:
+            src.unlink(missing_ok=True)
+            dst.unlink(missing_ok=True)
+
     async def run_ffmpeg_cmd(self, cmd):
         ensure_ffmpeg()
         self.ensure_output_dir()

@@ -257,32 +257,45 @@ class HikvisionAcuSenseCamera(CameraBase):
     async def _resolve_event_clip_mode(self) -> str:
         """Pick how event clips get captured, preferring the camera's own storage.
 
-        SD recording is preferred: it needs no ffmpeg (so it works on the slim image)
-        and the camera keeps recording even while doover is offline. Without usable
-        storage we fall back to recording the RTSP stream ourselves, which needs the
-        ffmpeg that only ships in the 'full' image — if that's missing too, clips
-        aren't possible and the caller reverts to single snapshots.
+        SD recording is preferred where a card is fitted: the camera records the event
+        itself, so we still get footage of anything that happened while doover was
+        offline or restarting, and we get the pre-roll leading up to the trigger,
+        which recording the stream ourselves can't (we only start once we're told).
+
+        Both modes need ffmpeg. It's obvious for the RTSP fallback; for the card it's
+        because the camera stores IMKH/MPEG-PS rather than mp4, so the download has to
+        be remuxed before anything will play it (see :meth:`remux_to_mp4`). Without
+        ffmpeg neither mode can produce a usable video, and the caller falls back to
+        single snapshots.
         """
         if not self.config.alarm.event_clips_enabled.value:
+            # Worth saying out loud: the only symptom otherwise is intruder events
+            # quietly producing a still instead of a video, with nothing in the log.
+            log.info(
+                "Event video is disabled in config; intruder events will upload a "
+                "single snapshot."
+            )
+            return None
+
+        if not shutil.which("ffmpeg"):
+            log.warning(
+                "Event video is enabled but ffmpeg is unavailable — it's needed to "
+                "record the stream, and to remux the camera's own recordings, which "
+                "aren't mp4. This needs the '-full' image (the deployment template "
+                "selects it when Event Video is on). Falling back to single snapshots."
+            )
             return None
 
         try:
             if await self.client.has_recording_storage():
-                log.info("Event clips: using the camera's on-card recording.")
+                log.info("Event video: using the camera's on-card recording.")
                 return "sd"
-            log.info("Event clips: camera reports no usable storage.")
+            log.info("Event video: camera reports no usable storage.")
         except Exception as e:
             log.warning(f"Failed to probe camera storage: {e}", exc_info=e)
 
-        if shutil.which("ffmpeg"):
-            log.info("Event clips: falling back to ffmpeg RTSP recording.")
-            return "ffmpeg"
-
-        log.warning(
-            "Event clips enabled, but the camera has no usable storage and ffmpeg is "
-            "unavailable (slim image) — falling back to single snapshots."
-        )
-        return None
+        log.info("Event video: falling back to ffmpeg RTSP recording.")
+        return "ffmpeg"
 
     async def _set_linkage(self, armed: bool) -> None:
         try:
@@ -391,8 +404,9 @@ class HikvisionAcuSenseCamera(CameraBase):
         take the playbackURI it gives us and re-point its time range at the event,
         which makes the camera mux exactly that span for us.
 
-        NOTE: unverified — the camera this was built against has no card fitted, so
-        this path has never run against real recordings.
+        What comes back is *not* an mp4 despite the name — it's Hikvision's IMKH
+        container around an MPEG program stream — so it gets remuxed before upload
+        (see :meth:`remux_to_mp4`).
         """
         matches = await self.client.search_recordings(start, end)
         for match in matches:
@@ -406,12 +420,8 @@ class HikvisionAcuSenseCamera(CameraBase):
             if not data:
                 continue
 
-            return File(
-                filename="event.mp4",
-                data=data,
-                size=len(data),
-                content_type="video/mp4",
-            )
+            log.info(f"Fetched {len(data)} bytes of on-card recording; remuxing.")
+            return await self.remux_to_mp4(data, "event")
 
         log.info("Camera reported no recording for the event window.")
         return None
