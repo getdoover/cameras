@@ -527,6 +527,13 @@ class HikvisionClient:
     # UI writes — there is no combined flash+siren token on this firmware.
     _MANAGED_LINKAGES = ("whiteLight", "audio", "record")
 
+    # "Notify Surveillance Center" — the linkage that pushes an event onto the
+    # alertStream. It is never optional and is written whether we're arming or
+    # disarming: without it the camera handles the event entirely on its own (flash,
+    # siren, recording all fire) and the app never hears that anything happened. The
+    # stock fielddetection trigger ships without it, unlike VMD/IO.
+    _STREAM_LINKAGE = "center"
+
     def _managed_linkage_ids(self, channel: int = 1) -> set:
         """Trigger ids we own, and therefore strip before writing.
 
@@ -534,7 +541,10 @@ class HikvisionClient:
         by itself alongside ``audio``, so unless it's stripped too it survives a
         disarm and the buzzer keeps sounding.
         """
-        return {self._linkage_id(t, channel) for t in self._MANAGED_LINKAGES} | {"beep"}
+        return {self._linkage_id(t, channel) for t in self._MANAGED_LINKAGES} | {
+            "beep",
+            self._STREAM_LINKAGE,
+        }
 
     # The web UI writes 0 here, which the camera reads as "follow the event" rather
     # than a fixed number of seconds.
@@ -598,6 +608,9 @@ class HikvisionClient:
         """
         methods = set(methods or [])
         tokens = [t for t in self._MANAGED_LINKAGES if t in methods] if enabled else []
+        # Kept on the trigger even when disarming — it's how we hear about the event
+        # at all, not part of the deterrent.
+        tokens.append(self._STREAM_LINKAGE)
 
         trigger_id = f"{event}-{index}"
         raw = (await self.get_bytes(

@@ -120,6 +120,11 @@ class HikvisionAcuSenseCamera(CameraBase):
 
         if self.config.alarm.intruder_alarm_enabled.value:
             await self.setup_night_deterrent()
+        else:
+            # Still has to run: it links `center`, without which the camera never
+            # puts detections on the alertStream and we see nothing. Passing False
+            # leaves the deterrent off, which is what's wanted here.
+            await self.client.set_smart_alarm_linkage(False)
 
         self.stream_events_task = asyncio.create_task(
             self.client.stream_events(self.on_cam_event)

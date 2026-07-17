@@ -76,6 +76,9 @@ def test_smart_alarm_linkage_ids():
     # beep must be stripped with audio or the buzzer survives a disarm.
     assert "beep" in client._managed_linkage_ids(1)
     assert {"whiteLight", "audio", "record-1"} <= client._managed_linkage_ids(1)
+    # `center` is what puts events on the alertStream, so we own it too - it must be
+    # stripped from the preserved set, then re-added on every write (see below).
+    assert "center" in client._managed_linkage_ids(1)
 
     # whiteLight/record are rejected without their required child element.
     assert "<WhiteLightAction>" in client._linkage_notification("whiteLight")
