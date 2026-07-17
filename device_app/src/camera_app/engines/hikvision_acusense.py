@@ -100,6 +100,10 @@ class HikvisionAcuSenseCamera(CameraBase):
             log.info("Camera is offline, failed to get status.")
             return False
 
+        # Do this first: a camera that thinks it's 2019 breaks its own arming
+        # schedule and makes recording searches return nothing.
+        await self.sync_camera_clock()
+
         sensitivity = self.config.sensitivity.value
         log.info(
             f"Configuring intrusion detection: targets={RULE_TARGETS} "
@@ -169,6 +173,40 @@ class HikvisionAcuSenseCamera(CameraBase):
             await self.client.pulse_io_output(port, duration)
         except Exception as e:
             log.warning(f"Failed to pulse alarm output: {e}", exc_info=e)
+
+    async def sync_camera_clock(self, max_drift_secs: int = 60) -> bool:
+        """Keep the camera's clock in step with ours, correcting it when it drifts.
+
+        Ours comes from the doovit, which is NTP-synced; the camera's is manual and
+        resets to 2019 on a power cut, so this is checked periodically rather than
+        only at setup. Returns whether the clock was (re)set.
+        """
+        now = datetime.now().astimezone()
+        try:
+            current = await self.client.get_time()
+            camera_time = datetime.fromisoformat(current["localTime"])
+        except (KeyError, ValueError, TypeError) as e:
+            log.info(f"Couldn't read the camera clock ({e}); setting it anyway.")
+        except Exception as e:
+            log.warning(f"Failed to read camera clock: {e}", exc_info=e)
+            return False
+        else:
+            drift = abs((camera_time - now).total_seconds())
+            if drift <= max_drift_secs:
+                return False
+            log.info(
+                f"Camera clock is {drift:.0f}s out (camera={camera_time.isoformat()}, "
+                f"app={now.isoformat()}); correcting."
+            )
+
+        try:
+            await self.client.set_time(now)
+        except Exception as e:
+            log.warning(f"Failed to set camera clock: {e}", exc_info=e)
+            return False
+
+        log.info(f"Camera clock set to {now.isoformat()}.")
+        return True
 
     def _deterrent_methods(self) -> list:
         methods = []

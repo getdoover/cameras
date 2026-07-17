@@ -180,6 +180,12 @@ class CameraApplication(Application):
         log.info("Finished accepting SDP offer and published.")
 
     async def main_loop(self):
+        # The camera's clock is manual and resets to 2019 on a power cut, taking its
+        # arming schedule and recording search down with it — so re-check it here
+        # rather than only at setup. No-ops unless it has actually drifted.
+        if isinstance(self.engine, HikvisionAcuSenseCamera):
+            await self.engine.sync_camera_clock()
+
         await self.update_alarm_schedule()
 
         if self.check_snapshot_can_run():

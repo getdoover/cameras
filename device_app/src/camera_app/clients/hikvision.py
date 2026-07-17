@@ -12,7 +12,7 @@ import socket
 import asyncio
 import uuid
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from xml.sax.saxutils import escape
 
 import aiohttp
@@ -132,6 +132,41 @@ class HikvisionClient:
     async def reboot(self) -> dict:
         """Reboots the device."""
         return await self.put("/ISAPI/System/reboot")
+
+    @staticmethod
+    def _hik_timezone(offset: timedelta) -> str:
+        """Format a UTC offset the way Hikvision wants it.
+
+        The sign is POSIX-style, i.e. inverted from the usual reading: UTC+10 is
+        written ``CST-10:00:00``.
+        """
+        total = int(offset.total_seconds())
+        sign = "-" if total >= 0 else "+"
+        hours, remainder = divmod(abs(total), 3600)
+        minutes, seconds = divmod(remainder, 60)
+        return f"CST{sign}{hours}:{minutes:02d}:{seconds:02d}"
+
+    async def set_time(self, when: datetime) -> dict:
+        """
+        Push ``when`` (an aware, local datetime) onto the camera's clock.
+
+        These cameras ship with ``timeMode=manual``, and with a flat RTC battery they
+        come back from a power cut believing it's 2019 — which silently breaks
+        anything time-based: the camera's arming schedule fires at the wrong hours and
+        recording searches find nothing. Their configured NTP server is ignored while
+        the mode is manual, and there's no NTP server reachable on the camera's LAN,
+        so the app is the clock source and re-asserts it (see the engine's periodic
+        drift check).
+        """
+        offset = when.utcoffset() or timedelta(0)
+        body = (
+            f'<Time version="2.0" xmlns="{ISAPI_NS}">'
+            f"<timeMode>manual</timeMode>"
+            f"<localTime>{when.strftime('%Y-%m-%dT%H:%M:%S')}</localTime>"
+            f"<timeZone>{self._hik_timezone(offset)}</timeZone>"
+            f"</Time>"
+        )
+        return await self.put("/ISAPI/System/time", body=body)
 
     # -- Thermal --
 
@@ -486,6 +521,42 @@ class HikvisionClient:
             pass
         return cfg.get("supplementLightMode", "")
 
+    # Linkages this client owns on a smart-event trigger. Anything else already on
+    # the trigger (supplementLight, customOverHTTP, beep, center, ...) is left alone.
+    # Verified against a DS-2CD2387G3-LIS2UY/SRB: these are the exact ids its own web
+    # UI writes — there is no combined flash+siren token on this firmware.
+    _MANAGED_LINKAGES = ("whiteLight", "audio", "record")
+
+    # The web UI writes 0 here, which the camera reads as "follow the event" rather
+    # than a fixed number of seconds.
+    _WHITE_LIGHT_DURATION = 0
+
+    @staticmethod
+    def _linkage_id(token: str, channel: int = 1) -> str:
+        """The trigger's id for a linkage, which isn't always the method name.
+
+        ``record`` is per video input, so the camera ids it ``record-<channel>``.
+        """
+        return f"record-{channel}" if token == "record" else token
+
+    def _linkage_notification(self, token: str, channel: int = 1) -> str:
+        body = (
+            f"<EventTriggerNotification><id>{self._linkage_id(token, channel)}</id>"
+            f"<notificationMethod>{token}</notificationMethod>"
+            f"<notificationRecurrence>beginning</notificationRecurrence>"
+        )
+        if token == "whiteLight":
+            # The camera rejects a whiteLight linkage that omits this child.
+            body += (
+                f"<WhiteLightAction><whiteLightDurationTime>"
+                f"{self._WHITE_LIGHT_DURATION}"
+                f"</whiteLightDurationTime></WhiteLightAction>"
+            )
+        elif token == "record":
+            # ...and rejects a record linkage that doesn't say which input to record.
+            body += f"<videoInputID>{channel}</videoInputID>"
+        return body + "</EventTriggerNotification>"
+
     async def set_smart_alarm_linkage(
         self,
         enabled: bool,
@@ -497,48 +568,42 @@ class HikvisionClient:
         Arm/disarm the built-in flash/siren "active response" on a smart-event
         trigger (e.g. ``fielddetection-1``).
 
-        ``methods`` is a subset of ``{"whiteLight", "audio", "record"}``. When both
-        ``whiteLight`` and ``audio`` are requested we use the camera's combined
-        ``LightAudioAlarm`` token (strobe flash + audible siren together — the /SRB
-        active response); a single one maps to the ``whiteLight`` or ``audio`` token.
-        ``record`` links the event to on-camera recording (to the microSD card), which
-        is what makes event clips fetchable later via ContentMgmt. These responses fire
-        on-camera, independent of doover. We GET-modify-PUT the trigger so any existing
-        center notifications are preserved, first stripping the linkage tokens we manage
-        so re-arming is idempotent.
+        ``methods`` is a subset of :attr:`_MANAGED_LINKAGES` — ``whiteLight`` (the
+        flash), ``audio`` (the siren) and ``record`` (write the event to the microSD,
+        which is what makes clips fetchable later via ContentMgmt). Each is an
+        independent notification: this firmware has **no** combined
+        "LightAudioAlarm"/flash+siren token — the web UI adds ``whiteLight`` and
+        ``audio`` side by side, so we do the same. These responses fire on-camera,
+        independent of doover. We GET-modify-PUT the trigger so existing notifications
+        (``supplementLight``, ``customOverHTTP``, ...) are preserved, first stripping
+        the linkages we manage so re-arming is idempotent.
+
+        Caveat, verified on a DS-2CD2387G3-LIS2UY/SRB: ``whiteLight`` and ``record``
+        can be added and removed freely, but once ``audio`` is on the trigger the
+        camera **silently re-adds it** to any body that omits it — it answers OK and
+        keeps the siren linked. So disarming cannot switch the siren back off; only
+        the flash actually disarms. Treat the audio linkage as one-way until we find
+        the resource that owns it.
         """
         methods = set(methods or [])
-        tokens = []
-        if {"whiteLight", "audio"} <= methods:
-            tokens.append("LightAudioAlarm")
-        elif "whiteLight" in methods:
-            tokens.append("whiteLight")
-        elif "audio" in methods:
-            tokens.append("audio")
-        if "record" in methods:
-            tokens.append("record")
+        tokens = [t for t in self._MANAGED_LINKAGES if t in methods]
 
         trigger_id = f"{event}-{index}"
         raw = (await self.get_bytes(
             f"/ISAPI/Event/triggers/{trigger_id}"
         )).decode(errors="ignore")
 
-        for tok in ("LightAudioAlarm", "whiteLight", "audio", "record"):
+        for tok in self._MANAGED_LINKAGES:
             raw = re.sub(
-                rf"<EventTriggerNotification>\s*<id>{tok}</id>.*?</EventTriggerNotification>",
+                rf"<EventTriggerNotification>\s*<id>{re.escape(self._linkage_id(tok))}</id>"
+                rf".*?</EventTriggerNotification>",
                 "",
                 raw,
                 flags=re.DOTALL,
             )
 
         if enabled and tokens:
-            notifs = "".join(
-                f"<EventTriggerNotification><id>{t}</id>"
-                f"<notificationMethod>{t}</notificationMethod>"
-                f"<notificationRecurrence>beginning</notificationRecurrence>"
-                f"</EventTriggerNotification>"
-                for t in tokens
-            )
+            notifs = "".join(self._linkage_notification(t) for t in tokens)
             raw = raw.replace(
                 "</EventTriggerNotificationList>",
                 f"{notifs}</EventTriggerNotificationList>",
