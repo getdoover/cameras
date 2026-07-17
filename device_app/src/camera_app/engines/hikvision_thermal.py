@@ -52,8 +52,7 @@ class HikVisionThermal(CameraBase):
             content_type="image/jpeg",
         )
 
-    async def get_snapshot(self) -> list[File]:
-        ext = self.config.snapshot.mode_as_filetype
+    async def get_snapshot(self) -> list:
         if Mode(self.config.snapshot.mode.value) is Mode.video:
             # Run both ffmpeg recordings concurrently so the visible and thermal clips cover the same wall-clock window.
             if self.config.thermal_rtsp_uri:
@@ -68,14 +67,16 @@ class HikVisionThermal(CameraBase):
             visible = await self.get_still_snapshot(1)
             thermal = await self.get_still_snapshot(2) if self.config.thermal_rtsp_uri else None
 
-        visible.filename = f"visible.{ext}"
-        files = [visible]
+        captures = [await self.build_capture("visible", visible)]
         if thermal is not None:
-            thermal.filename = f"thermal.{ext}"
-            files.append(thermal)
+            # No thumbnail: get_thumbnail() samples the visible stream, which would
+            # be a preview of a different image entirely.
+            captures.append(
+                await self.build_capture("thermal", thermal, with_thumbnail=False)
+            )
 
-        log.info(f"Sending {len(files)} snapshots...")
-        return files
+        log.info(f"Sending {len(captures)} snapshots...")
+        return captures
 
     async def ping(self, timeout: int):
         """Use the ISAPI status endpoint to check if the camera is reachable."""

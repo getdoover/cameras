@@ -42,6 +42,100 @@ def test_night_time_segments():
     assert HikvisionClient._night_time_segments(20, 0) == [("20:00:00", "24:00:00")]
 
 
+def test_build_capture_names_media_and_thumbnail():
+    import asyncio
+    import types
+    from camera_app.engines.base import CameraBase, Capture
+    from pydoover.models import File
+
+    cam = CameraBase.__new__(CameraBase)
+    cam.config = types.SimpleNamespace(
+        snapshot=types.SimpleNamespace(
+            mode_as_filetype="jpg",
+        )
+    )
+
+    def make(name):
+        return File(filename=name, data=b"x", size=1, content_type="image/jpeg")
+
+    async def fake_thumb():
+        return make("raw.jpg")
+
+    cam.get_thumbnail = fake_thumb
+
+    # A preset's thumbnail sits beside its media: Preset 1.jpg / Preset 1-thumbnail.jpg
+    capture = asyncio.run(cam.build_capture("Preset 1", make("x.jpg")))
+    assert capture.media.filename == "Preset_1.jpg"
+    assert capture.thumbnail.filename == "Preset_1-thumbnail.jpg"
+    assert len(capture.files()) == 2
+
+    # Views that a thumbnail wouldn't represent (e.g. a thermal channel) skip it.
+    bare = asyncio.run(cam.build_capture("thermal", make("x.jpg"), with_thumbnail=False))
+    assert bare.thumbnail is None
+    assert bare.files() == [bare.media]
+
+    # A thumbnail failure must not lose the snapshot.
+    async def broken_thumb():
+        raise RuntimeError("no ffmpeg")
+
+    cam.get_thumbnail = broken_thumb
+    survived = asyncio.run(cam.build_capture("Preset 2", make("x.jpg")))
+    assert survived.thumbnail is None and survived.media.filename == "Preset_2.jpg"
+    assert isinstance(survived, Capture)
+
+
+def test_upload_media_sends_every_capture():
+    """A PTZ camera returns one capture per preset - all of them must go up.
+
+    Regression: the upload path once took files[0], silently dropping every preset
+    after the first (and the thermal view on thermal cameras).
+    """
+    import asyncio
+    import types
+    from camera_app.application import CameraApplication
+    from camera_app.engines.base import Capture
+    from pydoover.models import File
+
+    def make(name):
+        return File(filename=name, data=b"x", size=1, content_type="image/jpeg")
+
+    captures = [
+        Capture("Preset1", make("Preset1.jpg"), make("Preset1-thumbnail.jpg")),
+        Capture("Preset2", make("Preset2.jpg"), make("Preset2-thumbnail.jpg")),
+    ]
+
+    sent = {}
+
+    async def fake_create_message(app_key, payload, files):
+        sent["payload"], sent["files"] = payload, files
+
+    async def fake_night():
+        return True
+
+    app = CameraApplication.__new__(CameraApplication)
+    app.app_key = "cam"
+    app.device_agent = types.SimpleNamespace(create_message=fake_create_message)
+    app.engine = types.SimpleNamespace(detect_night=fake_night)
+
+    asyncio.run(app.upload_media(captures, "schedule"))
+
+    # Every preset, and both its files.
+    assert [f.filename for f in sent["files"]] == [
+        "Preset1.jpg",
+        "Preset1-thumbnail.jpg",
+        "Preset2.jpg",
+        "Preset2-thumbnail.jpg",
+    ]
+    assert sent["payload"] == {
+        "reason": "schedule",
+        "night": True,
+        "media": [
+            {"name": "Preset1", "file": "Preset1.jpg", "thumbnail": "Preset1-thumbnail.jpg"},
+            {"name": "Preset2", "file": "Preset2.jpg", "thumbnail": "Preset2-thumbnail.jpg"},
+        ],
+    }
+
+
 def test_detection_zone_payload():
     from camera_app.events import DetectionTarget, DetectionZone, DetectionZonesPayload
 

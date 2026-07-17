@@ -12,6 +12,7 @@ from .app_config import CameraConfig, CameraType
 from .app_tags import CameraTags
 from .app_ui import CameraUI
 from .engines import DahuaPTZCamera
+from .engines.base import Capture, THUMBNAIL_SUFFIX
 from .engines.dahua_base import DahuaCameraBase
 from .engines.dahua_fixed import DahuaFixedCamera
 from .engines.generic import GenericRTSPCamera
@@ -303,7 +304,9 @@ class CameraApplication(Application):
             return False
 
         try:
-            await self.upload_media(files[0], reason)
+            # Every capture goes up, not just the first — a PTZ camera returns one
+            # per preset, and a thermal camera a visible and a thermal view.
+            await self.upload_media(files, reason)
         except Exception as e:
             log.warning(f"Failed to publish snapshot: {e}", exc_info=e)
         else:
@@ -394,34 +397,37 @@ class CameraApplication(Application):
                     camera_name, {"sdp": answer}, max_age_secs=-1
                 )
 
-    async def upload_media(self, media, reason: str, thumbnail=None):
-        """Publish a snapshot/video, with a thumbnail and a payload describing both.
+    async def upload_media(self, captures: list, reason: str):
+        """Publish captures, each with its thumbnail, plus a payload describing them.
 
-        The message payload names which attachment is which, so a gallery or preview
-        timeline can pick the thumbnail without hardcoding filenames, and says why
-        the capture happened, e.g.::
+        A single message carries every view captured in one go — a PTZ camera
+        contributes one per preset, a thermal camera one visible and one thermal — so
+        ``media`` is always a list, even for the one-view case::
 
-            {"media": "snapshot.mp4", "thumbnail": "thumbnail.jpg",
-             "reason": "person", "night": true}
+            {"reason": "schedule", "night": true, "media": [
+                {"name": "Preset1", "file": "Preset1.jpg",
+                 "thumbnail": "Preset1-thumbnail.jpg"},
+                {"name": "Preset2", "file": "Preset2.jpg",
+                 "thumbnail": "Preset2-thumbnail.jpg"}]}
 
-        ``reason`` is one of :data:`SNAPSHOT_REASONS`, and matches the ``kind`` of the
-        matching ``camera_event`` message.
+        The payload names which attachment is which so a gallery doesn't have to
+        infer it from filenames, and says why the capture happened. ``reason`` is one
+        of :data:`SNAPSHOT_REASONS` and matches the ``kind`` of the matching
+        ``camera_event`` message.
 
         ``night`` is only present when the camera states it outright; when it's
         absent the image itself can be inspected (an IR frame is monochrome), which
         is left to the consumer rather than paying for it on the device.
         """
-        if thumbnail is None:
-            try:
-                thumbnail = await self.engine.get_thumbnail()
-            except Exception as e:
-                log.warning(f"Failed to get thumbnail: {e}", exc_info=e)
+        files, media = [], []
+        for capture in captures:
+            files.extend(capture.files())
+            entry = {"name": capture.name, "file": capture.media.filename}
+            if capture.thumbnail:
+                entry["thumbnail"] = capture.thumbnail.filename
+            media.append(entry)
 
-        files = [media]
-        payload = {"media": media.filename, "reason": reason}
-        if thumbnail:
-            files.append(thumbnail)
-            payload["thumbnail"] = thumbnail.filename
+        payload = {"reason": reason, "media": media}
 
         try:
             night = await self.engine.detect_night()
@@ -431,6 +437,7 @@ class CameraApplication(Application):
         if night is not None:
             payload["night"] = night
 
+        log.info(f"Publishing {len(media)} capture(s) as {len(files)} file(s).")
         await self.device_agent.create_message(self.app_key, payload, files)
 
     async def publish_camera_event(self, kind: str, **extra):
@@ -511,8 +518,13 @@ class CameraApplication(Application):
             return
 
         log.info(f"Uploading event video ({video.size} bytes).")
+        video.filename = "event.mp4"
+        if thumbnail is not None:
+            thumbnail.filename = f"event{THUMBNAIL_SUFFIX}.jpg"
         try:
-            await self.upload_media(video, REASON_INTRUDER, thumbnail=thumbnail)
+            await self.upload_media(
+                [Capture("event", video, thumbnail)], REASON_INTRUDER
+            )
         except Exception as e:
             log.warning(f"Failed to publish event video: {e}", exc_info=e)
 

@@ -166,7 +166,7 @@ class DahuaPTZCamera(DahuaCameraBase):
         else:
             func = self.get_still_snapshot
 
-        files = []
+        captures = []
 
         presets = await self.fetch_presets()
         if presets:
@@ -176,19 +176,21 @@ class DahuaPTZCamera(DahuaCameraBase):
                     await self.client.goto_preset(preset)
                     await self.check_for_move_complete()
                     file = await func(self.config.rtsp_uri)
+                    # Thumbnail while we're still pointed here — the camera moves on
+                    # to the next preset in a moment.
+                    capture = await self.build_capture(preset, file)
                 except Exception as e:
                     log.info(f"Failed to take snapshot: {e}")
                 else:
-                    safe_name = re.sub(r"[^A-Za-z0-9_\-]", "_", preset)
-                    file.filename = f"{safe_name}.{self.config.snapshot.mode_as_filetype}"
-                    files.append(file)
+                    captures.append(capture)
         else:
             try:
                 file = await func(self.config.rtsp_uri)
+                capture = await self.build_capture("snapshot", file)
             except Exception as e:
                 log.info(f"Failed to take snapshot: {e}")
             else:
-                files.append(file)
+                captures.append(capture)
 
-        log.info(f"Sending {len(files)} snapshots...")
-        return files
+        log.info(f"Sending {len(captures)} snapshots...")
+        return captures

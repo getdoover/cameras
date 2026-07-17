@@ -159,19 +159,21 @@ class BoschPTZCamera(BoschCameraBase):
                     # snapshot reflects the previous preset.
                     await asyncio.sleep(5.0)
                     file = await func(self.config.rtsp_uri)
+                    # Thumbnail while we're still pointed here — the camera moves on
+                    # to the next preset in a moment.
+                    capture = await self.build_capture(preset, file)
                 except Exception as e:
                     log.info(f"Failed to take snapshot: {e}")
                 else:
-                    safe_name = re.sub(r"[^A-Za-z0-9_\-]", "_", preset)
-                    file.filename = f"{safe_name}.{self.config.snapshot.mode_as_filetype}"
-                    files.append(file)
+                    files.append(capture)
         else:
             try:
                 file = await func(self.config.rtsp_uri)
+                capture = await self.build_capture("snapshot", file)
             except Exception as e:
                 log.info(f"Failed to take snapshot: {e}")
             else:
-                files.append(file)
+                files.append(capture)
 
         log.info(f"Sending {len(files)} snapshots...")
         return files

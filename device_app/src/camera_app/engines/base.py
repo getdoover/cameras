@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import re
 import shutil
 import signal
 from datetime import datetime, timedelta
@@ -14,8 +15,27 @@ OUTPUT_FILE_DIR = Path("/tmp/camera")
 MAX_MESSAGE_SIZE = 125_000
 
 # Preview image uploaded alongside each snapshot/video for gallery + timeline use.
+# A capture's thumbnail sits beside its media, e.g. Preset1.jpg / Preset1-thumbnail.jpg.
 THUMBNAIL_FILENAME = "thumbnail.jpg"
+THUMBNAIL_SUFFIX = "-thumbnail"
 THUMBNAIL_WIDTH = 640
+
+
+class Capture:
+    """One captured view: the media, and the thumbnail that belongs to it.
+
+    They're produced together rather than thumbnailed later on purpose — a PTZ
+    camera takes one of these per preset, and by the time the batch is uploaded it
+    has moved on, so a thumbnail grabbed afterwards would show the wrong scene.
+    """
+
+    def __init__(self, name: str, media: File, thumbnail: File = None):
+        self.name = name
+        self.media = media
+        self.thumbnail = thumbnail
+
+    def files(self) -> list:
+        return [f for f in (self.media, self.thumbnail) if f is not None]
 
 
 log = logging.getLogger(__name__)
@@ -115,8 +135,29 @@ class CameraBase:
     async def fetch_presets(self) -> list[str]:
         return []
 
-    async def get_snapshot(self) -> list[File]:
-        # returns base64 encoded bytes
+    async def build_capture(
+        self, name: str, media: File, with_thumbnail: bool = True
+    ) -> Capture:
+        """Name a captured file and pair it with a thumbnail of the same view.
+
+        Call this while the camera is still pointing where ``media`` was taken —
+        the thumbnail is grabbed here and now, not later.
+        """
+        safe_name = re.sub(r"[^A-Za-z0-9_\-]", "_", name)
+        media.filename = f"{safe_name}.{self.config.snapshot.mode_as_filetype}"
+
+        thumbnail = None
+        if with_thumbnail:
+            try:
+                thumbnail = await self.get_thumbnail()
+            except Exception as e:
+                log.info(f"Couldn't build a thumbnail for {safe_name}: {e}")
+            if thumbnail is not None:
+                thumbnail.filename = f"{safe_name}{THUMBNAIL_SUFFIX}.jpg"
+
+        return Capture(safe_name, media, thumbnail)
+
+    async def get_snapshot(self) -> list[Capture]:
         mode = self.config.snapshot.mode.value
 
         if Mode(mode) is Mode.video:
@@ -138,7 +179,7 @@ class CameraBase:
         #     # None signifies an error, so use the parent retry handler which will run this a few times
         #     return None
 
-        return [data]
+        return [await self.build_capture("snapshot", data)]
 
     async def get_thumbnail(self) -> File:
         """A small preview image for the gallery / timeline, or None if we can't.

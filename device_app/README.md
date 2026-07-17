@@ -122,20 +122,30 @@ storage — the `record` linkage would arm and silently write nothing.
 
 ### Snapshot & video messages
 
-Every snapshot/video is published to the app's own channel with a **thumbnail** attached alongside the
-full-size media, plus a payload describing them — so a gallery or preview timeline doesn't have to
-download the full image, or hardcode filenames:
+Every snapshot/video is published to the app's own channel with a **thumbnail** attached alongside each
+full-size file, plus a payload describing them — so a gallery or preview timeline doesn't have to
+download the full image, or hardcode filenames.
+
+One message carries **every view captured in one go**: a PTZ camera contributes one per preset, a thermal
+camera a visible and a thermal view. So `media` is always a list, even when there's only one:
 
 ```json
-{"media": "snapshot.jpg", "thumbnail": "thumbnail.jpg", "reason": "person", "night": true}
+{"reason": "schedule", "night": true, "media": [
+  {"name": "Preset1", "file": "Preset1.jpg", "thumbnail": "Preset1-thumbnail.jpg"},
+  {"name": "Preset2", "file": "Preset2.jpg", "thumbnail": "Preset2-thumbnail.jpg"}
+]}
 ```
 
 | Field | Meaning |
 |---|---|
-| `media` | Filename of the full-size attachment (`snapshot.jpg`, `snapshot.mp4`, `event.mp4`) |
-| `thumbnail` | Filename of the preview attachment. Absent if one couldn't be made |
+| `media[].name` | The view — a preset name, or `snapshot` / `visible` / `thermal` / `event` |
+| `media[].file` | Filename of the full-size attachment |
+| `media[].thumbnail` | Filename of its preview. Absent if one couldn't be made, or wouldn't represent the view (the thermal channel gets none — a visible-stream preview would show a different image) |
 | `reason` | Why it was captured: `schedule`, `manual`, `intruder`, `person`, `vehicle`, `anpr` — matches the `camera_event` `kind` |
 | `night` | `true`/`false` — **only present when the camera states it outright** (see below) |
+
+Thumbnails sit beside their media (`Preset1.jpg` / `Preset1-thumbnail.jpg`) and are captured **at the same
+moment as the media** — on a PTZ camera that has to happen while it's still pointed at the preset.
 
 On Hikvision the thumbnail is free: the camera's **sub-stream** picture is already thumbnail-sized
 (640×360, ~18KB vs 1920×1080/~117KB), so it's one extra HTTP GET with **no ffmpeg** — thumbnails work on
