@@ -1,18 +1,27 @@
 {#-
-  ffmpeg lives only in the "-full" image. It's needed when EITHER:
+  ffmpeg lives only in the "-full" image. It's needed when ANY of:
     * snapshot mode is "Video" -- every camera records video via ffmpeg, or
     * the camera is a generic RTSP type (UniFi / Generic IP) -- these always go
-      through ffmpeg, even for still images.
+      through ffmpeg, even for still images, or
+    * intruder event clips are on -- these prefer the camera's own microSD
+      recording (no ffmpeg), but fall back to recording the RTSP stream when the
+      camera has no usable card. We can't tell from here whether a card is
+      fitted, so ship ffmpeg rather than have clips silently do nothing.
   All other types (Dahua PTZ/Fixed/Generic, Hikvision Thermal, Bosch PTZ) grab
   still images over the camera's HTTP API, so the slim "main" image is enough.
   Mirrors the runtime guard in src/camera_app/engines/base.py:ensure_ffmpeg.
 -#}
-{%- set needs_ffmpeg = camera_snapshot_config.mode == "Video" or camera_type in ["UniFi (Generic)", "Generic IP"] -%}
+{%- set needs_ffmpeg = camera_snapshot_config.mode == "Video" or camera_type in ["UniFi (Generic)", "Generic IP"] or intruder_alarm_config.event_video_clips -%}
 services:
   cameras:
     image: ghcr.io/getdoover/cameras:{{ "main-full" if needs_ffmpeg else "main" }}
     restart: unless-stopped
     network_mode: host
+    volumes:
+      # The night window -- and the clock the app pushes to Hikvision cameras --
+      # are in site-local time. Without the host's zone the container runs UTC and
+      # both are wrong by the site's offset (e.g. AEST arms 10 hours late).
+      - /etc/localtime:/etc/localtime:ro
     environment:
       - APP_KEY=$APP_KEY
       - HEALTHCHECK_PORT=$HEALTHCHECK_PORT

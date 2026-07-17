@@ -42,6 +42,46 @@ def test_night_time_segments():
     assert HikvisionClient._night_time_segments(20, 0) == [("20:00:00", "24:00:00")]
 
 
+def test_arming_schedule_body():
+    import xml.etree.ElementTree as ET
+    from camera_app.clients.hikvision import HikvisionClient
+
+    client = HikvisionClient.__new__(HikvisionClient)
+    body = client._arming_schedule_body(18, 6)
+    root = ET.fromstring(body)  # must be well-formed
+
+    # The camera rejects the schedule if it carries a version/xmlns, the way the
+    # trigger body does - it must match what the web UI sends.
+    assert "xmlns" not in body and "version" not in body
+    # A midnight-wrapping window is two blocks a day, every day.
+    blocks = [e for e in root.iter() if e.tag == "TimeBlock"]
+    assert len(blocks) == 14
+    assert sorted({e.text for e in root.iter() if e.tag == "dayOfWeek"}) == [
+        str(d) for d in range(1, 8)
+    ]
+    assert body.count("<beginTime>00:00:00</beginTime>") == 7
+    assert body.count("<endTime>24:00:00</endTime>") == 7
+
+    # A non-wrapping window is a single block a day.
+    assert client._arming_schedule_body(9, 18).count("<TimeBlock>") == 7
+
+
+def test_smart_alarm_linkage_ids():
+    from camera_app.clients.hikvision import HikvisionClient
+
+    client = HikvisionClient.__new__(HikvisionClient)
+    # record is per video input, so it is id'd with the channel; others are not.
+    assert client._linkage_id("record", 1) == "record-1"
+    assert client._linkage_id("whiteLight", 1) == "whiteLight"
+    # beep must be stripped with audio or the buzzer survives a disarm.
+    assert "beep" in client._managed_linkage_ids(1)
+    assert {"whiteLight", "audio", "record-1"} <= client._managed_linkage_ids(1)
+
+    # whiteLight/record are rejected without their required child element.
+    assert "<WhiteLightAction>" in client._linkage_notification("whiteLight")
+    assert "<videoInputID>1</videoInputID>" in client._linkage_notification("record", 1)
+
+
 def test_default_field_detection_body():
     import xml.etree.ElementTree as ET
     from camera_app.clients.hikvision import HikvisionClient

@@ -76,11 +76,16 @@ per-event and map onto the `person` / `vehicle` callbacks. (The **Object Detecti
 events raise notifications downstream; it no longer limits what the camera looks for.)
 
 The night intruder alarm uses the camera's built-in **active response** — on `/SRB` models the flash light
-**and** audible siren fire together (`LightAudioAlarm` linkage) on a detection, natively. Where the
-firmware accepts it, the app writes the **Night Start/End Hour** window into the camera's own **arming
-schedule**, so the deterrent fires even while doover is offline; if not, the app falls back to arming and
+(`whiteLight`) and audible siren (`audio`) are linked to the intrusion event, and the app writes the
+**Night Start/End Hour** window into the camera's own **arming schedule**. Both then fire on-camera,
+**even while doover is offline**. If the firmware won't accept a schedule the app falls back to arming and
 disarming the linkage itself at the night boundary. The app also pulses the alarm-output relay and sends
 a notification.
+
+> The camera's arming schedule runs on **the camera's own clock**, which on these models is `manual` and
+> resets to 2019 on a power cut (flat RTC), leaving it to arm at the wrong hours forever. The app
+> therefore syncs the camera's clock (and timezone) from the device at setup and re-checks it each loop,
+> correcting drift over 60s. This also matters for event clips, whose recording search is time-based.
 
 | Setting | Description | Default |
 |---------|-------------|---------|

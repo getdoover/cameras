@@ -522,10 +522,19 @@ class HikvisionClient:
         return cfg.get("supplementLightMode", "")
 
     # Linkages this client owns on a smart-event trigger. Anything else already on
-    # the trigger (supplementLight, customOverHTTP, beep, center, ...) is left alone.
+    # the trigger (supplementLight, customOverHTTP, center, ...) is preserved.
     # Verified against a DS-2CD2387G3-LIS2UY/SRB: these are the exact ids its own web
     # UI writes — there is no combined flash+siren token on this firmware.
     _MANAGED_LINKAGES = ("whiteLight", "audio", "record")
+
+    def _managed_linkage_ids(self, channel: int = 1) -> set:
+        """Trigger ids we own, and therefore strip before writing.
+
+        ``beep`` is in here despite not being one of ours to set: the camera adds it
+        by itself alongside ``audio``, so unless it's stripped too it survives a
+        disarm and the buzzer keeps sounding.
+        """
+        return {self._linkage_id(t, channel) for t in self._MANAGED_LINKAGES} | {"beep"}
 
     # The web UI writes 0 here, which the camera reads as "follow the event" rather
     # than a fixed number of seconds.
@@ -563,6 +572,7 @@ class HikvisionClient:
         methods: list = None,
         event: str = "fielddetection",
         index: int = 1,
+        channel: int = 1,
     ) -> dict:
         """
         Arm/disarm the built-in flash/siren "active response" on a smart-event
@@ -578,57 +588,50 @@ class HikvisionClient:
         (``supplementLight``, ``customOverHTTP``, ...) are preserved, first stripping
         the linkages we manage so re-arming is idempotent.
 
-        Caveat, verified on a DS-2CD2387G3-LIS2UY/SRB: ``whiteLight`` and ``record``
-        can be added and removed freely, but once ``audio`` is on the trigger the
-        camera **silently re-adds it** to any body that omits it — it answers OK and
-        keeps the siren linked. So disarming cannot switch the siren back off; only
-        the flash actually disarms. Treat the audio linkage as one-way until we find
-        the resource that owns it.
+        We must send the *minimal* envelope the camera's own web UI sends — ``<id>``,
+        ``<eventType>``, ``<videoInputChannelID>`` and the notification list, with no
+        ``version``/``xmlns``/``eventDescription``/``dynVideoInputChannelID``.
+        Echoing back the full GET body instead makes the camera answer OK and then
+        silently ignore removals (the siren stays linked forever), so this rebuilds
+        the body rather than editing the response in place. Notifications we don't
+        own are carried across verbatim.
         """
         methods = set(methods or [])
-        tokens = [t for t in self._MANAGED_LINKAGES if t in methods]
+        tokens = [t for t in self._MANAGED_LINKAGES if t in methods] if enabled else []
 
         trigger_id = f"{event}-{index}"
         raw = (await self.get_bytes(
             f"/ISAPI/Event/triggers/{trigger_id}"
         )).decode(errors="ignore")
 
-        for tok in self._MANAGED_LINKAGES:
-            raw = re.sub(
-                rf"<EventTriggerNotification>\s*<id>{re.escape(self._linkage_id(tok))}</id>"
-                rf".*?</EventTriggerNotification>",
-                "",
+        managed = self._managed_linkage_ids(channel)
+        preserved = [
+            re.sub(r"\s+", " ", block).strip()
+            for block in re.findall(
+                r"<EventTriggerNotification>.*?</EventTriggerNotification>",
                 raw,
                 flags=re.DOTALL,
             )
+            if not any(f"<id>{i}</id>" in block for i in managed)
+        ]
 
-        if enabled and tokens:
-            notifs = "".join(self._linkage_notification(t) for t in tokens)
-            raw = raw.replace(
-                "</EventTriggerNotificationList>",
-                f"{notifs}</EventTriggerNotificationList>",
-                1,
-            )
-        return await self.put(f"/ISAPI/Event/triggers/{trigger_id}", body=raw)
+        notifs = "".join(self._linkage_notification(t, channel) for t in tokens)
+        body = (
+            f"<EventTrigger><id>{trigger_id}</id>"
+            f"<eventType>{event}</eventType>"
+            f"<videoInputChannelID>{channel}</videoInputChannelID>"
+            f"<EventTriggerNotificationList>"
+            f"{notifs}{''.join(preserved)}"
+            f"</EventTriggerNotificationList></EventTrigger>"
+        )
+        return await self.put(f"/ISAPI/Event/triggers/{trigger_id}", body=body)
 
     # -- Native arming schedule (so linkages fire on-camera, doover-independent) --
 
-    DAYS = (
-        "Monday",
-        "Tuesday",
-        "Wednesday",
-        "Thursday",
-        "Friday",
-        "Saturday",
-        "Sunday",
-    )
-
-    # Endpoints that carry a smart-event arming schedule vary across firmware, so
-    # we try each in turn and keep the first that the camera accepts.
-    _SCHEDULE_ENDPOINTS = (
-        "/ISAPI/Event/schedules/{trigger_id}",
-        "/ISAPI/Event/triggers/{trigger_id}/schedule",
-    )
+    # Where a smart event's arming schedule lives. Note the plural camelCase segment
+    # and the "<eventType>_video<channel>" leaf — taken from what the camera's own
+    # web UI PUTs, and not guessable from the trigger's own path.
+    _SCHEDULE_ENDPOINT = "/ISAPI/Event/schedules/fieldDetections/{event}_video{channel}"
 
     @staticmethod
     def _night_time_segments(start_hour: int, end_hour: int) -> list:
@@ -648,23 +651,34 @@ class HikvisionClient:
             segments.append((f"{start_hour:02d}:00:00", "24:00:00"))
         return segments
 
-    def _arming_schedule_body(self, start_hour: int, end_hour: int) -> str:
+    def _arming_schedule_body(
+        self,
+        start_hour: int,
+        end_hour: int,
+        event: str = "fielddetection",
+        index: int = 1,
+        channel: int = 1,
+    ) -> str:
+        """Build the weekly arming schedule; the same window applies every day.
+
+        ``dayOfWeek`` is 1-7. The camera has no notion of a window that wraps
+        midnight, so :meth:`_night_time_segments` splits e.g. 18->6 into two blocks
+        per day (00:00-06:00 and 18:00-24:00). Like the trigger, this body carries no
+        version/xmlns.
+        """
         segments = self._night_time_segments(start_hour, end_hour)
-        days = "".join(
-            f"<TimeRange><Day>{day}</Day><TimeSegmentList>"
-            + "".join(
-                f"<TimeSegment><BeginTime>{begin}</BeginTime>"
-                f"<EndTime>{end}</EndTime></TimeSegment>"
-                for begin, end in segments
-            )
-            + "</TimeSegmentList></TimeRange>"
-            for day in self.DAYS
+        blocks = "".join(
+            f"<TimeBlock><dayOfWeek>{day}</dayOfWeek>"
+            f"<TimeRange><beginTime>{begin}</beginTime>"
+            f"<endTime>{end}</endTime></TimeRange></TimeBlock>"
+            for day in range(1, 8)
+            for begin, end in segments
         )
         return (
-            f'<Schedule version="2.0" xmlns="{ISAPI_NS}">'
-            f"<ScheduleType>Time</ScheduleType>"
-            f"<TimeRangeList>{days}</TimeRangeList>"
-            f"</Schedule>"
+            f"<Schedule><id>{event}-{index}</id>"
+            f"<eventType>{event}</eventType>"
+            f"<videoInputChannelID>{channel}</videoInputChannelID>"
+            f"<TimeBlockList>{blocks}</TimeBlockList></Schedule>"
         )
 
     async def set_event_arming_schedule(
@@ -673,31 +687,28 @@ class HikvisionClient:
         end_hour: int,
         event: str = "fielddetection",
         index: int = 1,
+        channel: int = 1,
     ) -> bool:
         """
         Write the camera's native arming schedule for a smart event.
 
-        With this set, the event's linkages (flash / siren / record) only fire inside
-        the window and do so *on-camera* — no doover involvement, so the deterrent
-        still works while the device is offline.
+        With this set the event's linkages (flash / siren / record) only fire inside
+        the window, and do so *on-camera* — no doover involvement, so the deterrent
+        keeps working while the device is offline.
 
-        NOTE: the resource that carries a smart-event arming schedule is firmware
-        dependent and is not exposed at all on some builds, so this is best-effort:
-        we try each candidate endpoint and return whether any succeeded. Callers must
-        fall back to app-driven arming when this returns False.
+        This runs on the camera's own clock, so it's only as good as that clock: see
+        the engine's ``sync_camera_clock``, without which the camera believes it's
+        2019 and arms at the wrong hours. Returns whether the camera accepted it;
+        callers should fall back to app-driven arming if not.
         """
-        body = self._arming_schedule_body(start_hour, end_hour)
-        trigger_id = f"{event}-{index}"
-        for template in self._SCHEDULE_ENDPOINTS:
-            endpoint = template.format(trigger_id=trigger_id)
-            try:
-                await self.put(endpoint, body=body)
-            except Exception as e:
-                _LOGGER.debug(f"Arming schedule not accepted at {endpoint}: {e}")
-                continue
-            _LOGGER.info(f"Native arming schedule written at {endpoint}.")
-            return True
-        return False
+        endpoint = self._SCHEDULE_ENDPOINT.format(event=event, channel=channel)
+        body = self._arming_schedule_body(start_hour, end_hour, event, index, channel)
+        try:
+            await self.put(endpoint, body=body)
+        except Exception as e:
+            _LOGGER.warning(f"Arming schedule not accepted at {endpoint}: {e}")
+            return False
+        return True
 
     # -- On-camera storage (microSD) --
 
