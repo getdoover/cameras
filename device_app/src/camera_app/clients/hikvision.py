@@ -922,25 +922,21 @@ class HikvisionClient:
                 matches.append(_xml_to_dict(element))
         return matches
 
-    def bound_playback_uri(
-        self, uri: str, start: datetime, end: datetime
-    ) -> str:
-        """Re-point a playbackURI's time range at ``start``..``end``.
-
-        A search hands back the URI of the whole segment the event fell inside, which
-        can be far longer than the event. The URI carries its span as query params, so
-        narrowing them makes the camera return only the part we want.
-        """
-        for param, value in (("starttime", start), ("endtime", end)):
-            replacement = f"{param}={self._isapi_time(value).replace('-', '').replace(':', '')}"
-            if re.search(rf"{param}=[^&]*", uri):
-                uri = re.sub(rf"{param}=[^&]*", replacement, uri)
-            else:
-                uri += ("&" if "?" in uri else "?") + replacement
-        return uri
-
     async def download_recording(self, playback_uri: str) -> bytes:
-        """Download a recording segment (mp4 bytes) by its ``playbackURI``."""
+        """
+        Download a recording segment by its ``playbackURI``.
+
+        You get the whole segment, and there's no trimming it: the URI a search hands
+        back carries ``name=``/``size=``, which puts the camera in download-by-filename
+        mode, so the ``starttime``/``endtime`` in it are ignored (verified — narrowing
+        the range returns a byte-identical file). Dropping ``name``/``size`` to force
+        download-by-time just makes the camera hang up. Since the recording is event
+        triggered, the segment is roughly the event anyway, plus the camera's pre/post
+        roll.
+
+        The bytes are **not** mp4 despite what the URI implies — see
+        ``CameraBase.remux_to_mp4``.
+        """
         body = (
             f'<downloadRequest version="1.0" xmlns="{ISAPI_NS}">'
             f"<playbackURI>{escape(playback_uri)}</playbackURI>"

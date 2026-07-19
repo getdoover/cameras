@@ -399,10 +399,13 @@ class HikvisionAcuSenseCamera(CameraBase):
         """
         Download the camera's own recording of ``start`` -> ``end`` as one file.
 
-        The camera stores recordings in fixed-length segments, so a search can return
-        several, and any one of them can be far longer than the event. We therefore
-        take the playbackURI it gives us and re-point its time range at the event,
-        which makes the camera mux exactly that span for us.
+        ``start``/``end`` only select which segment to fetch — they don't trim it. The
+        camera hands back the whole segment (see
+        :meth:`HikvisionClient.download_recording`), which for an event-triggered
+        recording is roughly the event plus the camera's pre/post roll. That pre-roll
+        is the reason to prefer this over recording the stream ourselves: it covers
+        the moments *before* the trigger, which we can't, because we only start once
+        the camera tells us.
 
         What comes back is *not* an mp4 despite the name — it's Hikvision's IMKH
         container around an MPEG program stream — so it gets remuxed before upload
@@ -414,9 +417,7 @@ class HikvisionAcuSenseCamera(CameraBase):
             if not uri:
                 continue
 
-            data = await self.client.download_recording(
-                self.client.bound_playback_uri(uri, start, end)
-            )
+            data = await self.client.download_recording(uri)
             if not data:
                 continue
 
