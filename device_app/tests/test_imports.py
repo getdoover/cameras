@@ -334,6 +334,131 @@ def test_acusense_target_extraction():
     }
     assert HikvisionAcuSenseCamera._extract_target(event) == "human"
 
+def test_ppe_event_parsing():
+    from camera_app.events import PPEEvent
+
+    # The violation count is pulled from whatever key ends in hardHat...Num, without
+    # assuming one exact path (the firmware's element names aren't documented).
+    assert PPEEvent.from_alert(
+        {"HardHatDetection.targetAttrs.noHardHatNum": "3"}
+    ).no_hardhat == 3
+    # A missing/garbled count is tolerated - the active event is still the violation.
+    assert PPEEvent.from_alert({"eventType": "hardHatDetection"}).no_hardhat is None
+    assert PPEEvent.from_alert({"someHelmetCount": "nope"}).no_hardhat is None
+
+
+def test_deepinview_routes_events():
+    """DeepinView routes ANPR->anpr, hard-hat->ppe, and everything else to AcuSense."""
+    import asyncio
+    import types
+    from camera_app.engines.hikvision_deepinview import HikvisionDeepinViewCamera
+    from camera_app.events import ANPREvent, PPEEvent
+
+    cam = HikvisionDeepinViewCamera.__new__(HikvisionDeepinViewCamera)
+    cam.config = types.SimpleNamespace(
+        anpr=types.SimpleNamespace(min_confidence=types.SimpleNamespace(value=0))
+    )
+    got = {}
+    cam.on_anpr_event_callback = lambda e: got.__setitem__("anpr", e)
+    cam.on_ppe_event_callback = lambda e: got.__setitem__("ppe", e)
+
+    # ANPR event -> anpr callback with a parsed plate.
+    asyncio.run(cam.on_cam_event({"eventType": "ANPR", "ANPR.licensePlate": "ABC123"}))
+    assert isinstance(got["anpr"], ANPREvent) and got["anpr"].plate == "ABC123"
+
+    # Hard-hat event -> ppe callback.
+    asyncio.run(
+        cam.on_cam_event(
+            {"eventType": "hardHatDetection", "eventState": "active",
+             "HardHatDetection.noHardHatNum": "1"}
+        )
+    )
+    assert isinstance(got["ppe"], PPEEvent) and got["ppe"].no_hardhat == 1
+
+
+def test_external_alarm_drives_strobe_and_horn():
+    """Strobe raised while an intruder is present; both outputs drop when it clears.
+
+    The event is made to have already gone quiet (last detection is well past the
+    zero cooldown), so the watcher trips after a single reconcile tick - no real burst
+    timing is waited on. The point is the safety-critical behaviour: the strobe is
+    driven on, the horn is driven, and neither pin is left high once nobody holds it.
+    """
+    import asyncio
+    import types
+    from datetime import datetime, timedelta, timezone
+    from camera_app.application import CameraApplication
+
+    calls = []
+
+    class FakeIface:
+        async def set_do(self, pin, state):
+            calls.append((pin, state))
+
+    def make_app(strobe_pin, horn_pin, shared=None):
+        v = lambda x: types.SimpleNamespace(value=x)
+        store = shared if shared is not None else {}
+
+        class FakeTags:
+            def get_tag(self, name, default=0, app_key=None):
+                return store.get(name, default)
+
+            async def set_tag(self, name, value, app_key=None):
+                store[name] = value
+
+        app = CameraApplication.__new__(CameraApplication)
+        app.platform_iface = FakeIface()
+        app.tag_manager = FakeTags()
+        app.config = types.SimpleNamespace(
+            alarm=types.SimpleNamespace(
+                doovit_strobe_pin=v(strobe_pin),
+                doovit_horn_pin=v(horn_pin),
+                event_clip_cooldown=v(0),
+            )
+        )
+        app._external_alarm_task = None
+        # Already quiet: last detection is old, so the watcher ends the event at once.
+        app._last_intruder_event_at = datetime.now(tz=timezone.utc) - timedelta(seconds=100)
+        return app
+
+    # Both wired, nobody else holding: strobe driven on, horn driven, both end OFF.
+    app = make_app(3, 4)
+    asyncio.run(app.run_external_alarm())
+    assert (3, True) in calls  # strobe raised while active
+    assert any(pin == 4 for pin, _ in calls)  # horn driven
+    last = {}
+    for pin, state in calls:
+        last[pin] = state
+    assert last == {3: False, 4: False}  # nothing left on
+
+    # Strobe only (horn unset): horn pin 4 is never driven, strobe ends OFF.
+    calls.clear()
+    app = make_app(3, None)
+    asyncio.run(app.run_external_alarm())
+    assert (3, True) in calls and calls[-1] == (3, False)
+    assert all(pin == 3 for pin, _ in calls)
+
+    # Neither wired: nothing is touched, no None pin ever driven.
+    calls.clear()
+    app = make_app(None, None)
+    asyncio.run(app.run_external_alarm())
+    assert calls == []
+
+    # Shared output: another camera app still holds the strobe (future deadline in the
+    # shared tag). When our intruder clears we must NOT switch the strobe off - only
+    # the horn, which nobody else holds.
+    calls.clear()
+    from camera_app.application import ALARM_HOLD_TAG_PREFIX
+
+    now_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
+    shared = {f"{ALARM_HOLD_TAG_PREFIX}3": now_ms + 60_000}  # peer holds strobe 60s
+    app = make_app(3, 4, shared=shared)
+    asyncio.run(app.run_external_alarm())
+    assert (3, True) in calls  # we drove the strobe on while active
+    assert (3, False) not in calls  # ...but never off - the peer still holds it
+    assert (4, False) in calls  # the horn, held by nobody, is released
+
+
 def test_is_night():
     from camera_app.app_config import CameraConfig
     from datetime import datetime

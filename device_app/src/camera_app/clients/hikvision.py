@@ -324,6 +324,86 @@ class HikvisionClient:
             f"/ISAPI/Traffic/channels/{channel}/vehicleDetect", body=new
         )
 
+    # -- PPE / hard-hat detection (DeepinView deep-learning analytics) --
+
+    # Where the hard-hat rule lives. NOTE: taken from the DeepinView ISAPI analytics
+    # convention (/ISAPI/Smart/<Feature>/<channel>); the exact segment casing for this
+    # newer algorithm isn't in the public spec, so verify against a real
+    # GET /ISAPI/Smart/capabilities (or the camera's web UI network trace) on the bench
+    # and adjust if the camera 404s.
+    HARD_HAT_ENDPOINT = "/ISAPI/Smart/HardHatDetection/{channel}"
+
+    async def get_hard_hat_detection(self, channel: int = 1) -> dict:
+        """Get the PPE / hard-hat detection config."""
+        try:
+            return await self.get(self.HARD_HAT_ENDPOINT.format(channel=channel))
+        except aiohttp.ClientResponseError:
+            return {}
+
+    def _default_hard_hat_body(
+        self, enabled: bool, sensitivity: int, channel: int
+    ) -> str:
+        """Build a full-frame hard-hat rule for a camera that has none configured yet.
+
+        Mirrors :meth:`_default_field_detection_body` — a rectangle inset from the
+        edges so it covers the whole scene, in Hikvision normalized (0-1000) units.
+        """
+        value = "true" if enabled else "false"
+        corners = ((10, 10), (990, 10), (990, 990), (10, 990))
+        coords = "".join(
+            f"<RegionCoordinates><positionX>{x}</positionX>"
+            f"<positionY>{y}</positionY></RegionCoordinates>"
+            for x, y in corners
+        )
+        return (
+            f'<HardHatDetection version="2.0" xmlns="{ISAPI_NS}">'
+            f"<enabled>{value}</enabled>"
+            f"<normalizedScreenSize>"
+            f"<normalizedScreenWidth>{NORMALIZED_SCREEN}</normalizedScreenWidth>"
+            f"<normalizedScreenHeight>{NORMALIZED_SCREEN}</normalizedScreenHeight>"
+            f"</normalizedScreenSize>"
+            f"<HardHatDetectionRegionList>"
+            f"<HardHatDetectionRegion>"
+            f"<id>1</id><enabled>true</enabled>"
+            f"<sensitivityLevel>{sensitivity}</sensitivityLevel>"
+            f"<RegionCoordinatesList>{coords}</RegionCoordinatesList>"
+            f"</HardHatDetectionRegion>"
+            f"</HardHatDetectionRegionList>"
+            f"</HardHatDetection>"
+        )
+
+    async def set_hard_hat_detection(
+        self, enabled: bool, sensitivity: int = 50, channel: int = 1
+    ) -> dict:
+        """
+        Enable/disable on-camera PPE (hard-hat) detection and set its sensitivity.
+
+        Like :meth:`set_field_detection`, this GET-modify-PUTs an existing rule so the
+        camera's own region/calibration is preserved, and only PUTs a default
+        full-frame rule when there's none configured yet.
+        """
+        endpoint = self.HARD_HAT_ENDPOINT.format(channel=channel)
+        try:
+            raw = (await self.get_bytes(endpoint)).decode(errors="ignore")
+        except Exception:
+            raw = ""
+
+        if "<HardHatDetectionRegion" not in raw:
+            body = self._default_hard_hat_body(enabled, sensitivity, channel)
+            return await self.put(endpoint, body=body)
+
+        value = "true" if enabled else "false"
+        # First <enabled> is the rule; second (if any) is region 1.
+        raw = re.sub(r"<enabled>.*?</enabled>", f"<enabled>{value}</enabled>", raw, count=1)
+        if "<sensitivityLevel>" in raw:
+            raw = re.sub(
+                r"<sensitivityLevel>.*?</sensitivityLevel>",
+                f"<sensitivityLevel>{sensitivity}</sensitivityLevel>",
+                raw,
+                count=1,
+            )
+        return await self.put(endpoint, body=raw)
+
     # -- Alarm output relay (external siren / strobe) --
 
     async def trigger_io_output(self, port: int = 1, active: bool = True) -> dict:

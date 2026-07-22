@@ -6,7 +6,7 @@ from urllib.parse import quote
 import aiohttp
 from pydoover import rpc, ui
 from pydoover.docker import Application
-from pydoover.models import EventSubscription, AggregateUpdateEvent
+from pydoover.models import EventSubscription, AggregateUpdateEvent, NotificationSeverity
 
 from .app_config import CameraConfig, CameraType
 from .app_tags import CameraTags
@@ -20,11 +20,13 @@ from .engines.bosch_ptz import BoschPTZCamera
 from .engines.hikvision_thermal import HikVisionThermal
 from .engines.hikvision_anpr import HikvisionANPRCamera
 from .engines.hikvision_acusense import HikvisionAcuSenseCamera
+from .engines.hikvision_deepinview import HikvisionDeepinViewCamera
 from .events import (
     ANPREvent,
     DetectionZonesPayload,
     MotionDetectEvent,
     MotionDetectEventType,
+    PPEEvent,
     SDPOfferPayload,
     CAMERA_CONTROL_CHANNEL,
     SET_ZONES_CMD,
@@ -40,6 +42,18 @@ UI_CONNECT_POWERON_TIMEOUT_SEC = 60 * 15  # 15min
 # camera's pre-record buffer.
 EVENT_CLIP_LOOKBACK_SEC = 10
 
+# External horn burst pattern while an intruder is present: sound it for HORN_ON_SEC
+# out of every HORN_PERIOD_SEC. Deliberately not configurable — it's a fixed cadence.
+# (The strobe light, by contrast, is held on continuously for the whole event.)
+HORN_ON_SEC = 3
+HORN_PERIOD_SEC = 10
+# How often the external-alarm loop re-publishes its hold and reconciles the outputs.
+ALARM_TICK_SEC = 1
+# Prefix for the cross-app "hold until" tag that coordinates a shared strobe/horn
+# output between camera apps. Keyed by pin (like camera power's camera_power_<pin>),
+# read/written with app_key=None so every camera app on the Doovit sees the same value.
+ALARM_HOLD_TAG_PREFIX = "camera_alarm_output_"
+
 # Why a snapshot/video was captured, attached to the message payload so a gallery can
 # label or filter it. The detection reasons mirror the `camera_event` channel's
 # `kind`, so the media and the automation event agree on what happened.
@@ -53,6 +67,7 @@ SNAPSHOT_REASONS = (
     "person",
     "vehicle",
     "anpr",
+    "ppe",
 )
 
 
@@ -89,6 +104,10 @@ class CameraApplication(Application):
         # re-triggering, and stops once the cooldown lapses with no new detection.
         self._intruder_clip_task = None
         self._last_intruder_event_at = None
+
+        # Background task driving the external strobe/horn on the Doovit outputs for as
+        # long as an intruder is present. Re-triggers extend it rather than restart it.
+        self._external_alarm_task = None
 
         # the below is probably a "fix in doover 2.0" problem to have some better / more native
         # camera feels
@@ -151,6 +170,15 @@ class CameraApplication(Application):
                     self.sync_presets,
                     self.clear_preset,
                 )
+            case CameraType.hikvision_deepinview:
+                self.engine = HikvisionDeepinViewCamera(
+                    self.config,
+                    self.on_motion_event_callback,
+                    self.on_anpr_event_callback,
+                    self.on_ppe_event_callback,
+                    self.sync_presets,
+                    self.clear_preset,
+                )
             case _:
                 raise ValueError(f"Unknown camera type: {self.config.type.value}")
 
@@ -166,6 +194,8 @@ class CameraApplication(Application):
     async def close(self):
         if self._intruder_clip_task:
             self._intruder_clip_task.cancel()
+        if self._external_alarm_task:
+            self._external_alarm_task.cancel()
         if self.engine:
             await self.engine.close()
 
@@ -548,12 +578,149 @@ class CameraApplication(Application):
         )
 
         plate = event.plate or "unknown"
-        payload = {
-            "message": f"{self.app_display_name} detected vehicle plate {plate}.",
-            "topic": "anpr_event",
-            "severity": "Info",
-        }
-        await self.create_message("notifications", payload)
+        await self.send_notification(
+            f"{self.app_display_name} detected vehicle plate {plate}.",
+            severity=NotificationSeverity.Info,
+            topic="anpr_event",
+        )
+
+    def start_external_alarm(self):
+        """Start the external strobe/horn for this event, unless already running.
+
+        A re-fired detection just pushes ``_last_intruder_event_at`` forward (done by
+        the caller), which keeps the existing task going — like ``start_event_video``.
+        """
+        if self._external_alarm_task and not self._external_alarm_task.done():
+            return
+        self._external_alarm_task = asyncio.create_task(self.run_external_alarm())
+
+    async def run_external_alarm(self):
+        """Drive the Doovit strobe + horn for as long as the intruder is present.
+
+        The strobe light is held on continuously for the whole event; the horn sounds
+        in short bursts (``HORN_ON_SEC`` on out of every ``HORN_PERIOD_SEC``). Both run
+        until the intruder goes quiet — tracked by the same ``_last_intruder_event_at``
+        + cooldown watcher the event video uses (``watch_for_event_end``) — then both
+        outputs are dropped. Each output's pin doubles as its enable: an unset pin is
+        skipped, so this no-ops when neither is wired.
+
+        These outputs may be **shared between camera apps** (two cameras wired to the
+        same site strobe/horn), and each camera is its own app process. They coordinate
+        through a per-pin cross-app tag (``camera_alarm_output_<pin>``, app_key=None,
+        like camera power): while active, each app publishes its "hold until" deadline
+        there, so an output is only dropped once *no* camera still holds it — one camera
+        clearing can't cut the alarm while another still sees the intruder. The horn's
+        burst on/off is derived from the shared wall clock rather than a private timer,
+        so apps sharing the pin command the same state instead of fighting over it.
+        """
+        cfg = self.config.alarm
+        strobe = cfg.doovit_strobe_pin.value
+        horn = cfg.doovit_horn_pin.value
+        pins = [p for p in (strobe, horn) if p is not None]
+        if not pins:
+            return
+
+        stop = asyncio.Event()
+        watcher = asyncio.create_task(self.watch_for_event_end(stop))
+        cooldown_ms = cfg.event_clip_cooldown.value * 1000
+        log.info(f"External alarm engaged (strobe pin={strobe}, horn pin={horn}).")
+        try:
+            while not stop.is_set():
+                now_ms = self._now_ms()
+                # Publish our hold so any camera app sharing these pins keeps them up
+                # while we still see the intruder. Basing the deadline on the last
+                # detection (not "now") keeps it consistent with the local watcher, so
+                # our own stale hold expires exactly when we stop.
+                basis = self._last_intruder_event_at or datetime.now(tz=timezone.utc)
+                until_ms = int(basis.timestamp() * 1000) + cooldown_ms
+                for pin in pins:
+                    await self._extend_alarm_hold(pin, until_ms)
+
+                # Strobe: solid on for the whole event. Horn: short repeated bursts,
+                # phased off the shared wall clock so apps sharing the pin agree on the
+                # on/off state rather than clobbering each other.
+                if strobe is not None:
+                    await self.platform_iface.set_do(strobe, True)
+                if horn is not None:
+                    burst_on = now_ms % (HORN_PERIOD_SEC * 1000) < HORN_ON_SEC * 1000
+                    await self.platform_iface.set_do(horn, burst_on)
+
+                await self._sleep_unless_stopped(stop, ALARM_TICK_SEC)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.warning(f"External alarm failed: {e}", exc_info=e)
+        finally:
+            watcher.cancel()
+            # Our intruder has cleared. Drop each output only if no other camera app
+            # still holds it — otherwise leave it on for that app to manage.
+            now_ms = self._now_ms()
+            for pin in pins:
+                try:
+                    if not self._alarm_output_held(pin, now_ms):
+                        await self.platform_iface.set_do(pin, False)
+                except Exception as e:
+                    log.warning(f"Failed to clear external output {pin}: {e}")
+            self._external_alarm_task = None
+            log.info("External alarm released.")
+
+    @staticmethod
+    def _now_ms() -> int:
+        return int(datetime.now(tz=timezone.utc).timestamp() * 1000)
+
+    @staticmethod
+    def _alarm_hold_tag(pin: int) -> str:
+        return f"{ALARM_HOLD_TAG_PREFIX}{pin}"
+
+    async def _extend_alarm_hold(self, pin: int, until_ms: int) -> None:
+        """Publish our "hold until" deadline for a (possibly shared) output pin.
+
+        Cross-app coordination via a global tag (app_key=None). Uses max semantics so a
+        peer camera with a later deadline is never lowered — the pin's effective hold is
+        the latest deadline any camera has published for it.
+        """
+        tag = self._alarm_hold_tag(pin)
+        current = self.tag_manager.get_tag(tag, default=0, app_key=None) or 0
+        if until_ms > current:
+            await self.tag_manager.set_tag(tag, until_ms, app_key=None)
+
+    def _alarm_output_held(self, pin: int, now_ms: int) -> bool:
+        """Whether any camera app still holds this output (deadline in the future)."""
+        until = self.tag_manager.get_tag(self._alarm_hold_tag(pin), default=0, app_key=None)
+        return bool(until) and until > now_ms
+
+    @staticmethod
+    async def _sleep_unless_stopped(stop: asyncio.Event, secs: float) -> bool:
+        """Wait up to ``secs``, returning early True if ``stop`` is set meanwhile."""
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=secs)
+            return True
+        except asyncio.TimeoutError:
+            return False
+
+    async def on_ppe_event_callback(self, event: PPEEvent):
+        """A DeepinView PPE (hard-hat) violation: someone without a hard hat.
+
+        Publishes a structured ``camera_event`` for automations, grabs a snapshot so
+        there's an image of the violation, and (when configured) sends a notification.
+        """
+        count = event.no_hardhat
+        log.info(f"PPE violation detected (missing hard hats: {count}).")
+
+        await self.tags.last_ppe_violation.set(int(datetime.now().timestamp() * 1000))
+
+        # Automations hook off this; publish before the slow snapshot work.
+        await self.publish_camera_event("ppe", violation="no_hardhat", count=count)
+
+        await self.lock_snapshot_and_run("ppe")
+
+        if self.config.ppe.notify.value:
+            who = f"{count} people" if count and count > 1 else "someone"
+            await self.send_notification(
+                f"{self.app_display_name} detected {who} without a hard hat.",
+                severity=NotificationSeverity.Warn,
+                topic="ppe_event",
+            )
 
     async def on_motion_event_callback(self, event: MotionDetectEvent):
         log.info(f"Motion event detected, type: {event.type}.")
@@ -580,26 +747,32 @@ class CameraApplication(Application):
                 "intruder", target=event.type.value, label=label
             )
 
+            # Mark the intruder as present now — both the event-video recorder and the
+            # external strobe/horn track this timestamp (+ cooldown, via
+            # watch_for_event_end) to tell when the intruder has gone. A re-fire just
+            # pushes it forward, extending both rather than restarting them.
+            self._last_intruder_event_at = datetime.now(tz=timezone.utc)
+
+            # External strobe/horn wired to the Doovit outputs, for the whole event.
+            self.start_external_alarm()
+
             # Event video is captured by a background task that outlives this
             # callback; a re-fire just extends the recording. When the engine couldn't
             # resolve a capture mode we keep the single-snapshot behaviour.
             if getattr(self.engine, "event_clip_mode", None):
-                self._last_intruder_event_at = datetime.now(tz=timezone.utc)
                 self.start_event_video()
             else:
                 await self.lock_snapshot_and_run(REASON_INTRUDER)
 
-            # The camera's own deterrent (flash / siren) is already armed natively;
-            # the app pulses the external siren/strobe relay too.
+            # The camera's own deterrent (flash / siren) is already armed natively.
             if hasattr(self.engine, "fire_alarm"):
                 await self.engine.fire_alarm()
 
-            payload = {
-                "message": f"{self.app_display_name} detected {label} (possible intruder).",
-                "topic": "motion_event_intruder",
-                "severity": "Warning",
-            }
-            await self.create_message("notifications", payload)
+            await self.send_notification(
+                f"{self.app_display_name} detected {label} (possible intruder).",
+                severity=NotificationSeverity.Warn,
+                topic="motion_event_intruder",
+            )
             return
 
         # Outside the night window (or alarm disabled), raw unclassified motion
@@ -615,21 +788,19 @@ class CameraApplication(Application):
         match event.type:
             case MotionDetectEventType.person:
                 if self.ui_manager.get_value("alert_me_on_human_motion") is True:
-                    payload = {
-                        "message": f"{self.app_display_name} has detected a person.",
-                        "topic": "motion_event_person",
-                        "severity": "Info",
-                    }
-                    await self.create_message("notifications", payload)
+                    await self.send_notification(
+                        f"{self.app_display_name} has detected a person.",
+                        severity=NotificationSeverity.Info,
+                        topic="motion_event_person",
+                    )
 
             case MotionDetectEventType.vehicle:
                 if self.ui_manager.get_value("alert_me_on_vehicle_motion") is True:
-                    payload = {
-                        "message": f"{self.app_display_name} has detected a vehicle.",
-                        "topic": "motion_event_vehicle",
-                        "severity": "Info",
-                    }
-                    await self.create_message("notifications", payload)
+                    await self.send_notification(
+                        f"{self.app_display_name} has detected a vehicle.",
+                        severity=NotificationSeverity.Info,
+                        topic="motion_event_vehicle",
+                    )
 
             case MotionDetectEventType.unknown:
                 log.warning("Unknown event detected.")

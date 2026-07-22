@@ -53,6 +53,7 @@
                         "Hikvision (Thermal)",
                         "Hikvision (ANPR)",
                         "Hikvision (AcuSense)",
+                        "Hikvision (DeepinView)",
                         "Bosch (PTZ)"
                     ],
                     "title": "Camera Type",
@@ -519,7 +520,7 @@
                                 "null"
                             ],
                             "x-required": false,
-                            "description": "Enable on-camera ANPR (license plate + vehicle detection). Only available on Hikvision ANPR/DeepinView '/P' models with road-traffic mode.",
+                            "description": "Enable on-camera ANPR (license plate + vehicle detection). Available on Hikvision ANPR '/P' road-traffic models and DeepinView (iDS-2CD5xxx) deep-learning cameras.",
                             "default": false,
                             "x-position": 1
                         },
@@ -543,13 +544,68 @@
                     "x-collapsible": true,
                     "x-defaultCollapsed": false
                 },
+                "ppe_detection_config": {
+                    "title": "PPE Detection Config",
+                    "x-name": "ppe_detection_config",
+                    "x-hidden": false,
+                    "type": "object",
+                    "x-required": true,
+                    "x-position": 11,
+                    "properties": {
+                        "enabled": {
+                            "title": "Enabled",
+                            "x-name": "enabled",
+                            "x-hidden": false,
+                            "type": [
+                                "boolean",
+                                "null"
+                            ],
+                            "x-required": false,
+                            "description": "Enable on-camera PPE / hard-hat detection. Flags a person not wearing a hard hat. Hikvision DeepinView models only.",
+                            "default": false,
+                            "x-position": 1
+                        },
+                        "ppe_detection_sensitivity": {
+                            "title": "PPE Detection Sensitivity",
+                            "x-name": "ppe_detection_sensitivity",
+                            "x-hidden": false,
+                            "type": [
+                                "integer",
+                                "null"
+                            ],
+                            "x-required": false,
+                            "description": "Hard-hat detection sensitivity (0-100). Higher catches more (smaller/further people) but risks more false alarms.",
+                            "default": 50,
+                            "x-position": 2,
+                            "x-advanced": true
+                        },
+                        "notify_on_violation": {
+                            "title": "Notify on Violation",
+                            "x-name": "notify_on_violation",
+                            "x-hidden": false,
+                            "type": [
+                                "boolean",
+                                "null"
+                            ],
+                            "x-required": false,
+                            "description": "Send a notification (and capture a snapshot) when someone is detected without a hard hat.",
+                            "default": true,
+                            "x-position": 3,
+                            "x-advanced": true
+                        }
+                    },
+                    "additionalElements": true,
+                    "required": [],
+                    "x-collapsible": true,
+                    "x-defaultCollapsed": false
+                },
                 "intruder_alarm_config": {
                     "title": "Intruder Alarm Config",
                     "x-name": "intruder_alarm_config",
                     "x-hidden": false,
                     "type": "object",
                     "x-required": true,
-                    "x-position": 11,
+                    "x-position": 12,
                     "properties": {
                         "intruder_alarm_enabled": {
                             "title": "Intruder Alarm Enabled",
@@ -592,6 +648,32 @@
                             "x-position": 3,
                             "x-advanced": true
                         },
+                        "external_strobe_light_output_pin": {
+                            "title": "External Strobe Light Output Pin",
+                            "x-name": "external_strobe_light_output_pin",
+                            "x-hidden": false,
+                            "type": [
+                                "integer",
+                                "null"
+                            ],
+                            "x-required": false,
+                            "description": "Doovit digital-output pin wired to an external strobe light (e.g. red/blue beacon). Held on for the whole night-intruder event. Leave unset to disable it.",
+                            "default": null,
+                            "x-position": 4
+                        },
+                        "external_horn_output_pin": {
+                            "title": "External Horn Output Pin",
+                            "x-name": "external_horn_output_pin",
+                            "x-hidden": false,
+                            "type": [
+                                "integer",
+                                "null"
+                            ],
+                            "x-required": false,
+                            "description": "Doovit digital-output pin wired to an external horn. Sounded in short repeated bursts for the duration of a night-intruder event. Leave unset to disable it.",
+                            "default": null,
+                            "x-position": 5
+                        },
                         "camera_buzzer": {
                             "title": "Camera Buzzer",
                             "x-name": "camera_buzzer",
@@ -603,7 +685,7 @@
                             "x-required": false,
                             "description": "Also sound the camera's built-in buzzer on night motion (fires locally even if doover is offline).",
                             "default": true,
-                            "x-position": 4,
+                            "x-position": 6,
                             "x-advanced": true
                         },
                         "flash_light": {
@@ -617,7 +699,7 @@
                             "x-required": false,
                             "description": "Flash the camera's built-in light (ColorVu white light on AcuSense) on a smart event at night (built-in, fires even if doover is offline).",
                             "default": true,
-                            "x-position": 5,
+                            "x-position": 7,
                             "x-advanced": true
                         },
                         "audible_alarm": {
@@ -631,7 +713,7 @@
                             "x-required": false,
                             "description": "On cameras with a built-in speaker (e.g. AcuSense /SRB), sound the audible siren on a smart event at night. Combined with the flash light this uses the camera's built-in flash+siren active response.",
                             "default": true,
-                            "x-position": 6,
+                            "x-position": 8,
                             "x-advanced": true
                         },
                         "night_start_hour": {
@@ -645,7 +727,7 @@
                             "x-required": false,
                             "description": "Hour (0-23, camera/site local time) the intruder alarm arms.",
                             "default": 18,
-                            "x-position": 7
+                            "x-position": 9
                         },
                         "night_end_hour": {
                             "title": "Night End Hour",
@@ -658,7 +740,7 @@
                             "x-required": false,
                             "description": "Hour (0-23, camera/site local time) the intruder alarm disarms.",
                             "default": 6,
-                            "x-position": 8
+                            "x-position": 10
                         },
                         "event_video": {
                             "title": "Event Video",
@@ -671,7 +753,7 @@
                             "x-required": false,
                             "description": "On an intruder event at night, upload a video of the event to doover (instead of a single still). Recording runs for as long as the intruder keeps being detected, and uploads as one video. Uses the camera's own microSD recording where a card is fitted, otherwise records the stream with ffmpeg (which needs the 'full' image). AcuSense only.",
                             "default": false,
-                            "x-position": 9,
+                            "x-position": 11,
                             "x-advanced": true
                         },
                         "event_video_cooldown": {
@@ -685,7 +767,7 @@
                             "x-required": false,
                             "description": "Stop recording this many seconds after the last detection. Each new detection extends the recording.",
                             "default": 15,
-                            "x-position": 10,
+                            "x-position": 12,
                             "x-advanced": true
                         },
                         "event_video_max_length": {
@@ -699,7 +781,7 @@
                             "x-required": false,
                             "description": "Hard limit on a single event video, in seconds. Stops one long-running event from recording (and uploading) forever.",
                             "default": 120,
-                            "x-position": 11,
+                            "x-position": 13,
                             "x-advanced": true
                         }
                     },
@@ -718,6 +800,7 @@
                 "object_detection",
                 "thermal_config",
                 "anpr_config",
+                "ppe_detection_config",
                 "intruder_alarm_config"
             ]
         },

@@ -81,6 +81,41 @@ class ANPREvent:
             data=alert,
         )
 
+class PPEEvent:
+    """A PPE (hard-hat) detection from a Hikvision DeepinView camera.
+
+    Built from the flattened ``<EventNotificationAlert>`` dict produced by the ISAPI
+    alertStream. The camera's hard-hat rule fires when it sees a person who *isn't*
+    wearing a hard hat, so an active event is itself the violation; ``no_hardhat`` is
+    the count of offending targets where the camera reports one.
+
+    The exact child element names for this event vary by firmware/model and aren't
+    publicly documented for the newer DeepinViewX analytics, so parsing is deliberately
+    tolerant — VERIFY against a real alertStream capture when the camera is on the bench
+    and tighten the key lookups below if needed.
+    """
+
+    def __init__(self, no_hardhat: int = None, data: dict = None):
+        self.no_hardhat = no_hardhat
+        self.data = data or {}
+
+    @classmethod
+    def from_alert(cls, alert: dict) -> "PPEEvent":
+        # The camera reports its target count under a key that ends in something like
+        # "targetAttrs.noHardHatNum" / "hardHatNum"; scan flattened keys rather than
+        # assume one exact path.
+        count = None
+        for key, value in alert.items():
+            k = key.lower()
+            if ("hardhat" in k or "helmet" in k) and ("num" in k or "count" in k):
+                try:
+                    count = int(value)
+                except (TypeError, ValueError):
+                    continue
+                break
+        return cls(no_hardhat=count, data=alert)
+
+
 class DetectionTarget(Enum):
     """What a zone should detect, in app terms.
 

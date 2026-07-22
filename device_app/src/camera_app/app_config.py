@@ -161,6 +161,7 @@ class CameraType(Enum):
     hikvision_thermal = "Hikvision (Thermal)"
     hikvision_anpr = "Hikvision (ANPR)"
     hikvision_acusense = "Hikvision (AcuSense)"
+    hikvision_deepinview = "Hikvision (DeepinView)"
     bosch_ptz = "Bosch (PTZ)"
 
 
@@ -168,13 +169,44 @@ class CameraANPRConfig(config.Object):
     enabled = config.Boolean(
         "Enabled",
         description="Enable on-camera ANPR (license plate + vehicle detection). "
-        "Only available on Hikvision ANPR/DeepinView '/P' models with road-traffic mode.",
+        "Available on Hikvision ANPR '/P' road-traffic models and DeepinView "
+        "(iDS-2CD5xxx) deep-learning cameras.",
         default=False,
     )
     min_confidence = config.Integer(
         "Minimum Confidence",
         description="Ignore plate reads below this confidence (0-100).",
         default=0,
+        advanced=True,
+    )
+
+
+class CameraPPEConfig(config.Object):
+    """On-camera PPE (hard hat) detection, for site-safety monitoring.
+
+    Only the Hikvision DeepinView (iDS-2CD5xxx) deep-learning cameras run this — the
+    camera flags a person in the scene who isn't wearing a hard hat, which arrives on
+    the alertStream as its own smart event (see the DeepinView engine).
+    """
+
+    enabled = config.Boolean(
+        "Enabled",
+        description="Enable on-camera PPE / hard-hat detection. Flags a person not "
+        "wearing a hard hat. Hikvision DeepinView models only.",
+        default=False,
+    )
+    sensitivity = config.Integer(
+        "PPE Detection Sensitivity",
+        description="Hard-hat detection sensitivity (0-100). Higher catches more "
+        "(smaller/further people) but risks more false alarms.",
+        default=50,
+        advanced=True,
+    )
+    notify = config.Boolean(
+        "Notify on Violation",
+        description="Send a notification (and capture a snapshot) when someone is "
+        "detected without a hard hat.",
+        default=True,
         advanced=True,
     )
 
@@ -205,6 +237,27 @@ class CameraAlarmConfig(config.Object):
         description="Seconds to hold the alarm-output relay on per trigger.",
         default=10,
         advanced=True,
+    )
+    # -- External strobe + horn wired to the Doovit's own digital outputs --
+    # Distinct from the camera's alarm relay above (output_port): this hardware hangs
+    # off the Doovit's DO pins, so the app drives them directly via platform_iface
+    # (see CameraApplication.run_external_alarm), the same way camera power is driven.
+    # Each pin doubles as the enable: leave it unset and that output does nothing. Both
+    # run for as long as a night intruder keeps being detected — the strobe stays on
+    # for the whole event, while the horn sounds in short bursts.
+    doovit_strobe_pin = config.Integer(
+        "External Strobe Light Output Pin",
+        description="Doovit digital-output pin wired to an external strobe light "
+        "(e.g. red/blue beacon). Held on for the whole night-intruder event. Leave "
+        "unset to disable it.",
+        default=None,
+    )
+    doovit_horn_pin = config.Integer(
+        "External Horn Output Pin",
+        description="Doovit digital-output pin wired to an external horn. Sounded in "
+        "short repeated bursts for the duration of a night-intruder event. Leave unset "
+        "to disable it.",
+        default=None,
     )
     beep_enabled = config.Boolean(
         "Camera Buzzer",
@@ -311,6 +364,7 @@ class CameraConfig(config.Schema):
     )
     thermal = CameraThermalConfig("Thermal Config")
     anpr = CameraANPRConfig("ANPR Config")
+    ppe = CameraPPEConfig("PPE Detection Config")
     alarm = CameraAlarmConfig("Intruder Alarm Config")
 
     @property
