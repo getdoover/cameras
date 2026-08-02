@@ -70,6 +70,12 @@ SNAPSHOT_REASONS = (
     "ppe",
 )
 
+# The reasons that count as a "motion snapshot" — a picture taken because the camera
+# classified something, as opposed to the schedule, a manual request, or the night
+# intruder alarm. These are what the motion-snapshot window and its object-detection
+# flag apply to.
+MOTION_SNAPSHOT_REASONS = ("person", "vehicle")
+
 
 class CameraApplication(Application):
     config: CameraConfig
@@ -459,6 +465,13 @@ class CameraApplication(Application):
 
         payload = {"reason": reason, "media": media}
 
+        # Marks the frame as wanted by the Object Detection app. Set explicitly rather
+        # than left to that app to infer from `reason`, so which cameras get analysed
+        # is decided per-camera here — the detection app can watch a camera for plates
+        # without every one of its motion snapshots being run through the models.
+        if reason in MOTION_SNAPSHOT_REASONS:
+            payload["object_detection"] = self.config.motion_snapshot_object_detection
+
         try:
             night = await self.engine.detect_night()
         except Exception as e:
@@ -780,7 +793,16 @@ class CameraApplication(Application):
         if event.type is MotionDetectEventType.motion:
             return
 
-        await self.lock_snapshot_and_run(event.type.value)
+        # The picture is gated by the motion-snapshot window, but the event is not:
+        # an automation still wants to know a person was seen at 3am even when the
+        # site only keeps daytime images.
+        if self.config.motion_snapshot_allowed():
+            await self.lock_snapshot_and_run(event.type.value)
+        else:
+            log.info(
+                f"Skipping {event.type.value} snapshot — outside the motion snapshot "
+                f"window."
+            )
 
         if event.type in (MotionDetectEventType.person, MotionDetectEventType.vehicle):
             await self.publish_camera_event(event.type.value, target=event.type.value)

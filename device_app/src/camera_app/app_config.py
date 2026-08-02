@@ -318,6 +318,67 @@ class CameraAlarmConfig(config.Object):
     )
 
 
+def value_or(element, fallback):
+    """Read a config element, tolerating a config written before it existed.
+
+    pydoover raises from ``.value`` when a key is absent rather than falling back to
+    the element's declared default, and an install's stored config is only
+    re-materialised when the app's schema is republished. Between those two points
+    every read of a newly-added key raises — which on the motion path would mean an
+    exception per detection — so the default is applied here instead.
+    """
+    try:
+        return element.value
+    except ValueError:
+        return fallback
+
+
+class CameraMotionSnapshotConfig(config.Object):
+    """Daytime picture-on-motion capture — the counterpart to the night alarm.
+
+    The intruder alarm owns the night window: motion there means sirens, strobes and
+    event video. During the day none of that is wanted, but the picture still is —
+    it's what the object detection app analyses for PPE compliance and number plates.
+
+    So this captures a plain still on a classified motion event inside its own hour
+    window, with no alarm behaviour attached. It's a separate window rather than
+    "whatever isn't night" because the two don't have to be complements: a site may
+    want pictures only during working hours, leaving a gap where nothing is captured.
+    """
+
+    restrict_to_hours = config.Boolean(
+        "Only Capture During Hours",
+        description="Limit motion snapshots to the hours below. Off (the default) keeps "
+        "the existing behaviour of capturing on every classified person/vehicle event, "
+        "whatever the time.",
+        default=False,
+    )
+    start_hour = config.Integer(
+        "Start Hour",
+        description="Hour (0-23, site-local time) motion snapshots start being taken. "
+        "Only applies when 'Only Capture During Hours' is on.",
+        default=6,
+        minimum=0,
+        maximum=23,
+    )
+    end_hour = config.Integer(
+        "End Hour",
+        description="Hour (0-23, site-local time) motion snapshots stop being taken. "
+        "Only applies when 'Only Capture During Hours' is on.",
+        default=18,
+        minimum=0,
+        maximum=23,
+    )
+    object_detection = config.Boolean(
+        "Object Detection",
+        description="Offer these snapshots to the Object Detection app for hard-hat / "
+        "high-vis and number-plate analysis. Requires that app to be installed and "
+        "pointed at this camera; turning it on here only marks the snapshots as "
+        "wanted, it doesn't run any inference in this app.",
+        default=False,
+    )
+
+
 class ObjectDetectionType(Enum):
     person = "Person"
     vehicle = "Vehicle"
@@ -366,6 +427,7 @@ class CameraConfig(config.Schema):
     anpr = CameraANPRConfig("ANPR Config")
     ppe = CameraPPEConfig("PPE Detection Config")
     alarm = CameraAlarmConfig("Intruder Alarm Config")
+    motion_snapshot = CameraMotionSnapshotConfig("Motion Snapshot Config")
 
     @property
     def rtsp_uri(self) -> str:
@@ -396,17 +458,47 @@ class CameraConfig(config.Schema):
             for e in self.object_detection.elements
         )
 
-    def is_night(self, now: datetime = None) -> bool:
-        """True if the current hour is within the intruder-alarm night window."""
-        hour = (now or datetime.now()).hour
-        start = self.alarm.night_start_hour.value
-        end = self.alarm.night_end_hour.value
+    @staticmethod
+    def _in_hour_window(hour: int, start: int, end: int) -> bool:
+        """Whether ``hour`` falls in the [start, end) window, which may wrap midnight.
+
+        Shared by the night alarm window and the motion-snapshot window so the two
+        can't drift apart in how they treat a wrapping range or a start == end.
+        """
         if start == end:
             return False
         if start < end:
             return start <= hour < end
         # Window wraps midnight (e.g. 18 -> 6).
         return hour >= start or hour < end
+
+    def is_night(self, now: datetime = None) -> bool:
+        """True if the current hour is within the intruder-alarm night window."""
+        return self._in_hour_window(
+            (now or datetime.now()).hour,
+            self.alarm.night_start_hour.value,
+            self.alarm.night_end_hour.value,
+        )
+
+    def motion_snapshot_allowed(self, now: datetime = None) -> bool:
+        """Whether a classified-motion event should capture a still right now.
+
+        Unrestricted unless the hour window is switched on, so an existing install
+        keeps capturing on every person/vehicle event exactly as it did before this
+        setting existed.
+        """
+        if not value_or(self.motion_snapshot.restrict_to_hours, False):
+            return True
+        return self._in_hour_window(
+            (now or datetime.now()).hour,
+            value_or(self.motion_snapshot.start_hour, 6),
+            value_or(self.motion_snapshot.end_hour, 18),
+        )
+
+    @property
+    def motion_snapshot_object_detection(self) -> bool:
+        """Whether motion snapshots should be offered to the Object Detection app."""
+        return bool(value_or(self.motion_snapshot.object_detection, False))
 
 
 def export():

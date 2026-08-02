@@ -1,0 +1,18 @@
+{
+    "object_detection": {
+        "name": "object_detection",
+        "display_name": "Object Detection",
+        "description": "On-device PPE (hard hat / high-vis) and number-plate detection for camera snapshots.",
+        "long_description": "README.md",
+        "type": "DEV",
+        "visibility": "PUB",
+        "allow_many": true,
+        "depends_on": [
+            "platform_interface"
+        ],
+        "image_name": "registry.doover.com/apps/object_detection:main",
+        "build_args": "--platform linux/arm64",
+        "export_ui_command": "NO_EXPORT",
+        "organisation_id": null
+    }
+}

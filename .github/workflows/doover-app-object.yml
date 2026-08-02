@@ -1,0 +1,26 @@
+name: Publish Object Detection App
+
+on:
+  push:
+    branches: [main]
+    # Only rebuild when this app actually changes -- the model weights alone are
+    # ~23MB, so a rebuild on every camera-app commit is wasted CI time.
+    paths:
+      - "object_detection/**"
+      - ".github/workflows/publish-object-detection-docker-package.yaml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "object_detection/**"
+      - ".github/workflows/publish-object-detection-docker-package.yaml"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  app:
+    uses: getdoover/workflows/.github/workflows/app.yml@main
+    with:
+      app: object_detection
+    secrets: inherit

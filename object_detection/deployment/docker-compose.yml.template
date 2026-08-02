@@ -1,0 +1,17 @@
+services:
+  object-detection:
+    image: ghcr.io/getdoover/cameras-object-detection:main
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      # Findings are timestamped in site-local time to line up with the camera
+      # app's snapshot messages, which are also site-local.
+      - /etc/localtime:/etc/localtime:ro
+    # The models are the whole memory footprint of this app, and a Doovit has
+    # ~900MB spare across every container. This cap is what stops a large frame
+    # (or both detectors loaded at once) from pushing the device into swap and
+    # taking the camera apps down with it -- the container is restarted instead.
+    mem_limit: 700m
+    environment:
+      - APP_KEY=$APP_KEY
+      - HEALTHCHECK_PORT=$HEALTHCHECK_PORT

@@ -789,6 +789,76 @@
                     "required": [],
                     "x-collapsible": true,
                     "x-defaultCollapsed": false
+                },
+                "motion_snapshot_config": {
+                    "title": "Motion Snapshot Config",
+                    "x-name": "motion_snapshot_config",
+                    "x-hidden": false,
+                    "type": "object",
+                    "x-required": true,
+                    "x-position": 13,
+                    "properties": {
+                        "only_capture_during_hours": {
+                            "title": "Only Capture During Hours",
+                            "x-name": "only_capture_during_hours",
+                            "x-hidden": false,
+                            "type": [
+                                "boolean",
+                                "null"
+                            ],
+                            "x-required": false,
+                            "description": "Limit motion snapshots to the hours below. Off (the default) keeps the existing behaviour of capturing on every classified person/vehicle event, whatever the time.",
+                            "default": false,
+                            "x-position": 1
+                        },
+                        "start_hour": {
+                            "title": "Start Hour",
+                            "x-name": "start_hour",
+                            "x-hidden": false,
+                            "type": [
+                                "integer",
+                                "null"
+                            ],
+                            "x-required": false,
+                            "description": "Hour (0-23, site-local time) motion snapshots start being taken. Only applies when 'Only Capture During Hours' is on.",
+                            "default": 6,
+                            "x-position": 2,
+                            "minimum": 0,
+                            "maximum": 23
+                        },
+                        "end_hour": {
+                            "title": "End Hour",
+                            "x-name": "end_hour",
+                            "x-hidden": false,
+                            "type": [
+                                "integer",
+                                "null"
+                            ],
+                            "x-required": false,
+                            "description": "Hour (0-23, site-local time) motion snapshots stop being taken. Only applies when 'Only Capture During Hours' is on.",
+                            "default": 18,
+                            "x-position": 3,
+                            "minimum": 0,
+                            "maximum": 23
+                        },
+                        "object_detection": {
+                            "title": "Object Detection",
+                            "x-name": "object_detection",
+                            "x-hidden": false,
+                            "type": [
+                                "boolean",
+                                "null"
+                            ],
+                            "x-required": false,
+                            "description": "Offer these snapshots to the Object Detection app for hard-hat / high-vis and number-plate analysis. Requires that app to be installed and pointed at this camera; turning it on here only marks the snapshots as wanted, it doesn't run any inference in this app.",
+                            "default": false,
+                            "x-position": 4
+                        }
+                    },
+                    "additionalElements": true,
+                    "required": [],
+                    "x-collapsible": true,
+                    "x-defaultCollapsed": false
                 }
             },
             "additionalElements": true,
@@ -801,7 +871,8 @@
                 "thermal_config",
                 "anpr_config",
                 "ppe_detection_config",
-                "intruder_alarm_config"
+                "intruder_alarm_config",
+                "motion_snapshot_config"
             ]
         },
         "lambda_config": {},

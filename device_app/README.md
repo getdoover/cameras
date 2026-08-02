@@ -164,6 +164,44 @@ non-Hikvision cameras aren't asked). When it's absent, work it out from the thum
 
 <br/>
 
+### Motion snapshots (daytime pictures, no alarm)
+
+The intruder alarm owns the **night** window — motion there means sirens, strobes and
+event video. During the day none of that is wanted, but the picture often still is:
+it's what the **Object Detection** app analyses for hard-hat / high-vis compliance and
+number plates.
+
+This section governs those pictures. A classified person/vehicle event has always
+captured a still; these settings let you confine that to an hour window and mark the
+results for analysis.
+
+| Setting | Description | Default |
+|---------|-------------|---------|
+| **Only Capture During Hours** | Confine motion snapshots to the window below | `false` |
+| **Start Hour / End Hour** | Hour window (0–23, site-local) snapshots are captured in | `6` / `18` |
+| **Object Detection** | Offer these snapshots to the Object Detection app | `false` |
+
+> **Off by default is the existing behaviour.** With *Only Capture During Hours* off, a
+> classified person/vehicle event captures a still whatever the time, exactly as
+> before — turning this section on is what narrows it.
+
+The window is **independent of the night window**, not its complement, so a site can
+keep pictures to working hours only and leave a gap where nothing is captured. It
+accepts a wrapping range (`18` → `6`) the same way the night window does, and
+`start == end` means never.
+
+**Only the picture is gated, never the event.** A `camera_event` is still published
+outside the window — an automation wants to know a person was seen at 3am even when the
+site only keeps daytime images.
+
+**Object Detection** adds `"object_detection": true|false` to the snapshot message. The
+detection app treats that as authoritative in both directions, overriding its own
+reason filter — so a camera can be watched for plates without every one of its motion
+snapshots being run through the models. It only marks the frame as wanted; no inference
+happens in this app.
+
+<br/>
+
 ### Object detection zones
 
 Zones live entirely on the **`set_detection_zones`** command, over `ui_cmds` — its value in the aggregate
