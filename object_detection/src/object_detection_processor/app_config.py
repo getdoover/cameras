@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from pydoover import config
+from pydoover.processor import ManySubscriptionConfig
 
 
 class PPEConfig(config.Object):
@@ -115,6 +116,8 @@ class ObjectDetectionProcessorConfig(config.Schema):
         maximum=1920,
         advanced=True,
     )
+
+    channels = ManySubscriptionConfig()
 
     @property
     def wanted_reasons(self) -> set:

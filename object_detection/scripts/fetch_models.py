@@ -29,8 +29,11 @@ Weights and licences
   whole output depends on people being detected, not just equipment.
 * Plate detection (models/plate.onnx) -- morsetechlab/yolov11-license-plate-detection,
   AGPL-3.0. Ships ONNX directly, so it's a straight download.
-* Plate OCR -- ankandrew's fast-plate-ocr, pulled at image build time by the
-  Dockerfile (it manages its own weight cache).
+* Plate OCR (models/plate_ocr.onnx + .yaml) -- ankandrew's fast-plate-ocr
+  `cct-xs-v1-global-model`, MIT. Copied out of its hub cache and committed, because
+  the library resolves that cache from `Path.home()` with no env override: Lambda sets
+  HOME=/tmp, so weights baked into /root/.cache are invisible there and OCR silently
+  degrades to detect-but-never-read. Loading by explicit path fixes that.
 
 NOTE the plate detector is AGPL-3.0 while this repo is Apache-2.0. That is a
 deliberate, reviewable choice mirroring cattle-cam (which ships AGPL YOLO weights) --
@@ -112,10 +115,54 @@ def fetch_ppe_model():
     print(f"  wrote {dest} ({dest.stat().st_size / 1e6:.1f}MB)")
 
 
+OCR_HUB_MODEL = "cct-xs-v1-global-model"
+OCR_OUTPUT = "plate_ocr.onnx"
+OCR_CONFIG_OUTPUT = "plate_ocr.yaml"
+
+
+def fetch_ocr_model():
+    """Copy fast-plate-ocr's weights into models/ so they load by explicit path.
+
+    Its hub caches into `Path.home()/.cache/fast-plate-ocr`, hardcoded with no env
+    override. That breaks in Lambda, which sets HOME=/tmp: an image with the cache baked
+    into /root/.cache is ignored, the library re-downloads on every cold start, and if it
+    can't reach the network OCR degrades to detection-only -- plates boxed, none read.
+    Vendoring them removes HOME, the network and the cache from the runtime path.
+    """
+    dest = MODELS_DIR / OCR_OUTPUT
+    config_dest = MODELS_DIR / OCR_CONFIG_OUTPUT
+    if dest.exists() and config_dest.exists():
+        print(f"{OCR_OUTPUT} already present, skipping.")
+        return
+
+    print(f"Fetching plate OCR -> {OCR_OUTPUT}")
+    try:
+        # Downloads into the hub cache as a side effect; we then copy it out.
+        from fast_plate_ocr import LicensePlateRecognizer
+        from fast_plate_ocr.inference import hub
+    except ImportError:
+        sys.exit("fast-plate-ocr is needed: uv run --group dev scripts/fetch_models.py")
+
+    LicensePlateRecognizer(OCR_HUB_MODEL)
+    cached = hub.MODEL_CACHE_DIR / OCR_HUB_MODEL
+    onnx = next(cached.glob("*.onnx"), None)
+    config = next(cached.glob("*.yaml"), None)
+    if not onnx or not config:
+        sys.exit(
+            f"expected an .onnx and a .yaml under {cached}, found: "
+            f"{[p.name for p in cached.iterdir()]}"
+        )
+
+    shutil.copy2(onnx, dest)
+    shutil.copy2(config, config_dest)
+    print(f"  wrote {dest} ({dest.stat().st_size / 1e6:.1f}MB) and {config_dest.name}")
+
+
 def main():
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
     fetch_ppe_model()
     fetch_plate_model()
+    fetch_ocr_model()
     print("\nDone. Commit the .onnx files in models/ so the image build is offline.")
 
 

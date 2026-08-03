@@ -13,37 +13,45 @@
         "image_name": "registry.doover.com/apps/object_detection:main",
         "build_args": "--platform linux/arm64",
         "export_ui_command": "NO_EXPORT",
+        "organisation_id": null
+    },
+    "object_detection_processor": {
+        "name": "object_detection_processor",
+        "display_name": "Object Detection (Cloud)",
+        "description": "Cloud processor that runs PPE and number-plate inference on camera snapshots and edits the snapshot message in place with the result.",
+        "long_description": "README.md",
+        "type": "PRO",
+        "visibility": "PUB",
+        "allow_many": false,
+        "depends_on": [],
         "organisation_id": null,
+        "export_ui_command": "NO_EXPORT",
+        "export_config_command": "export-config-processor",
+        "lambda_config": {
+            "Environment": {},
+            "Timeout": 120,
+            "MemorySize": 3072,
+            "Architectures": [
+                "arm64"
+            ],
+            "PackageType": "Image",
+            "Code": {
+                "ImageUri": "184499164237.dkr.ecr.ap-southeast-2.amazonaws.com/doover/object-detection-processor:main"
+            }
+        },
         "config_schema": {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "$id": "",
             "title": "$default",
             "type": "object",
             "properties": {
-                "camera_apps": {
-                    "title": "Camera Apps",
-                    "x-name": "camera_apps",
-                    "x-hidden": false,
-                    "type": "array",
-                    "x-required": true,
-                    "description": "App keys of the camera apps whose snapshots to analyse, e.g. 'doover_camera_1'. One instance can watch several cameras -- preferred over deploying one instance per camera, since each instance loads its own copy of the models into RAM.",
-                    "x-position": 0,
-                    "items": {
-                        "title": "App Key",
-                        "x-name": "app_key",
-                        "x-hidden": false,
-                        "type": "string",
-                        "x-required": true,
-                        "description": "Camera app key"
-                    }
-                },
                 "ppe_detection": {
                     "title": "PPE Detection",
                     "x-name": "ppe_detection",
                     "x-hidden": false,
                     "type": "object",
                     "x-required": true,
-                    "x-position": 1,
+                    "x-position": 0,
                     "properties": {
                         "enabled": {
                             "title": "Enabled",
@@ -55,7 +63,7 @@
                             ],
                             "x-required": false,
                             "description": "Run hard-hat / high-vis detection on incoming snapshots.",
-                            "default": false,
+                            "default": true,
                             "x-position": 1
                         },
                         "require_hard_hat": {
@@ -93,7 +101,7 @@
                                 "null"
                             ],
                             "x-required": false,
-                            "description": "Drop detections below this confidence (0-100). Lower catches more distant people but invents them: on a real site camera a traffic cone came back as a person at 0.49, which at the old default of 40 raised a violation.",
+                            "description": "Drop detections below this confidence (0-100).",
                             "default": 55,
                             "x-position": 4,
                             "x-advanced": true,
@@ -125,7 +133,7 @@
                     "x-hidden": false,
                     "type": "object",
                     "x-required": true,
-                    "x-position": 2,
+                    "x-position": 1,
                     "properties": {
                         "enabled": {
                             "title": "Enabled",
@@ -165,7 +173,7 @@
                                 "null"
                             ],
                             "x-required": false,
-                            "description": "Discard OCR results shorter than this many characters. Guards against a partial read being published as a real plate.",
+                            "description": "Discard OCR results shorter than this many characters.",
                             "default": 4,
                             "x-position": 3,
                             "x-advanced": true,
@@ -181,7 +189,7 @@
                                 "null"
                             ],
                             "x-required": false,
-                            "description": "Send a notification for every plate read. Off by default -- on a busy site this is a lot of notifications.",
+                            "description": "Send a notification for every plate read.",
                             "default": false,
                             "x-position": 4
                         }
@@ -198,7 +206,7 @@
                     "type": "array",
                     "x-required": true,
                     "description": "Only analyse snapshots captured for these reasons. Matches the 'reason' field the camera app publishes. Empty means analyse everything.",
-                    "x-position": 3,
+                    "x-position": 2,
                     "items": {
                         "enum": [
                             "schedule",
@@ -218,7 +226,7 @@
                         ],
                         "x-required": false,
                         "description": "Snapshot reason",
-                        "default": "intruder"
+                        "default": "person"
                     }
                 },
                 "annotate_images": {
@@ -230,23 +238,9 @@
                         "null"
                     ],
                     "x-required": false,
-                    "description": "Draw labelled boxes on the frame and publish it back to the camera's channel so the timeline shows what was flagged.",
+                    "description": "Attach a copy of the frame with labelled boxes drawn on it.",
                     "default": true,
-                    "x-position": 4
-                },
-                "publish_results_with_no_findings": {
-                    "title": "Publish Results With No Findings",
-                    "x-name": "publish_results_with_no_findings",
-                    "x-hidden": false,
-                    "type": [
-                        "boolean",
-                        "null"
-                    ],
-                    "x-required": false,
-                    "description": "Publish a result even when nothing was detected. Off by default so the camera timeline isn't filled with empty analyses.",
-                    "default": false,
-                    "x-position": 5,
-                    "x-advanced": true
+                    "x-position": 3
                 },
                 "inference_size": {
                     "title": "Inference Size",
@@ -257,40 +251,37 @@
                         "null"
                     ],
                     "x-required": false,
-                    "description": "Square size (px) frames are letterboxed to before inference. Larger catches smaller/more distant subjects but costs CPU time and RAM.",
+                    "description": "Square size (px) frames are letterboxed to before inference. Leave at 640 unless you have measured otherwise: raising it is NOT a free accuracy win. The weights are trained at 640, and on a real site frame 960 lost a person that 640 found (see the README). More CPU here buys throughput, not better detection.",
                     "default": 640,
-                    "x-position": 6,
+                    "x-position": 4,
                     "x-advanced": true,
                     "minimum": 320,
-                    "maximum": 1280
+                    "maximum": 1920
+                },
+                "dv_proc_subscriptions": {
+                    "title": "Subscription",
+                    "x-name": "dv_proc_subscriptions",
+                    "x-hidden": false,
+                    "type": "array",
+                    "x-required": true,
+                    "description": "A list of channels to subscribe to.",
+                    "x-position": 5,
+                    "items": {
+                        "title": "Channel Subscription",
+                        "x-name": "dv_proc_subscription",
+                        "x-hidden": false,
+                        "type": "string",
+                        "x-required": true,
+                        "description": "The name of the channel to subscribe to"
+                    }
                 }
             },
             "additionalElements": true,
             "required": [
-                "camera_apps",
                 "ppe_detection",
                 "number_plate_recognition",
-                "analyse_snapshots_because_of"
-            ]
-        }
-    },
-    "object_detection_processor": {
-        "name": "object_detection_processor",
-        "display_name": "Object Detection (Cloud)",
-        "description": "Cloud processor that runs PPE and number-plate inference on camera snapshots and edits the snapshot message in place with the result.",
-        "long_description": "README.md",
-        "type": "PRO",
-        "visibility": "PUB",
-        "allow_many": false,
-        "depends_on": [],
-        "organisation_id": null,
-        "export_ui_command": "NO_EXPORT",
-        "lambda_config": {
-            "Environment": {},
-            "Timeout": 300,
-            "MemorySize": 1024,
-            "Architectures": [
-                "arm64"
+                "analyse_snapshots_because_of",
+                "dv_proc_subscriptions"
             ]
         }
     }

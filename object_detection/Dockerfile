@@ -55,20 +55,11 @@ ENV PATH="/app/.venv/bin:$PATH"
 # Where yolo.py looks for the detection weights (committed under models/).
 ENV OBJECT_DETECTION_MODEL_DIR=/app/models
 
-# Bake the plate-OCR weights into the image. fast-plate-ocr otherwise downloads them
-# on first use, which on a remote site means the first plate read fails and keeps
-# failing while the link is down.
-#
-# The cache location is NOT configurable -- hub.py hardcodes
-# `Path.home()/.cache/fast-plate-ocr` with no env var -- so this only works because
-# the build and the runtime run as the same user (root), resolving HOME to the same
-# /root. If this image ever gains a non-root USER, that user's HOME won't contain the
-# cache and plate reads will silently fall back to downloading at runtime; copy the
-# cache to the new HOME at that point.
-RUN python -c "\
-from fast_plate_ocr import LicensePlateRecognizer; \
-LicensePlateRecognizer('cct-xs-v1-global-model')" \
-    || echo "WARN: could not pre-cache plate OCR weights; will download at runtime"
+# No OCR pre-cache step, deliberately: the plate-OCR weights ship in models/ alongside
+# the detectors and load by explicit path (see common/detectors/anpr.py). This used to
+# warm fast-plate-ocr's hub cache instead, which resolves from `Path.home()` with no env
+# override -- fragile here (any non-root USER breaks it) and outright broken in the
+# cloud processor, where Lambda sets HOME=/tmp and every plate came back unread.
 
 # Keep the math libraries single-threaded. The models run one image at a time on a
 # 4-core CM4 shared with every other app on the device; letting BLAS/onnxruntime

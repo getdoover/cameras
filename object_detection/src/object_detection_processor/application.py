@@ -42,6 +42,12 @@ ANALYSED_BY_KEY = "analysed_by"
 
 IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
 ANNOTATED_SUFFIX = "-detected"
+# Matches the camera app's convention (`<name>-thumbnail.jpg`), so its gallery treats
+# our previews the same way as its own.
+THUMBNAIL_SUFFIX = "-thumbnail"
+# How the annotated frame is labelled in `media`. It goes in as its own view rather than
+# replacing the source entry, so the unannotated frame stays browsable.
+DETECTED_VIEW_SUFFIX = " (detected)"
 
 # Loaded once per *container*, not per invocation.
 #
@@ -116,21 +122,23 @@ class ObjectDetectionProcessor(Application):
 
         # One frame per message in practice; a PTZ camera contributing several presets
         # is analysed in order and the findings merged under their view names.
-        findings, files, summaries = {}, [], []
+        findings, files, media, summaries = {}, [], [], []
         for name, attachment in targets:
             result = await self._analyse(attachment, ppe, anpr, name)
             if result is None:
                 continue
-            view_findings, annotated, summary = result
-            findings[name] = view_findings
-            summaries.append(summary)
-            if annotated is not None:
-                files.append(annotated)
+            findings[name] = result["findings"]
+            summaries.append(result["summary"])
+            files.extend(result["files"])
+            if result["media"]:
+                media.append(result["media"])
 
         if not findings:
             return
 
-        await self._publish(channel, message, payload, findings, files, summaries)
+        await self._publish(
+            channel, message, payload, findings, files, media, summaries
+        )
 
     async def _analyse(self, attachment, ppe, anpr, name):
         try:
@@ -168,24 +176,51 @@ class ObjectDetectionProcessor(Application):
         if anpr_result is not None:
             view["anpr"] = anpr_result.to_dict()
 
-        annotated = None
+        files, media_entry = [], None
         if self.config.annotate.value:
             try:
                 drawn = annotate_mod.annotate(image, ppe_result, anpr_result)
-                annotated = File(
-                    filename=self._annotated_filename(attachment.filename),
-                    content_type="image/jpeg",
-                    size=0,
-                    data=annotate_mod.encode_jpeg(drawn),
+                filename = self._annotated_filename(attachment.filename)
+                thumb_name = f"{filename.rsplit('.', 1)[0]}{THUMBNAIL_SUFFIX}.jpg"
+                files.append(
+                    File(
+                        filename=filename,
+                        content_type="image/jpeg",
+                        size=0,
+                        data=annotate_mod.encode_jpeg(drawn),
+                    )
                 )
+                files.append(
+                    File(
+                        filename=thumb_name,
+                        content_type="image/jpeg",
+                        size=0,
+                        data=annotate_mod.encode_thumbnail_jpeg(drawn),
+                    )
+                )
+                # Same shape as the camera app's own media entries, so a gallery renders
+                # this without special-casing us. Named as its own view rather than
+                # replacing the source entry, so the original frame stays browsable.
+                media_entry = {
+                    "name": f"{name}{DETECTED_VIEW_SUFFIX}",
+                    "file": filename,
+                    "thumbnail": thumb_name,
+                }
             except Exception as e:
                 log.warning(f"Couldn't annotate the image: {e}", exc_info=e)
 
         violators = list(ppe_result.violators) if ppe_result else []
         plates = anpr_result.read_plates if anpr_result else []
-        return view, annotated, self._summarise(violators, plates)
+        return {
+            "findings": view,
+            "files": files,
+            "media": media_entry,
+            "summary": self._summarise(violators, plates),
+        }
 
-    async def _publish(self, channel, message, payload, findings, files, summaries):
+    async def _publish(
+        self, channel, message, payload, findings, files, media, summaries
+    ):
         """Merge the findings into the original message and attach the annotation.
 
         `replace_data=False` so the camera's own payload survives, and
@@ -198,6 +233,12 @@ class ObjectDetectionProcessor(Application):
             "findings": findings,
             "summary": "; ".join(s for s in summaries if s) or "nothing detected",
         }
+        if media:
+            # Send the *whole* list, camera entries included. A merge patch replaces a
+            # list wholesale rather than appending to it, so sending only our entries
+            # would drop the original snapshot out of the gallery -- attached, but
+            # invisible. Rebuilt here so the result is right either way.
+            detail["media"] = self._merged_media(payload, media)
         try:
             await self.api.update_message(
                 channel_name=channel,
@@ -243,6 +284,17 @@ class ObjectDetectionProcessor(Application):
                 severity=NotificationSeverity.Info,
                 topic="anpr_event",
             )
+
+    @staticmethod
+    def _merged_media(payload: dict, new_entries: list) -> list:
+        """The camera's media entries plus ours, without duplicating on a re-run.
+
+        Keyed by filename so re-analysing a message replaces our previous entry rather
+        than appending a second copy of it.
+        """
+        existing = [e for e in (payload.get("media") or []) if isinstance(e, dict)]
+        ours = {e["file"] for e in new_entries}
+        return [e for e in existing if e.get("file") not in ours] + new_entries
 
     @classmethod
     def _image_attachments(cls, payload: dict, attachments: list) -> list:

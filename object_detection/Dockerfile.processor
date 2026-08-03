@@ -66,13 +66,16 @@ RUN pip install --no-cache-dir \
 COPY models/ ${LAMBDA_TASK_ROOT}/models/
 ENV OBJECT_DETECTION_MODEL_DIR=${LAMBDA_TASK_ROOT}/models
 
-# Bake the plate-OCR weights in for the same reason. HOME is /root here, and
-# fast-plate-ocr hardcodes `Path.home()/.cache/fast-plate-ocr` with no env override, so
-# this only works while the runtime user resolves the same HOME as the build.
-RUN python -c "\
-from fast_plate_ocr import LicensePlateRecognizer; \
-LicensePlateRecognizer('cct-xs-v1-global-model')" \
-    || echo "WARN: could not pre-cache plate OCR weights; will download at runtime"
+# No OCR pre-cache step here, deliberately. There used to be one that warmed
+# fast-plate-ocr's hub cache, which resolves from `Path.home()` -- hardcoded, no env
+# override. Lambda sets HOME=/tmp, so a cache baked into /root/.cache was invisible at
+# runtime: the library re-downloaded on every cold start and, when it couldn't, OCR
+# degraded to detect-but-never-read. Every plate came back null in production while the
+# build looked perfectly healthy.
+#
+# The OCR weights now ship in models/ above and load by explicit path (see
+# common/detectors/anpr.py), so HOME, the network and the cache are all out of it.
+# Verified with HOME=/tmp and --network none.
 
 # One model run at a time per container, and Lambda gives ~1 vCPU per 1769MB. Letting
 # onnxruntime fan out past that just adds contention.

@@ -18,6 +18,22 @@ log = logging.getLogger(__name__)
 
 PLATE_MODEL_PATH = MODEL_DIR / "plate.onnx"
 
+# The OCR weights, vendored beside the detectors rather than fetched from
+# fast-plate-ocr's model hub.
+#
+# The hub caches into `Path.home()/.cache/fast-plate-ocr` -- hardcoded, no env override
+# -- which is a trap in Lambda: it sets HOME=/tmp, so an image with the cache baked into
+# /root/.cache is ignored, the library tries to download on every cold start, and if it
+# can't (no NAT on a VPC-attached function) OCR silently degrades to detection-only.
+# That is exactly what happened in production: plates boxed, every one of them unread.
+#
+# Loading by explicit path removes HOME, the network and the cache from the picture, and
+# makes the device and the Lambda behave identically.
+OCR_MODEL_PATH = MODEL_DIR / "plate_ocr.onnx"
+OCR_CONFIG_PATH = MODEL_DIR / "plate_ocr.yaml"
+# Only used if the vendored files are missing, and it needs network.
+OCR_HUB_MODEL = "cct-xs-v1-global-model"
+
 # The OCR model is trained on tight crops, so a box that's clipped exactly to the
 # detected plate edge tends to lose the outermost characters. Pad it slightly.
 CROP_PADDING = 0.08
@@ -80,19 +96,34 @@ class ANPRDetector:
     def _load_ocr():
         """Load the plate OCR model, degrading to detection-only if unavailable.
 
-        fast-plate-ocr is an optional capability rather than a hard requirement: if
-        it can't load (weights not pre-cached and the site is offline, or the API
-        moved between versions) plate *detection* still works and still annotates the
-        image, which is more useful than the app refusing to start.
+        Prefers the vendored weights (see OCR_MODEL_PATH) so this needs neither the
+        network nor a particular HOME. Falls back to the hub only if they're missing.
+
+        Still tolerant of failure rather than fatal: plate *detection* keeps working and
+        still annotates the image, which beats refusing to start. But it now says
+        loudly which path it took -- degrading silently is how every plate came back
+        unread in production while the logs looked fine.
         """
         try:
             from fast_plate_ocr import LicensePlateRecognizer
 
-            return LicensePlateRecognizer("cct-xs-v1-global-model")
-        except Exception as e:
+            if OCR_MODEL_PATH.exists() and OCR_CONFIG_PATH.exists():
+                log.info(f"Loading plate OCR from {OCR_MODEL_PATH}.")
+                return LicensePlateRecognizer(
+                    onnx_model_path=OCR_MODEL_PATH,
+                    plate_config_path=OCR_CONFIG_PATH,
+                )
+
             log.warning(
-                f"Plate OCR unavailable ({e}); plates will be detected and boxed but "
-                f"not read.",
+                f"Vendored plate OCR weights are missing from {MODEL_DIR}; falling "
+                f"back to the '{OCR_HUB_MODEL}' hub download, which needs network and "
+                f"writes to $HOME. Run scripts/fetch_models.py to vendor them."
+            )
+            return LicensePlateRecognizer(OCR_HUB_MODEL)
+        except Exception as e:
+            log.error(
+                f"Plate OCR unavailable ({e}) -- plates will be detected and boxed but "
+                f"never read. Every 'plate': null comes from here.",
                 exc_info=e,
             )
             return None

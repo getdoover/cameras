@@ -50,6 +50,12 @@ ANALYSED_BY_KEY = "analysed_by"
 IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
 
 ANNOTATED_SUFFIX = "-detected"
+# Matches the camera app's convention (`<name>-thumbnail.jpg`), so its gallery treats our
+# previews the same way as its own.
+THUMBNAIL_SUFFIX = "-thumbnail"
+# How the annotated frame is labelled in `media` -- its own view rather than replacing
+# the source entry, so the unannotated frame stays browsable.
+DETECTED_VIEW_SUFFIX = " (detected)"
 
 # How long to wait after a snapshot message before re-reading it for its attachments.
 # The device agent only knows the attachment URLs once its upload of the files has
@@ -303,6 +309,7 @@ class ObjectDetectionApplication(Application):
             try:
                 annotated = annotate_mod.annotate(image, ppe_result, anpr_result)
                 filename = self._annotated_filename(attachment.filename)
+                thumb_name = f"{filename.rsplit('.', 1)[0]}{THUMBNAIL_SUFFIX}.jpg"
                 files.append(
                     File(
                         filename=filename,
@@ -311,6 +318,30 @@ class ObjectDetectionApplication(Application):
                         data=annotate_mod.encode_jpeg(annotated),
                     )
                 )
+                files.append(
+                    File(
+                        filename=thumb_name,
+                        content_type="image/jpeg",
+                        size=0,
+                        data=annotate_mod.encode_thumbnail_jpeg(annotated),
+                    )
+                )
+                # Put the annotated frame in `media` too, or a gallery driven off that
+                # list never shows it -- the attachment would be there but invisible.
+                # The whole list is rebuilt, camera entries included: a merge patch
+                # replaces a list rather than appending, so sending only ours would drop
+                # the original snapshot from the gallery.
+                entry = {
+                    "name": f"{name}{DETECTED_VIEW_SUFFIX}",
+                    "file": filename,
+                    "thumbnail": thumb_name,
+                }
+                existing = [
+                    e
+                    for e in (message.data or {}).get("media") or []
+                    if isinstance(e, dict) and e.get("file") != filename
+                ]
+                payload["media"] = existing + [entry]
             except Exception as e:
                 log.warning(f"Couldn't annotate the image: {e}", exc_info=e)
 

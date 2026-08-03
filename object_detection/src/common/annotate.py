@@ -91,3 +91,25 @@ def decode(data: bytes) -> np.ndarray | None:
     """Decode image bytes to BGR, or None if it isn't a decodable image."""
     array = np.frombuffer(data, dtype=np.uint8)
     return cv2.imdecode(array, cv2.IMREAD_COLOR)
+
+
+# The camera app's thumbnails are the camera's own 640x360 sub-stream picture, so match
+# that width -- a timeline showing both side by side then gets consistent previews.
+THUMBNAIL_WIDTH = 640
+
+
+def encode_thumbnail_jpeg(image: np.ndarray, width: int = THUMBNAIL_WIDTH) -> bytes:
+    """A downscaled JPEG of ``image``, preserving aspect ratio.
+
+    Worth the few milliseconds: the whole point of drawing boxes is to see them, and a
+    gallery renders the thumbnail. Without one, the annotated frame either doesn't
+    preview at all or forces a full-size download to show a 200px tile. Unlike the
+    camera app we can't take the camera's sub-stream picture here -- that would be an
+    unannotated frame -- so it's a resize of what we drew.
+    """
+    height, source_width = image.shape[:2]
+    if source_width <= width:
+        return encode_jpeg(image)
+    scaled_height = max(1, round(height * width / source_width))
+    small = cv2.resize(image, (width, scaled_height), interpolation=cv2.INTER_AREA)
+    return encode_jpeg(small)

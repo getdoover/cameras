@@ -523,6 +523,68 @@ class HikvisionClient:
             f"</FieldDetection>"
         )
 
+    def _default_region_entrance_body(
+        self, enabled: bool, targets: list, sensitivity: int
+    ) -> str:
+        """Build a RegionEntrance config with one full-frame region.
+
+        Verified against a real GET of ``/ISAPI/Smart/regionEntrance/1``, which differs
+        from FieldDetection in three ways that matter:
+
+        * regions carry **no** ``<enabled>`` and no ``<timeThreshold>``
+        * they ship with an **empty** ``RegionCoordinatesList``, so a polygon has to be
+          written or the rule matches nothing
+        * there is no ``contAlarmForStaticTargetEnabled`` -- which is the entire point
+          of using it: entrance fires once when a target crosses into the region and
+          does not re-alarm while it sits there.
+        """
+        value = "true" if enabled else "false"
+        target = ",".join(targets) if targets else "human,vehicle"
+        corners = ((10, 10), (990, 10), (990, 990), (10, 990))
+        coords = "".join(
+            f"<RegionCoordinates><positionX>{x}</positionX>"
+            f"<positionY>{y}</positionY></RegionCoordinates>"
+            for x, y in corners
+        )
+        return (
+            f'<RegionEntrance version="2.0" xmlns="{ISAPI_NS}">'
+            f"<enabled>{value}</enabled>"
+            f"<normalizedScreenSize>"
+            f"<normalizedScreenWidth>{NORMALIZED_SCREEN}</normalizedScreenWidth>"
+            f"<normalizedScreenHeight>{NORMALIZED_SCREEN}</normalizedScreenHeight>"
+            f"</normalizedScreenSize>"
+            f"<RegionEntranceRegionList>"
+            f"<RegionEntranceRegion>"
+            f"<id>1</id>"
+            f"<sensitivityLevel>{sensitivity}</sensitivityLevel>"
+            f"<RegionCoordinatesList>{coords}</RegionCoordinatesList>"
+            f"<detectionTarget>{target}</detectionTarget>"
+            f"</RegionEntranceRegion>"
+            f"</RegionEntranceRegionList>"
+            f"</RegionEntrance>"
+        )
+
+    async def set_region_entrance(
+        self,
+        enabled: bool,
+        targets: list | None = None,
+        sensitivity: int = 50,
+        channel: int = 1,
+    ) -> dict:
+        """Create/enable region-entrance detection: one event per target arriving.
+
+        The daytime counterpart to :meth:`set_field_detection`. Intrusion
+        (``fielddetection``) has ``contAlarmForStaticTargetEnabled`` on by default and
+        re-alarms every ``targetAlarmInterval`` while a target stays inside the region,
+        so a car that parks in frame keeps producing events -- one snapshot, upload and
+        inference each. Entrance fires once on arrival instead.
+
+        Note the path casing: ``/ISAPI/Smart/regionEntrance`` is camelCase where
+        ``/ISAPI/Smart/FieldDetection`` is PascalCase. The firmware is strict about it.
+        """
+        body = self._default_region_entrance_body(enabled, targets, sensitivity)
+        return await self.put(f"/ISAPI/Smart/regionEntrance/{channel}", body=body)
+
     async def set_field_detection(
         self,
         enabled: bool,
@@ -819,10 +881,21 @@ class HikvisionClient:
 
     # -- Native arming schedule (so linkages fire on-camera, doover-independent) --
 
-    # Where a smart event's arming schedule lives. Note the plural camelCase segment
+    # Where a smart event's arming schedule lives. Note the plural collection segment
     # and the "<eventType>_video<channel>" leaf — taken from what the camera's own
     # web UI PUTs, and not guessable from the trigger's own path.
-    _SCHEDULE_ENDPOINT = "/ISAPI/Event/schedules/fieldDetections/{event}_video{channel}"
+    _SCHEDULE_ENDPOINT = "/ISAPI/Event/schedules/{collection}/{event}_video{channel}"
+
+    # The collection segment isn't derivable from the event name -- it's the event's own
+    # plural, with its own casing. Verified by GET against a real camera: anything else
+    # returns 400 "Invalid XML Content" rather than a 404, so a wrong guess looks like a
+    # malformed body instead of a bad path.
+    _SCHEDULE_COLLECTIONS = {
+        "fielddetection": "fieldDetections",
+        "regionEntrance": "regionEntrances",
+        "regionExiting": "regionExitings",
+        "linedetection": "lineDetections",
+    }
 
     @staticmethod
     def _night_time_segments(start_hour: int, end_hour: int) -> list:
@@ -935,7 +1008,16 @@ class HikvisionClient:
         2019 and arms at the wrong hours. Returns whether the camera accepted it;
         callers should fall back to app-driven arming if not.
         """
-        endpoint = self._SCHEDULE_ENDPOINT.format(event=event, channel=channel)
+        collection = self._SCHEDULE_COLLECTIONS.get(event)
+        if collection is None:
+            _LOGGER.warning(
+                f"No arming-schedule collection known for '{event}'; skipping the "
+                f"native schedule and leaving arming to the app."
+            )
+            return False
+        endpoint = self._SCHEDULE_ENDPOINT.format(
+            collection=collection, event=event, channel=channel
+        )
         body = self._arming_schedule_body(windows, event, index, channel)
         try:
             await self.put(endpoint, body=body)

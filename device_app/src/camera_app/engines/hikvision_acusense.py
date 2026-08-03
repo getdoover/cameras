@@ -151,6 +151,8 @@ class HikvisionAcuSenseCamera(CameraBase):
         except Exception as e:
             log.warning(f"Failed to configure intrusion detection: {e}", exc_info=e)
 
+        await self.setup_region_entrance(sensitivity)
+
         # Resolve this before arming: the deterrent only adds the `record` linkage
         # when we're actually going to read recordings back off the camera.
         self.event_clip_mode = await self._resolve_event_clip_mode()
@@ -336,19 +338,19 @@ class HikvisionAcuSenseCamera(CameraBase):
             self.config.alarm.night_start_hour.value,
             self.config.alarm.night_end_hour.value,
         )
+        # Night only, deliberately.
+        #
+        # This schedule used to be the union of the night window and the daytime
+        # motion-snapshot window, because the schedule gates the *event* and a night-only
+        # intrusion rule left daytime person/vehicle detection blind. Region entrance now
+        # covers the day (see setup_region_entrance), so intrusion can go back to meaning
+        # "night" — which is better in three ways:
+        #
+        #   * no duplicate events: intrusion re-alarms on static targets, entrance doesn't
+        #   * the camera gates the deterrent itself again, so flash/siren still fire while
+        #     doover is offline — the property the union sacrificed
+        #   * the app no longer has to arm and disarm the linkage at dusk and dawn
         windows = [night]
-        # The schedule gates the *event*, not just the linkages, so anything else that
-        # needs the camera classifying has to be in here too — otherwise arming the
-        # night deterrent silently blinds daytime person/vehicle detection.
-        daytime = self.config.motion_snapshot_window
-        if daytime is not None:
-            windows.append(daytime)
-
-        # True only when the schedule is exactly the night window; then the camera
-        # gates the deterrent for us and it works even while doover is offline. Any
-        # wider and the schedule no longer means "night", so the app has to own the
-        # arming (see arm_night_deterrent).
-        schedule_is_night_only = len(windows) == 1
 
         try:
             accepted = await self.client.set_event_arming_schedule(windows)
@@ -356,7 +358,7 @@ class HikvisionAcuSenseCamera(CameraBase):
             log.warning(f"Failed to write native arming schedule: {e}", exc_info=e)
             accepted = False
 
-        self.native_schedule_active = accepted and schedule_is_night_only
+        self.native_schedule_active = accepted
 
         if self.native_schedule_active:
             # The schedule gates the linkage, so leave it permanently armed.
@@ -366,18 +368,62 @@ class HikvisionAcuSenseCamera(CameraBase):
                 f"native arming schedule."
             )
         else:
-            if accepted:
-                log.info(
-                    f"Camera armed for {windows} so daytime detection works; the "
-                    f"deterrent can no longer be gated by the schedule, so the app "
-                    f"will arm it at night and disarm it by day."
-                )
-            else:
-                log.info(
-                    "Camera did not accept a native arming schedule; falling back to "
-                    "app-driven arming."
-                )
+            log.info(
+                "Camera did not accept a native arming schedule; falling back to "
+                "app-driven arming, which re-asserts periodically and does NOT survive "
+                "doover being offline across dusk."
+            )
             await self.arm_night_deterrent(self.config.is_night())
+
+    async def setup_region_entrance(self, sensitivity: int):
+        """Arm region-entrance detection for the daytime snapshot window.
+
+        Why a second rule rather than just using intrusion all day: intrusion has
+        ``contAlarmForStaticTargetEnabled`` on (and ``targetAlarmInterval`` already at
+        its maximum of 5), so it **re-alarms while a target stays in the region**. A car
+        that drives in and parks therefore keeps producing events, each one costing a
+        snapshot, an upload and an inference run. Region entrance fires once, when
+        something crosses in.
+
+        So the two rules split by job: entrance drives daytime snapshots, intrusion
+        stays for the night alarm where re-alarming on a loiterer is a feature. Both
+        classify targets, so person-vs-vehicle survives either way, and both are already
+        in the engine's ``SMART_EVENT_TYPES``.
+        """
+        window = self.config.motion_snapshot_window
+        if window is None:
+            log.info("No motion-snapshot window; leaving region entrance disabled.")
+            return
+
+        try:
+            await self.client.set_region_entrance(True, RULE_TARGETS, sensitivity)
+        except Exception as e:
+            log.warning(f"Failed to configure region entrance: {e}", exc_info=e)
+            return
+
+        # `center` is what puts the event on the alertStream. Without it the camera
+        # handles the event silently and the app never hears about it -- the same trap
+        # the intrusion trigger ships with.
+        try:
+            await self.client.set_smart_alarm_linkage(False, event="regionEntrance")
+        except Exception as e:
+            log.warning(f"Failed to link regionEntrance to center: {e}", exc_info=e)
+            return
+
+        # Its own schedule, covering only the window snapshots are wanted in. The night
+        # deterrent's schedule is separate and belongs to fielddetection.
+        try:
+            accepted = await self.client.set_event_arming_schedule(
+                [window], event="regionEntrance"
+            )
+        except Exception as e:
+            log.warning(f"Failed to schedule region entrance: {e}", exc_info=e)
+            return
+
+        log.info(
+            f"Region entrance armed for {window} "
+            f"({'native schedule' if accepted else 'schedule rejected — always armed'})."
+        )
 
     async def arm_night_deterrent(self, armed: bool):
         """Arm/disarm the built-in flash + siren active response.
