@@ -32,6 +32,16 @@ NS = {"hik": ISAPI_NS}
 # size rather than the real resolution (reported as <normalizedScreenSize>).
 NORMALIZED_SCREEN = 1000
 
+# How far the default region-entrance polygon sits in from the frame edge, in normalized
+# units. Entrance needs the target seen outside the region before it crosses in, so
+# unlike intrusion this cannot be full-frame -- see _default_region_entrance_body.
+ENTRANCE_INSET = 250
+
+# A zone whose points come this close to the frame edge leaves too little room for a
+# target to be tracked outside it, so entrance may never fire for that zone. Used to warn
+# rather than to alter what the user drew.
+ENTRANCE_EDGE_WARN = 100
+
 
 def _strip_ns(tag: str) -> str:
     """Strip XML namespace from a tag name."""
@@ -540,7 +550,22 @@ class HikvisionClient:
         """
         value = "true" if enabled else "false"
         target = ",".join(targets) if targets else "human,vehicle"
-        corners = ((10, 10), (990, 10), (990, 990), (10, 990))
+        # NOT full-frame, unlike the intrusion default -- and this is the whole trick.
+        #
+        # Entrance fires when a target is tracked *outside* the region and then crosses
+        # in, so the region needs real space around it. A near-full-frame region (the
+        # intrusion default is inset by 1%) leaves nowhere to be outside, and the rule
+        # then never fires at all: measured on a real camera, walking through frame
+        # produced zero regionEntrance events at 10..990 and fired reliably at 250..750.
+        #
+        # The cost is that a target crossing only the outer quarter of frame is missed.
+        # That is inherent to entrance semantics, not a tuning choice.
+        corners = (
+            (ENTRANCE_INSET, ENTRANCE_INSET),
+            (NORMALIZED_SCREEN - ENTRANCE_INSET, ENTRANCE_INSET),
+            (NORMALIZED_SCREEN - ENTRANCE_INSET, NORMALIZED_SCREEN - ENTRANCE_INSET),
+            (ENTRANCE_INSET, NORMALIZED_SCREEN - ENTRANCE_INSET),
+        )
         coords = "".join(
             f"<RegionCoordinates><positionX>{x}</positionX>"
             f"<positionY>{y}</positionY></RegionCoordinates>"
@@ -723,6 +748,53 @@ class HikvisionClient:
             f"</FieldDetection>"
         )
         return await self.put(f"/ISAPI/Smart/FieldDetection/{channel}", body=body)
+
+    @staticmethod
+    def _region_entrance_region(region: dict) -> str:
+        """One RegionEntrance region block.
+
+        Differs from :meth:`_field_detection_region` in what the firmware accepts: no
+        per-region ``<enabled>`` and no ``<timeThreshold>``. Verified against a real GET.
+        """
+        coords = "".join(
+            f"<RegionCoordinates><positionX>{x}</positionX>"
+            f"<positionY>{y}</positionY></RegionCoordinates>"
+            for x, y in region["points"]
+        )
+        return (
+            f"<RegionEntranceRegion><id>{region['id']}</id>"
+            f"<sensitivityLevel>{region['sensitivity']}</sensitivityLevel>"
+            f"<RegionCoordinatesList>{coords}</RegionCoordinatesList>"
+            f"<detectionTarget>{','.join(region['targets'])}</detectionTarget>"
+            f"</RegionEntranceRegion>"
+        )
+
+    async def set_region_entrance_regions(
+        self, regions: list, channel: int = 1
+    ) -> dict:
+        """Replace the region-entrance rule's regions.
+
+        Same ``regions`` shape as :meth:`set_field_detection_regions`, so one set of
+        user-drawn zones can be written to both rules and mean the same thing.
+        """
+        raw = (
+            await self.get_bytes(f"/ISAPI/Smart/regionEntrance/{channel}")
+        ).decode(errors="ignore")
+        match = re.search(r"<enabled>(.*?)</enabled>", raw)
+        rule_enabled = match.group(1) if match else "true"
+
+        blocks = "".join(self._region_entrance_region(r) for r in regions)
+        body = (
+            f'<RegionEntrance version="2.0" xmlns="{ISAPI_NS}">'
+            f"<id>{channel}</id><enabled>{rule_enabled}</enabled>"
+            f"<normalizedScreenSize>"
+            f"<normalizedScreenWidth>{NORMALIZED_SCREEN}</normalizedScreenWidth>"
+            f"<normalizedScreenHeight>{NORMALIZED_SCREEN}</normalizedScreenHeight>"
+            f"</normalizedScreenSize>"
+            f"<RegionEntranceRegionList>{blocks}</RegionEntranceRegionList>"
+            f"</RegionEntrance>"
+        )
+        return await self.put(f"/ISAPI/Smart/regionEntrance/{channel}", body=body)
 
     async def get_line_detection(self, channel: int = 1) -> dict:
         """Get the line-crossing detection config."""

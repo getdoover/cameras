@@ -30,7 +30,7 @@ from pydoover.models import File
 
 from .base import CameraBase, THUMBNAIL_FILENAME
 from ..clients import HikvisionClient
-from ..clients.hikvision import NORMALIZED_SCREEN
+from ..clients.hikvision import ENTRANCE_EDGE_WARN, NORMALIZED_SCREEN
 from ..events import (
     DetectionTarget,
     DetectionZone,
@@ -633,8 +633,53 @@ class HikvisionAcuSenseCamera(CameraBase):
                 }
             )
 
-        log.info(f"Writing {len(zones)} detection zone(s) to the camera.")
+        # One set of zones, written to both rules, so what's drawn in the UI means the
+        # same thing by day (region entrance) and by night (intrusion). Without this the
+        # zone editor only affected the night rule and daytime detection quietly used
+        # whatever full-frame default the app first wrote.
+        log.info(f"Writing {len(zones)} detection zone(s) to the camera (both rules).")
         await self.client.set_field_detection_regions(regions)
+        try:
+            await self.client.set_region_entrance_regions(regions)
+        except Exception as e:
+            # Intrusion already took the zones, so night detection is correct; only the
+            # daytime rule is stale. Worth a loud log, not worth failing the command.
+            log.error(
+                f"Zones written to intrusion but NOT to region entrance ({e}) -- "
+                f"daytime detection is still using the previous zones.",
+                exc_info=e,
+            )
+
+        self._warn_if_zones_defeat_entrance(regions)
+
+    @staticmethod
+    def _warn_if_zones_defeat_entrance(regions: list) -> None:
+        """Warn about a zone so large that region entrance can never fire in it.
+
+        Entrance needs the target tracked outside the region before it crosses in, so a
+        zone drawn to the frame edge has nowhere to be outside. Measured on a real
+        camera: a 1%-inset region produced no entrance events at all. The zone is left
+        exactly as drawn -- silently shrinking someone's zone would be worse -- but this
+        is the one failure mode that looks like "detection is broken" rather than
+        "my zone is too big".
+        """
+        edge = NORMALIZED_SCREEN - ENTRANCE_EDGE_WARN
+        for region in regions:
+            points = region.get("points") or []
+            if not points:
+                continue
+            if any(
+                x <= ENTRANCE_EDGE_WARN or y <= ENTRANCE_EDGE_WARN
+                or x >= edge or y >= edge
+                for x, y in points
+            ):
+                log.warning(
+                    f"Zone {region['id']} reaches within {ENTRANCE_EDGE_WARN}/"
+                    f"{NORMALIZED_SCREEN} of the frame edge. Intrusion (night) is fine, "
+                    f"but region entrance needs space outside the zone to see a target "
+                    f"cross in, so daytime events may not fire for this zone. Pull it "
+                    f"in from the edges if daytime detection matters."
+                )
 
     async def get_thumbnail(self) -> File:
         """Grab the camera's sub-stream picture rather than scaling one ourselves.
