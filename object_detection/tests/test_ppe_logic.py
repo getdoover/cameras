@@ -8,13 +8,13 @@ particular set of weights fires on a particular JPEG.
 from types import SimpleNamespace
 
 import pytest
-from object_detection.detectors.ppe import (
+from common.detectors.ppe import (
     CONTAINMENT_THRESHOLD,
     Person,
     PPEDetector,
     _containment,
 )
-from object_detection.yolo import Detection
+from common.yolo import Detection
 
 
 def cfg(hard_hat=True, high_vis=True, confidence=40):

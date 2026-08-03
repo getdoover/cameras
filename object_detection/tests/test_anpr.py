@@ -15,13 +15,13 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from object_detection.detectors.anpr import (
+from common.detectors.anpr import (
     MIN_CROP_WIDTH,
     ANPRDetector,
     ANPRResult,
     Plate,
 )
-from object_detection.yolo import Detection
+from common.yolo import Detection
 
 
 def cfg(min_chars=4, confidence=40):

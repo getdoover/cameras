@@ -7,6 +7,28 @@ camera snapshots.**
 
 <br/>
 
+## Two variants, one inference core
+
+| | `object_detection` (DEV) | `object_detection_processor` (PRO) |
+|---|---|---|
+| Runs on | the Doovit | AWS Lambda |
+| Triggered by | subscribing to camera channels | invoked by the platform |
+| Gets the image | waits ~1s, re-reads the message (see below) | attachment URL, works immediately |
+| Result | edits the snapshot message in place | edits the snapshot message in place |
+| Inference size | 640 | 640 — bigger is *not* better, see below |
+| Uploads every frame? | **no** — analysis is local | **yes** — cloud inference needs the upload |
+
+Both import **`src/common/`**, which holds all the actual inference — `yolo.py`, the
+`detectors/`, `annotate.py` — and has zero doover coupling: everything there takes and
+returns numpy arrays. The two app shells own only config, triggering and publishing, so
+the models and the compliance reasoning can't drift between device and cloud.
+
+Pick per site. The device variant when bandwidth or privacy means boring frames
+shouldn't leave the site; the processor when uploading is fine and you want the
+accuracy that a real CPU buys.
+
+<br/>
+
 ## Overview
 
 This app watches the camera apps on a Doovit. Every time a camera publishes a
@@ -27,7 +49,7 @@ are ONNX files baked into the image, executed by onnxruntime on the CPU.
 | **PPE › Enabled** | Run hard-hat / high-vis detection | `false` |
 | **PPE › Require Hard Hat** | Flag a person not wearing a hard hat | `true` |
 | **PPE › Require High-Vis** | Flag a person not wearing a high-vis vest | `true` |
-| **PPE › Minimum Confidence** | Drop detections below this confidence (0–100) | `40` |
+| **PPE › Minimum Confidence** | Drop detections below this confidence (0–100) | `55` |
 | **PPE › Notify On Violation** | Notify when someone is missing required PPE | `true` |
 | **ANPR › Enabled** | Detect and read vehicle number plates | `false` |
 | **ANPR › Minimum Confidence** | Drop plate detections below this confidence | `40` |
@@ -125,6 +147,99 @@ stands in for a person (`"implied": true`) so the violation isn't silently dropp
 > looking steeply down, they miss people that a general-purpose COCO model finds
 > easily. If detection seems poor, check the framing before touching confidence.
 
+### False positives, and why the default confidence is 55
+
+Measured on a live 4K frame from an AcuSense overlooking a yard, with no person in shot:
+
+```
+raw: [('safety vest', 0.69), ('person', 0.49)]   -> 1 violation: "NO HARD HAT"
+```
+
+Both boxes were an **orange traffic cone sitting on a wall**. Orange reads as hi-vis,
+and the cone-plus-bin shape read as a low-confidence person. Sweeping the threshold on
+that same frame:
+
+| Confidence | Detections | Violations |
+|---|---|---|
+| 35, 40 | `safety vest` 0.69, `person` 0.49 | **1 (false)** |
+| 50, 55, 60 | `safety vest` 0.69 | 0 |
+| 70 | none | 0 |
+
+The phantom person dies at 50, so the default is **55**. The stray `safety vest` survives
+to ~70 and doesn't matter — a positive-PPE box with no person to attach to is discarded,
+because only the `no-*` classes can imply a person.
+
+**But raising the threshold is not a free win, and no threshold fixes this properly.**
+Measured at 55 across the same set:
+
+| Frame | Expected | At 55 |
+|---|---|---|
+| worker in hat + vest (`person` 0.84) | 1 person, 0 violations | ✅ as expected |
+| worker in hat + vest (`person` 0.83) | 1 person, 0 violations | ✅ as expected |
+| traffic cone on a wall (`person` 0.49) | nothing | ✅ nothing |
+| **real person, no PPE (`person` 0.50)** | 1 violation | ❌ **missed** |
+
+A genuine person scored **0.50** and a traffic cone **0.49**. They are not separable by
+confidence — anything that suppresses the cone also suppresses that person. Both of those
+frames come from wide-angle cameras mounted rotated and looking steeply down; the two
+correctly-handled frames are ordinary upright site photos, where the model is confident
+(0.83–0.84) and 55 has plenty of margin.
+
+So the default trades a missed detection in bad framing for not crying wolf, and **the
+real fix is the camera, not the number**. Point it so people appear upright and
+reasonably large and the model moves to the 0.8s, well clear of the noise. If you must
+run awkward framing, drop confidence to ~40 and expect orange plant, cones, bins and
+signage to trigger it — high-vis detection is partly colour-driven.
+
+<br/>
+
+## Inference size is not an accuracy dial
+
+Measured on two real frames, PPE model, conf 40:
+
+| Frame | @640 | @960 | @1280 |
+|---|---|---|---|
+| upright worker in hat + vest | person **0.84** | person 0.85 | person 0.62 |
+| hard wide-angle frame, real person | person **0.50** | **nothing found** | person 0.58 |
+
+**960 lost a person that 640 found.** These weights are trained at 640, so moving the
+input size shifts object scale away from the training distribution — it is not a
+monotonic improvement, and 1280 costs ~4× the CPU for no reliable gain.
+
+So both variants default to **640**, and the cloud variant's advantage is *not* a bigger
+input. If PPE accuracy needs to improve, the lever is **heavier weights** (an `m`/`l`
+fine-tune rather than this `n`-class one), which is what having a real CPU actually
+unlocks — not a bigger number here.
+
+The models are exported with `dynamic=True` so a larger size is *possible* to
+experiment with; without that, ultralytics pins H/W in the graph and onnxruntime rejects
+any other size outright rather than resizing. `YoloOnnx` reads the graph's input shape
+and overrides a mismatched request, so a fixed-shape model can't be misconfigured into
+a crash.
+
+<br/>
+
+## Number plates need a camera pointed at a choke point
+
+Measured on a real yard camera (1280×720, wide-angle, nearest vehicle ~15m away):
+
+| Inference size | conf 40 | conf 25 | Time/frame |
+|---|---|---|---|
+| 640 | 0 plates | 0 plates | 1.6 s |
+| 960 | 0 plates | 0 plates | 3.0 s |
+| 1280 | 0 plates | 1 plate, **23×17 px**, unreadable | 5.9 s |
+
+Three utes were in shot, all with plates, and the best the detector managed was a
+23-pixel-wide box that OCR could not read — `MIN_CROP_WIDTH` correctly rejected it
+rather than inventing a plate. Raising **Inference Size** does not fix this: it costs
+~4× the CPU from 640 to 1280 and still yields nothing legible.
+
+**This is optics, not configuration.** A plate wants roughly 100+ px of width to read,
+so ANPR needs a camera aimed at a gate or driveway choke point where vehicles pass close
+and roughly square-on. A wide-angle camera surveying a whole yard will classify the
+*vehicle* happily and never read its plate. Point one camera at the entrance for plates
+and leave the yard camera to PPE.
+
 <br/>
 
 ## Models
@@ -156,6 +271,38 @@ per image and never found a person, which makes per-person compliance impossible
 **Don't swap the weights without re-running that comparison** — the app's entire
 output depends on people being detected, not just equipment.
 
+### Safety glasses and steel-cap boots: why they aren't here
+
+Asked for, and not currently possible. Recorded so the search isn't repeated.
+
+**Glasses** — a model with the class exists: `Hexmon/vyra-yolo-ppe-detection`, YOLOv8m,
+CC-BY-4.0, 14 classes including `Goggles`/`NO-Goggles`. Measured on the same frames as
+the table above, at conf 0.35, it is much worse where it counts:
+
+| Frame | current weights | vyra 14-class |
+|---|---|---|
+| worker in hat + vest | vest 0.89, hardhat 0.88, **person 0.84** | hardhat 0.47, vest 0.44, **no person** |
+| worker in hat + vest | hardhat 0.91, **person 0.83**, vest 0.75 | hardhat 0.78, **no person** |
+| real person, no PPE | **person 0.50** | nothing |
+
+It emits **no `Person` boxes at all** — the same defect that ruled out `baskarmother`.
+Compliance is decided per person by attributing equipment to a person box, so a model
+that can't find people is unusable no matter how many equipment classes it has. Adding a
+"Require Safety Glasses" switch on top of it would produce a setting that either never
+fires or flags nobody in particular.
+
+**Boots** — no model surveyed has any footwear class, and the deeper problem is that
+**steel-capped is not visually distinguishable from not**. A vision model can at best
+report "wearing boots rather than trainers"; it cannot see the cap. That's a limit of
+the sensor, not the weights, so no amount of model shopping fixes it.
+
+What would unlock glasses: a fine-tune that has both the equipment classes *and* solid
+person detection — i.e. training on something like the SH17 dataset (person, glasses,
+gloves, shoes, helmet, safety-vest) rather than hoping a published PPE model has both.
+Until then, hard hat and high-vis are what this app can honestly police.
+
+<br/>
+
 > The plate detector is AGPL-3.0 while this repo is Apache-2.0 — a deliberate,
 > reviewable choice mirroring `cattle-cam`, which also ships AGPL YOLO weights. Fine
 > for running as a service; if this app is ever distributed as a binary to a third
@@ -184,11 +331,28 @@ the app controller looks for.
 
 ## Performance
 
-One 1920×1080 frame at `inference_size=640` takes roughly 130ms per model on a
-development machine; expect several times that on a CM4. Snapshots are minutes to
-hours apart, so this is comfortably fast enough — the design constraint is memory, not
-latency, which is why inference is serialised behind a lock and the compose template
-sets `mem_limit`.
+Measured on a CM4 Doovit (`doovit-2c7773`), one frame at `inference_size=640`:
+
+| | Time | Notes |
+|---|---|---|
+| Both models load | 676 ms | once, at startup |
+| PPE per frame | ~1.4 s | 1.3–1.5 s, largely independent of source resolution |
+| ANPR per frame | ~1.2 s | includes the OCR pass on each plate found |
+
+So ~2.6 s per frame with both detectors on. Snapshots are minutes to hours apart, so
+latency is a non-issue; inference is serialised behind a lock anyway so several
+cameras firing at once queue rather than compete.
+
+Memory, also measured on-device: 128MB with both models loaded, 204MB after the first
+1080p analysis, **254MB peak** — and flat at 254MB from the second run through 30
+consecutive runs, so nothing accumulates. Against a Doovit's ~650MB free that leaves
+real headroom.
+
+> The compose template's `mem_limit` is **not enforced** on current Doovits. cgroup v2
+> is mounted but the memory controller isn't enabled (`cgroup.controllers` reads
+> `cpuset cpu io pids`), so docker discards the limit with a warning. It's left in as
+> documentation of the expected ceiling and starts working if a device ever boots with
+> `cgroup_enable=memory` — but it is not protecting the camera apps today.
 
 <br/>
 

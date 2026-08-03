@@ -842,22 +842,61 @@ class HikvisionClient:
             segments.append((f"{start_hour:02d}:00:00", "24:00:00"))
         return segments
 
+    @classmethod
+    def _merged_hour_segments(cls, windows: list) -> list:
+        """Daily (begin, end) segments covering the union of several hour windows.
+
+        This exists because the arming schedule gates **the event itself on this
+        firmware, not just its linkages** — an hour outside the schedule produces no
+        `fielddetection` at all, so the camera classifies nothing and the app hears
+        nothing. A night-only schedule therefore makes person/vehicle detection blind
+        for the rest of the day, which is why callers pass every window they need the
+        camera awake for and get their union.
+
+        Windows are ``(start_hour, end_hour)`` and may wrap midnight. Overlapping or
+        touching windows are merged, so 6->18 plus 18->6 collapses to a single
+        00:00-24:00 rather than two abutting blocks the camera might not join up.
+        """
+        # Work in hours-since-midnight, splitting wrapped windows first.
+        ranges = []
+        for start, end in windows:
+            if start == end:
+                continue
+            if start < end:
+                ranges.append((start, end))
+            else:
+                if end > 0:
+                    ranges.append((0, end))
+                if start < 24:
+                    ranges.append((start, 24))
+        if not ranges:
+            return []
+
+        merged = []
+        for start, end in sorted(ranges):
+            # `start <= last_end` (not `<`) so abutting blocks merge into one.
+            if merged and start <= merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], end)
+            else:
+                merged.append([start, end])
+
+        return [(f"{s:02d}:00:00", f"{e:02d}:00:00") for s, e in merged]
+
     def _arming_schedule_body(
         self,
-        start_hour: int,
-        end_hour: int,
+        windows: list,
         event: str = "fielddetection",
         index: int = 1,
         channel: int = 1,
     ) -> str:
-        """Build the weekly arming schedule; the same window applies every day.
+        """Build the weekly arming schedule; the same windows apply every day.
 
         ``dayOfWeek`` is 1-7. The camera has no notion of a window that wraps
-        midnight, so :meth:`_night_time_segments` splits e.g. 18->6 into two blocks
+        midnight, so :meth:`_merged_hour_segments` splits e.g. 18->6 into two blocks
         per day (00:00-06:00 and 18:00-24:00). Like the trigger, this body carries no
         version/xmlns.
         """
-        segments = self._night_time_segments(start_hour, end_hour)
+        segments = self._merged_hour_segments(windows)
         blocks = "".join(
             f"<TimeBlock><dayOfWeek>{day}</dayOfWeek>"
             f"<TimeRange><beginTime>{begin}</beginTime>"
@@ -874,8 +913,7 @@ class HikvisionClient:
 
     async def set_event_arming_schedule(
         self,
-        start_hour: int,
-        end_hour: int,
+        windows: list,
         event: str = "fielddetection",
         index: int = 1,
         channel: int = 1,
@@ -883,9 +921,14 @@ class HikvisionClient:
         """
         Write the camera's native arming schedule for a smart event.
 
-        With this set the event's linkages (flash / siren / record) only fire inside
-        the window, and do so *on-camera* — no doover involvement, so the deterrent
-        keeps working while the device is offline.
+        ``windows`` is a list of ``(start_hour, end_hour)`` pairs, merged into the
+        union — pass every window the camera must be awake for.
+
+        Outside the schedule this firmware emits **no event at all**, so the schedule
+        is not merely a linkage gate: it decides when the camera classifies anything.
+        Inside it, the event's linkages (flash / siren / record) fire *on-camera* with
+        no doover involvement, so a deterrent scheduled here keeps working while the
+        device is offline.
 
         This runs on the camera's own clock, so it's only as good as that clock: see
         the engine's ``sync_camera_clock``, without which the camera believes it's
@@ -893,7 +936,7 @@ class HikvisionClient:
         callers should fall back to app-driven arming if not.
         """
         endpoint = self._SCHEDULE_ENDPOINT.format(event=event, channel=channel)
-        body = self._arming_schedule_body(start_hour, end_hour, event, index, channel)
+        body = self._arming_schedule_body(windows, event, index, channel)
         try:
             await self.put(endpoint, body=body)
         except Exception as e:

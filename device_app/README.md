@@ -194,6 +194,22 @@ accepts a wrapping range (`18` → `6`) the same way the night window does, and
 outside the window — an automation wants to know a person was seen at 3am even when the
 site only keeps daytime images.
 
+> **This window is written into the camera's arming schedule, and that changes how the
+> night deterrent is armed.** On this firmware the arming schedule gates the *event*,
+> not just its linkages: an hour outside it produces no `fielddetection` at all, so the
+> camera classifies nothing and the app hears nothing. A night-only schedule therefore
+> made daytime person/vehicle detection **completely blind** — measured on a real
+> camera, walking in front of it at 12:47 produced only an unclassified `VMD` event.
+>
+> So the schedule is now the **union** of the night window and this one. The cost is
+> that the schedule no longer means "night", so the camera can't gate the flash/siren
+> for us: the app arms the deterrent at dusk and disarms it at dawn instead, and
+> re-asserts every 10 minutes in case something changes the linkage on the camera.
+> **That loses the offline guarantee at the boundary** — if doover is down when dusk
+> passes, the deterrent stays disarmed until it comes back. Leave the motion-snapshot
+> window off if native, doover-independent night deterrence matters more than daytime
+> detection on that camera.
+
 **Object Detection** adds `"object_detection": true|false` to the snapshot message. The
 detection app treats that as authoritative in both directions, overriding its own
 reason filter — so a camera can be watched for plates without every one of its motion

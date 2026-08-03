@@ -6,7 +6,7 @@ half-box offset here would show up only as slightly-wrong annotations.
 
 import numpy as np
 import pytest
-from object_detection.yolo import Detection, YoloOnnx, letterbox
+from common.yolo import Detection, YoloOnnx, letterbox
 
 
 class TestLetterbox:

@@ -30,8 +30,20 @@ class PPEConfig(config.Object):
     )
     confidence = config.Integer(
         "Minimum Confidence",
-        description="Drop detections below this confidence (0-100).",
-        default=40,
+        description="Drop detections below this confidence (0-100). Lower catches more "
+        "distant people but invents them: on a real site camera a traffic cone came "
+        "back as a person at 0.49, which at the old default of 40 raised a violation.",
+        # Measured, not guessed. On a live 4K frame from an AcuSense pointed at a yard,
+        # an orange cone on a wall produced `person` 0.49 + `safety vest` 0.69 -- a
+        # phantom person flagged for no hard hat.
+        #
+        # 55 suppresses that, but it is a trade, not a fix: a *genuine* person on a
+        # similarly awkward wide-angle frame scored 0.50, so the two are not separable
+        # by confidence and this default also loses that detection. Properly framed
+        # subjects score 0.83-0.84, far clear of the noise -- which is why the README
+        # says the camera angle matters more than this number. Don't lower it to chase
+        # a badly-framed camera without expecting cones and orange plant to flag.
+        default=55,
         minimum=1,
         maximum=100,
         advanced=True,

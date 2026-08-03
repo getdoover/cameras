@@ -244,7 +244,7 @@ def test_arming_schedule_body():
     from camera_app.clients.hikvision import HikvisionClient
 
     client = HikvisionClient.__new__(HikvisionClient)
-    body = client._arming_schedule_body(18, 6)
+    body = client._arming_schedule_body([(18, 6)])
     root = ET.fromstring(body)  # must be well-formed
 
     # The camera rejects the schedule if it carries a version/xmlns, the way the
@@ -260,7 +260,43 @@ def test_arming_schedule_body():
     assert body.count("<endTime>24:00:00</endTime>") == 7
 
     # A non-wrapping window is a single block a day.
-    assert client._arming_schedule_body(9, 18).count("<TimeBlock>") == 7
+    assert client._arming_schedule_body([(9, 18)]).count("<TimeBlock>") == 7
+
+
+def test_merged_hour_segments():
+    """The union is what stops a night deterrent blinding daytime detection.
+
+    The arming schedule gates the *event* on this firmware, not just its linkages, so
+    every window the camera must classify in has to end up in one merged schedule.
+    """
+    from camera_app.clients.hikvision import HikvisionClient as C
+
+    # Night alone still wraps midnight into two segments.
+    assert C._merged_hour_segments([(18, 6)]) == [
+        ("00:00:00", "06:00:00"),
+        ("18:00:00", "24:00:00"),
+    ]
+
+    # Night + working hours, abutting exactly: must collapse to all day, not three
+    # blocks the camera might not join up.
+    assert C._merged_hour_segments([(18, 6), (6, 18)]) == [("00:00:00", "24:00:00")]
+
+    # An unrestricted daytime window swallows everything.
+    assert C._merged_hour_segments([(18, 6), (0, 24)]) == [("00:00:00", "24:00:00")]
+
+    # A gap is preserved — 05:00-08:00 is genuinely unarmed here.
+    assert C._merged_hour_segments([(20, 5), (8, 17)]) == [
+        ("00:00:00", "05:00:00"),
+        ("08:00:00", "17:00:00"),
+        ("20:00:00", "24:00:00"),
+    ]
+
+    # Overlapping windows merge rather than duplicate.
+    assert C._merged_hour_segments([(9, 15), (12, 18)]) == [("09:00:00", "18:00:00")]
+
+    # Empty / degenerate windows contribute nothing.
+    assert C._merged_hour_segments([(6, 6)]) == []
+    assert C._merged_hour_segments([]) == []
 
 
 def test_smart_alarm_linkage_ids():

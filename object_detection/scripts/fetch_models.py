@@ -99,7 +99,15 @@ def fetch_ppe_model():
     print(f"  classes: {model.names}")
     # opset 12 is what onnxruntime 1.19+ handles without warnings on aarch64.
     # simplify=False keeps onnxsim (another heavy dep) out of the picture.
-    exported = model.export(format="onnx", imgsz=IMAGE_SIZE, opset=12, simplify=False)
+    #
+    # dynamic=True matters: without it ultralytics pins H/W in the graph and
+    # onnxruntime *rejects* any other input size ("Got invalid dimensions for input")
+    # rather than resizing. The cloud processor's whole advantage is being able to run a
+    # larger inference size than a Doovit can afford, so a fixed 640 graph would silently
+    # cap it at the device's limit. `imgsz` remains the export-time reference shape.
+    exported = model.export(
+        format="onnx", imgsz=IMAGE_SIZE, opset=12, simplify=False, dynamic=True
+    )
     shutil.move(str(exported), dest)
     print(f"  wrote {dest} ({dest.stat().st_size / 1e6:.1f}MB)")
 

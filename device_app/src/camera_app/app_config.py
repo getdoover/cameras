@@ -496,6 +496,26 @@ class CameraConfig(config.Schema):
         )
 
     @property
+    def motion_snapshot_window(self) -> tuple | None:
+        """The hour window the camera must stay armed for motion snapshots.
+
+        ``None`` when nothing extra is needed. Otherwise a ``(start, end)`` pair for
+        :meth:`HikvisionClient.set_event_arming_schedule`, which unions it with the
+        night window — the schedule gates the *event*, so an hour missing from it is an
+        hour the camera classifies nothing and no snapshot can happen.
+
+        ``(0, 24)`` when the window is unrestricted, because "capture on every
+        classified event, whatever the time" means the camera has to be awake all day.
+        """
+        if not value_or(self.motion_snapshot.restrict_to_hours, False):
+            return (0, 24)
+        start = value_or(self.motion_snapshot.start_hour, 6)
+        end = value_or(self.motion_snapshot.end_hour, 18)
+        if start == end:
+            return None
+        return (start, end)
+
+    @property
     def motion_snapshot_object_detection(self) -> bool:
         """Whether motion snapshots should be offered to the Object Detection app."""
         return bool(value_or(self.motion_snapshot.object_detection, False))

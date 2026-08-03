@@ -54,6 +54,12 @@ SMART_EVENT_TYPES = {
 # downstream, not what the camera looks for.
 RULE_TARGETS = ["human", "vehicle"]
 
+# How often the app re-writes the flash/siren linkage when it owns the arming (i.e.
+# whenever the camera is armed wider than the night window). Purely a correction for
+# drift we didn't cause — the day/night transition itself is handled the moment the
+# main loop notices it, not on this cadence.
+DETERRENT_REASSERT_SECS = 10 * 60
+
 # App target vocabulary <-> Hikvision's tokens (from the camera's advertised
 # detectionTarget opt="all,human,vehicle,animal,others").
 TARGET_TO_HIK = {
@@ -100,6 +106,8 @@ class HikvisionAcuSenseCamera(CameraBase):
         self.clear_active_preset_func = clear_active_preset_func
 
         self._deterrent_armed: bool = None
+        # When the linkage was last written, for the periodic re-assert.
+        self._deterrent_asserted_at: datetime = None
         # True once the camera has accepted a native arming schedule, in which case
         # the app must stop toggling the linkage itself (the schedule owns it).
         self.native_schedule_active: bool = False
@@ -324,14 +332,31 @@ class HikvisionAcuSenseCamera(CameraBase):
             except Exception as e:
                 log.warning(f"Failed to set supplement light mode: {e}", exc_info=e)
 
+        night = (
+            self.config.alarm.night_start_hour.value,
+            self.config.alarm.night_end_hour.value,
+        )
+        windows = [night]
+        # The schedule gates the *event*, not just the linkages, so anything else that
+        # needs the camera classifying has to be in here too — otherwise arming the
+        # night deterrent silently blinds daytime person/vehicle detection.
+        daytime = self.config.motion_snapshot_window
+        if daytime is not None:
+            windows.append(daytime)
+
+        # True only when the schedule is exactly the night window; then the camera
+        # gates the deterrent for us and it works even while doover is offline. Any
+        # wider and the schedule no longer means "night", so the app has to own the
+        # arming (see arm_night_deterrent).
+        schedule_is_night_only = len(windows) == 1
+
         try:
-            self.native_schedule_active = await self.client.set_event_arming_schedule(
-                self.config.alarm.night_start_hour.value,
-                self.config.alarm.night_end_hour.value,
-            )
+            accepted = await self.client.set_event_arming_schedule(windows)
         except Exception as e:
             log.warning(f"Failed to write native arming schedule: {e}", exc_info=e)
-            self.native_schedule_active = False
+            accepted = False
+
+        self.native_schedule_active = accepted and schedule_is_night_only
 
         if self.native_schedule_active:
             # The schedule gates the linkage, so leave it permanently armed.
@@ -341,30 +366,59 @@ class HikvisionAcuSenseCamera(CameraBase):
                 f"native arming schedule."
             )
         else:
-            log.info(
-                "Camera did not accept a native arming schedule; falling back to "
-                "app-driven arming."
-            )
+            if accepted:
+                log.info(
+                    f"Camera armed for {windows} so daytime detection works; the "
+                    f"deterrent can no longer be gated by the schedule, so the app "
+                    f"will arm it at night and disarm it by day."
+                )
+            else:
+                log.info(
+                    "Camera did not accept a native arming schedule; falling back to "
+                    "app-driven arming."
+                )
             await self.arm_night_deterrent(self.config.is_night())
 
     async def arm_night_deterrent(self, armed: bool):
-        """Arm/disarm the built-in flash + siren active response (idempotent).
+        """Arm/disarm the built-in flash + siren active response.
 
-        Fallback path only — a no-op when the camera took a native arming schedule,
-        which gates the linkage on-camera instead.
+        A no-op when the camera took a night-only arming schedule, which gates the
+        linkage on-camera instead. Otherwise this is the only thing standing between a
+        siren and a delivery driver at midday, so as well as acting on every change it
+        **re-asserts periodically**: the linkage lives on the camera, where a web-UI
+        visit, a firmware quirk or a factory-reset can silently change it, and drift in
+        this direction is a siren going off in daylight rather than a missed log line.
         """
-        if self.native_schedule_active or armed == self._deterrent_armed:
+        if self.native_schedule_active:
             return
-        self._deterrent_armed = armed
+
+        now = datetime.now(tz=timezone.utc)
+        changed = armed != self._deterrent_armed
+        stale = (
+            self._deterrent_asserted_at is None
+            or (now - self._deterrent_asserted_at).total_seconds()
+            >= DETERRENT_REASSERT_SECS
+        )
+        if not (changed or stale):
+            return
 
         methods = self._deterrent_methods()
         if not methods:
             return
+
+        self._deterrent_armed = armed
+        self._deterrent_asserted_at = now
         await self._set_linkage(armed)
-        log.info(
-            f"Night deterrent {'armed' if armed else 'disarmed'} "
-            f"({'+'.join(methods)})."
-        )
+        if changed:
+            log.info(
+                f"Night deterrent {'armed' if armed else 'disarmed'} "
+                f"({'+'.join(methods)})."
+            )
+        else:
+            log.debug(
+                f"Re-asserted night deterrent {'armed' if armed else 'disarmed'} "
+                f"({'+'.join(methods)})."
+            )
 
     # -- On-camera event clips (microSD -> ContentMgmt -> doover) --
 
