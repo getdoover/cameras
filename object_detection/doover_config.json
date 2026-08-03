@@ -212,6 +212,7 @@
                             "schedule",
                             "manual",
                             "intruder",
+                            "motion",
                             "person",
                             "vehicle",
                             "anpr",
@@ -242,6 +243,20 @@
                     "default": true,
                     "x-position": 3
                 },
+                "match_detectors_to_event": {
+                    "title": "Match Detectors To Event",
+                    "x-name": "match_detectors_to_event",
+                    "x-hidden": false,
+                    "type": [
+                        "boolean",
+                        "null"
+                    ],
+                    "x-required": false,
+                    "description": "Only run the detector the camera's classification calls for: PPE on a person event, plates on a vehicle event. Halves the inference per frame and removes false findings from the model that wasn't relevant (a traffic cone read as a person on a vehicle event, for instance). Unclassified snapshots (schedule, manual, intruder, motion) still run everything. Turn off to always run both -- worth doing if people arrive by vehicle and you need PPE checked on the vehicle event itself.",
+                    "default": true,
+                    "x-position": 4,
+                    "x-advanced": true
+                },
                 "inference_size": {
                     "title": "Inference Size",
                     "x-name": "inference_size",
@@ -253,7 +268,7 @@
                     "x-required": false,
                     "description": "Square size (px) frames are letterboxed to before inference. Leave at 640 unless you have measured otherwise: raising it is NOT a free accuracy win. The weights are trained at 640, and on a real site frame 960 lost a person that 640 found (see the README). More CPU here buys throughput, not better detection.",
                     "default": 640,
-                    "x-position": 4,
+                    "x-position": 5,
                     "x-advanced": true,
                     "minimum": 320,
                     "maximum": 1920
@@ -265,7 +280,7 @@
                     "type": "array",
                     "x-required": true,
                     "description": "A list of channels to subscribe to.",
-                    "x-position": 5,
+                    "x-position": 6,
                     "items": {
                         "title": "Channel Subscription",
                         "x-name": "dv_proc_subscription",

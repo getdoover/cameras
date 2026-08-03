@@ -90,6 +90,7 @@ class ObjectDetectionProcessorConfig(config.Schema):
                 "schedule",
                 "manual",
                 "intruder",
+                "motion",
                 "person",
                 "vehicle",
                 "anpr",
@@ -103,6 +104,18 @@ class ObjectDetectionProcessorConfig(config.Schema):
         "Annotate Images",
         description="Attach a copy of the frame with labelled boxes drawn on it.",
         default=True,
+    )
+    match_detectors_to_event = config.Boolean(
+        "Match Detectors To Event",
+        description="Only run the detector the camera's classification calls for: PPE "
+        "on a person event, plates on a vehicle event. Halves the inference per frame "
+        "and removes false findings from the model that wasn't relevant (a traffic cone "
+        "read as a person on a vehicle event, for instance). Unclassified snapshots "
+        "(schedule, manual, intruder, motion) still run everything. Turn off to always "
+        "run both -- worth doing if people arrive by vehicle and you need PPE checked on the "
+        "vehicle event itself.",
+        default=True,
+        advanced=True,
     )
     inference_size = config.Integer(
         "Inference Size",

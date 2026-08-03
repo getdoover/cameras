@@ -70,6 +70,12 @@ that knows whether a given frame was captured to be analysed, and honouring only
 `true` case would leave no way to opt one camera out. Snapshots with no flag fall
 through to the reason filter as normal.
 
+Those frames arrive already classified (`reason: person` / `vehicle`) from an AcuSense
+camera, but with **`reason: motion`** from a DeepinView one, whose day runs off plain
+motion detection precisely so that the classifying happens here instead — see that app's
+README. Expect more frames, expect near-duplicates of the same person or vehicle across
+consecutive frames, and deduplicate on the results.
+
 <br/>
 
 > **One instance can watch several cameras**, and that's the preferred setup — each

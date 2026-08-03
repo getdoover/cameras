@@ -42,6 +42,26 @@ ANALYSED_BY_KEY = "analysed_by"
 
 IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
 ANNOTATED_SUFFIX = "-detected"
+
+# Which detectors the camera's own classification justifies running.
+#
+# The camera has already decided what it saw, so running the other model is work whose
+# answer we don't trust anyway -- and worse than wasted: on a *vehicle* event the PPE
+# model returned a person at 0.49 that was really a traffic cone, and produced a
+# "missing hard hat" violation from it. Matching the detector to the event removes that
+# whole class of finding and halves the inference per frame.
+#
+# A reason that carries no classification -- schedule, manual, intruder, motion -- maps
+# to nothing here and runs everything, because there we genuinely don't know what's in
+# frame. `motion` is the interesting one: a camera whose day runs off basic motion
+# detection sends every moving frame here precisely because it *hasn't* classified it,
+# so this is the reason that must never be narrowed.
+DETECTORS_FOR_REASON = {
+    "person": frozenset({"ppe"}),
+    "ppe": frozenset({"ppe"}),
+    "vehicle": frozenset({"anpr"}),
+    "anpr": frozenset({"anpr"}),
+}
 # Matches the camera app's convention (`<name>-thumbnail.jpg`), so its gallery treats
 # our previews the same way as its own.
 THUMBNAIL_SUFFIX = "-thumbnail"
@@ -114,6 +134,31 @@ class ObjectDetectionProcessor(Application):
         if not (ppe or anpr):
             log.warning("No detectors enabled or their weights failed to load.")
             return
+
+        # Checked *after* the "nothing loaded at all" guard, so the two situations don't
+        # produce the same log line -- "no detectors enabled" would be a lie when the
+        # detectors are fine and this event simply doesn't call for them.
+        if self.config.match_detectors_to_event.value:
+            allowed = DETECTORS_FOR_REASON.get(reason)
+            if allowed is not None:
+                skipped = sorted(
+                    n
+                    for n, d in (("ppe", ppe), ("anpr", anpr))
+                    if d and n not in allowed
+                )
+                ppe = ppe if "ppe" in allowed else None
+                anpr = anpr if "anpr" in allowed else None
+                if not (ppe or anpr):
+                    log.info(
+                        f"reason={reason} calls for {sorted(allowed)}, which is not "
+                        f"enabled on this install — nothing to do for this snapshot."
+                    )
+                    return
+                if skipped:
+                    log.info(
+                        f"reason={reason}: running {sorted(allowed)} only, skipping "
+                        f"{skipped}."
+                    )
 
         targets = self._image_attachments(payload, message.attachments)
         if not targets:

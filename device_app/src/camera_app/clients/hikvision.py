@@ -287,16 +287,66 @@ class HikvisionClient:
             return {}
 
     async def set_motion_detection(self, channel: int = 1, enabled: bool = True) -> dict:
-        """Enable or disable motion detection."""
-        root = ET.Element("MotionDetection")
-        root.set("xmlns", ISAPI_NS)
-        enabled_elem = ET.SubElement(root, "enabled")
-        enabled_elem.text = str(enabled).lower()
-        body = ET.tostring(root, encoding="unicode")
-        return await self.put(
-            f"/ISAPI/System/Video/inputs/channels/{channel}/motionDetection",
-            body=body,
+        """Enable or disable basic motion detection (VMD), keeping the camera's region.
+
+        GET-modify-PUT rather than a bare ``<MotionDetection><enabled/>`` body: this
+        firmware applies what it's given wholesale, so a minimal body takes the enable
+        flag and drops the grid, sensitivity and trigger times with it — leaving motion
+        "on" over a region that matches nothing. Only ``<enabled>`` is touched here; the
+        sensitivity and region stay whatever the camera (or whoever last used its web
+        UI) has, except for the one case handled by :meth:`_ensure_full_frame_grid`.
+        """
+        endpoint = f"/ISAPI/System/Video/inputs/channels/{channel}/motionDetection"
+        try:
+            raw = (await self.get_bytes(endpoint)).decode(errors="ignore")
+        except Exception as e:
+            _LOGGER.info(
+                f"Couldn't read the motion detection config ({e}); writing a minimal "
+                f"body instead, which may reset the camera's region."
+            )
+            raw = ""
+
+        value = "true" if enabled else "false"
+        if "<MotionDetection" not in raw:
+            body = (
+                f'<MotionDetection version="2.0" xmlns="{ISAPI_NS}">'
+                f"<enabled>{value}</enabled>"
+                f"</MotionDetection>"
+            )
+            return await self.put(endpoint, body=body)
+
+        body = re.sub(
+            r"<enabled>.*?</enabled>", f"<enabled>{value}</enabled>", raw, count=1
         )
+        if enabled:
+            body = self._ensure_full_frame_grid(body)
+        return await self.put(endpoint, body=body)
+
+    @staticmethod
+    def _ensure_full_frame_grid(body: str) -> str:
+        """Give VMD a full-frame region when the camera has none configured.
+
+        ``<gridMap>`` is a hex bitmap of the camera's motion grid (22x18 on these
+        models, so 6 hex chars per row and 108 in total). A camera whose motion
+        detection has never been set up reports it empty or all-zero, and the rule then
+        matches nothing — motion is enabled and nothing ever triggers, which looks
+        exactly like a broken event stream.
+
+        The fill keeps the existing string's length so the grid's granularity doesn't
+        have to be inferred, and a grid that already has cells set is left exactly as
+        drawn: someone masking off a busy road is not to be overwritten.
+        """
+        match = re.search(r"<gridMap>(.*?)</gridMap>", body, flags=re.DOTALL)
+        if match is None:
+            return body
+
+        current = match.group(1).strip()
+        if current and set(current) != {"0"}:
+            return body
+
+        _LOGGER.info("Motion detection had no region set; making it full-frame.")
+        filled = "f" * (len(current) or 108)
+        return body[: match.start(1)] + filled + body[match.end(1) :]
 
     async def get_event_triggers(self) -> dict:
         """Get event notification triggers."""
@@ -983,6 +1033,22 @@ class HikvisionClient:
             f"</EventTriggerNotificationList></EventTrigger>"
         )
         return await self.put(f"/ISAPI/Event/triggers/{trigger_id}", body=body)
+
+    async def ensure_motion_stream_linkage(self, channel: int = 1) -> dict:
+        """Make sure basic motion (VMD) events actually reach the alertStream.
+
+        The stock VMD trigger ships with ``center`` where ``fielddetection`` doesn't, so
+        this is belt-and-braces — but the whole daytime capture path hangs off hearing
+        VMD, and the failure mode without it is silence rather than an error.
+
+        Side effect worth knowing: this strips the linkages
+        :meth:`set_smart_alarm_linkage` manages, so a ``beep`` or ``record`` somebody
+        added to *motion* in the camera's web UI is dropped. Nothing in this app links
+        those to VMD (the ANPR engine's buzzer aside, which writes them itself).
+        """
+        return await self.set_smart_alarm_linkage(
+            False, event="VMD", index=channel, channel=channel
+        )
 
     # -- Native arming schedule (so linkages fire on-camera, doover-independent) --
 
