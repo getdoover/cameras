@@ -41,12 +41,17 @@ from ..events import (
 
 log = logging.getLogger(__name__)
 
-# AcuSense smart-event types that carry a classified target.
+# AcuSense smart-event types we act on. Deliberately only the two rules this engine
+# actually configures: intrusion for the night alarm, entrance for daytime snapshots.
+#
+# `regionExiting` and `linedetection` are excluded on purpose rather than by oversight.
+# The camera can run them alongside entrance, and each one that fires is another
+# snapshot, upload and inference run for the same person walking through — an exit event
+# would double every daytime trigger. Accepting an event type we never enable is a
+# latent duplicate waiting for someone to tick a box in the camera's web UI.
 SMART_EVENT_TYPES = {
     "fielddetection",
-    "linedetection",
     "regionEntrance",
-    "regionExiting",
 }
 
 # The on-camera intrusion rule always classifies both, regardless of the app's
@@ -400,6 +405,19 @@ class HikvisionAcuSenseCamera(CameraBase):
         except Exception as e:
             log.warning(f"Failed to configure region entrance: {e}", exc_info=e)
             return
+
+        # Entrance only, not entrance *and* exit. One person crossing the yard would
+        # otherwise fire twice -- once entering, once leaving -- doubling snapshots,
+        # uploads and inference for a single event. Exit is switched off here rather
+        # than merely left alone, because it may have been enabled on the camera
+        # before we got here; its polygons are preserved either way.
+        for unused in ("regionExiting", "LineDetection"):
+            if not await self.client.disable_smart_rule(unused):
+                log.info(
+                    f"Couldn't confirm {unused} is disabled; if it is on, expect a "
+                    f"second event per target. Its events are ignored regardless "
+                    f"(see SMART_EVENT_TYPES)."
+                )
 
         # `center` is what puts the event on the alertStream. Without it the camera
         # handles the event silently and the app never hears about it -- the same trap

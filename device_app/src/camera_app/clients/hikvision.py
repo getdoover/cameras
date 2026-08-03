@@ -796,6 +796,39 @@ class HikvisionClient:
         )
         return await self.put(f"/ISAPI/Smart/regionEntrance/{channel}", body=body)
 
+    async def disable_smart_rule(self, rule: str, channel: int = 1) -> bool:
+        """Turn a smart-analytics rule off, leaving its regions untouched.
+
+        GET-modify-PUT of the rule-level ``<enabled>`` only, so somebody's drawn
+        polygons survive being switched off and come back if it's re-enabled. Only the
+        first ``<enabled>`` is touched: the later ones belong to regions, which this
+        firmware reports but ignores on write anyway.
+
+        ``rule`` is the ISAPI path segment, and the casing matters --
+        ``regionExiting`` / ``LineDetection`` / ``FieldDetection`` are not uniform.
+        Returns whether the camera accepted it.
+        """
+        try:
+            raw = (
+                await self.get_bytes(f"/ISAPI/Smart/{rule}/{channel}")
+            ).decode(errors="ignore")
+        except Exception as e:
+            _LOGGER.info(f"Couldn't read {rule} to disable it: {e}")
+            return False
+
+        if "<enabled>false</enabled>" in raw.replace(" ", "")[:400]:
+            return True  # already off; don't spend a PUT on it
+
+        body = re.sub(
+            r"<enabled>.*?</enabled>", "<enabled>false</enabled>", raw, count=1
+        )
+        try:
+            await self.put(f"/ISAPI/Smart/{rule}/{channel}", body=body)
+        except Exception as e:
+            _LOGGER.warning(f"Failed to disable {rule}: {e}")
+            return False
+        return True
+
     async def get_line_detection(self, channel: int = 1) -> dict:
         """Get the line-crossing detection config."""
         try:
