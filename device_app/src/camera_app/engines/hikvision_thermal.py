@@ -6,6 +6,7 @@ import aiohttp
 from pydoover.models import File
 
 from .base import CameraBase
+from ..app_config import Mode
 from ..clients import HikvisionClient
 
 if TYPE_CHECKING:
@@ -51,9 +52,8 @@ class HikVisionThermal(CameraBase):
             content_type="image/jpeg",
         )
 
-    async def get_snapshot(self, still: bool = False) -> list:
-        _, filetype = self.snapshot_func(still)
-        if filetype == "mp4":
+    async def get_snapshot(self) -> list:
+        if Mode(self.config.snapshot.mode.value) is Mode.video:
             # Run both ffmpeg recordings concurrently so the visible and thermal clips cover the same wall-clock window.
             if self.config.thermal_rtsp_uri:
                 visible, thermal = await asyncio.gather(
@@ -67,14 +67,12 @@ class HikVisionThermal(CameraBase):
             visible = await self.get_still_snapshot(1)
             thermal = await self.get_still_snapshot(2) if self.config.thermal_rtsp_uri else None
 
-        captures = [await self.build_capture("visible", visible, filetype=filetype)]
+        captures = [await self.build_capture("visible", visible)]
         if thermal is not None:
             # No thumbnail: get_thumbnail() samples the visible stream, which would
             # be a preview of a different image entirely.
             captures.append(
-                await self.build_capture(
-                    "thermal", thermal, with_thumbnail=False, filetype=filetype
-                )
+                await self.build_capture("thermal", thermal, with_thumbnail=False)
             )
 
         log.info(f"Sending {len(captures)} snapshots...")

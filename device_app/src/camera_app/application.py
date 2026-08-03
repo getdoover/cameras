@@ -60,12 +60,10 @@ ALARM_HOLD_TAG_PREFIX = "camera_alarm_output_"
 REASON_SCHEDULE = "schedule"  # the periodic snapshot timer
 REASON_MANUAL = "manual"  # somebody asked for one
 REASON_INTRUDER = "intruder"  # a detection inside the night alarm window
-REASON_MOTION = "motion"  # unclassified motion, captured for analysis in the cloud
 SNAPSHOT_REASONS = (
     REASON_SCHEDULE,
     REASON_MANUAL,
     REASON_INTRUDER,
-    REASON_MOTION,
     "person",
     "vehicle",
     "anpr",
@@ -73,19 +71,10 @@ SNAPSHOT_REASONS = (
 )
 
 # The reasons that count as a "motion snapshot" — a picture taken because the camera
-# saw something move, as opposed to the schedule, a manual request, or the night
+# classified something, as opposed to the schedule, a manual request, or the night
 # intruder alarm. These are what the motion-snapshot window and its object-detection
-# flag apply to. `motion` is in here unclassified: on engines that drive the day off
-# basic motion detection the camera never says what it saw (see
-# on_unclassified_motion), and that frame is exactly the one the cloud wants.
-MOTION_SNAPSHOT_REASONS = (REASON_MOTION, "person", "vehicle")
-
-# Floor on the gap between unclassified-motion snapshots. Basic motion detection
-# re-fires for as long as something is moving, so without this one car crossing the
-# yard is a dozen snapshots, uploads and cloud inference runs of the same vehicle.
-# Deliberately short: over-capturing and deduplicating in the cloud is the point, and
-# this is only here to stop a continuous stream.
-MOTION_SNAPSHOT_MIN_INTERVAL_SEC = 15
+# flag apply to.
+MOTION_SNAPSHOT_REASONS = ("person", "vehicle")
 
 
 class CameraApplication(Application):
@@ -116,9 +105,6 @@ class CameraApplication(Application):
 
         self.snapshot_running = None
         self._shutdown_at = None
-
-        # When we last captured on unclassified motion, for the capture cooldown.
-        self._last_motion_snapshot_at = None
 
         # Event-video state: recording runs for as long as the intruder keeps
         # re-triggering, and stops once the cooldown lapses with no new detection.
@@ -330,16 +316,11 @@ class CameraApplication(Application):
         log.info("Ping succeeded, getting snapshot.")
 
         ## attempt to take a snapshot
-        # Motion capture always takes a still, even on a camera configured for video:
-        # the frame goes to the cloud to be analysed and the models can't read an mp4,
-        # and at the rate motion fires uploading video wouldn't be viable anyway.
-        still = reason == REASON_MOTION
-
         error_count = 0
         files = None
         while error_count < retries:
             try:
-                files = await self.engine.get_snapshot(still=still)
+                files = await self.engine.get_snapshot()
             except Exception as e:
                 log.info(f"Failed to get snapshot: {e}, retrying...")
                 await asyncio.sleep(1)
@@ -754,50 +735,6 @@ class CameraApplication(Application):
                 topic="ppe_event",
             )
 
-    async def on_unclassified_motion(self):
-        """Capture a frame on plain motion, for the cloud to classify.
-
-        Engines that drive the day off the camera's basic motion detection rather than
-        its on-camera analytics (DeepinView — see its ``on_cam_event``) land here for
-        every motion event. The camera hasn't said what it saw, so this is the opposite
-        trade to the classified path: capture the frame regardless, mark it for object
-        detection, and let a real model in the cloud decide whether there's a person
-        without high-vis or a readable plate in it. Over-capturing is deliberate — a
-        duplicate costs an upload, a frame the camera's classifier rejected costs a
-        detection we can never get back.
-
-        Nothing is notified and no ``camera_event`` is published: there's no classified
-        detection to describe yet, and at this volume it would be noise. Those come from
-        the analysis, downstream.
-
-        On every other engine this is a no-op, so unclassified motion outside the night
-        window stays what it always was — not actionable.
-        """
-        if not self.engine.daytime_motion_capture:
-            return
-
-        if not self.config.motion_snapshot_allowed():
-            log.info("Skipping motion snapshot — outside the motion snapshot window.")
-            return
-
-        if self.snapshot_running:
-            log.debug("Skipping motion snapshot — a snapshot is already running.")
-            return
-
-        now = datetime.now(tz=timezone.utc)
-        last = self._last_motion_snapshot_at
-        if (
-            last is not None
-            and (now - last).total_seconds() < MOTION_SNAPSHOT_MIN_INTERVAL_SEC
-        ):
-            log.debug("Skipping motion snapshot — inside the capture cooldown.")
-            return
-
-        # Stamped before the capture, not after, so the cooldown covers the time spent
-        # taking and uploading the frame rather than starting once it's done.
-        self._last_motion_snapshot_at = now
-        await self.lock_snapshot_and_run(REASON_MOTION)
-
     async def on_motion_event_callback(self, event: MotionDetectEvent):
         log.info(f"Motion event detected, type: {event.type}.")
 
@@ -851,10 +788,9 @@ class CameraApplication(Application):
             )
             return
 
-        # Outside the night window (or alarm disabled), raw unclassified motion is only
-        # actionable on engines that capture the day off basic motion detection.
+        # Outside the night window (or alarm disabled), raw unclassified motion
+        # is not actionable — only classified person/vehicle events continue below.
         if event.type is MotionDetectEventType.motion:
-            await self.on_unclassified_motion()
             return
 
         # The picture is gated by the motion-snapshot window, but the event is not:

@@ -6,6 +6,7 @@ from pydoover import rpc
 from pydoover.models import File
 
 from .bosch_base import BoschCameraBase
+from ..app_config import Mode
 from ..events import PTZControlEvent, CAMERA_CONTROL_CHANNEL
 
 log = logging.getLogger(__name__)
@@ -136,8 +137,11 @@ class BoschPTZCamera(BoschCameraBase):
         await self.client.delete_preset(payload)
         await self.sync_presets_func()
 
-    async def get_snapshot(self, still: bool = False) -> list[File]:
-        func, filetype = self.snapshot_func(still)
+    async def get_snapshot(self) -> list[File]:
+        if Mode(self.config.snapshot.mode.value) is Mode.video:
+            func = self.get_video_snapshot
+        else:
+            func = self.get_still_snapshot
 
         files = []
 
@@ -157,7 +161,7 @@ class BoschPTZCamera(BoschCameraBase):
                     file = await func(self.config.rtsp_uri)
                     # Thumbnail while we're still pointed here — the camera moves on
                     # to the next preset in a moment.
-                    capture = await self.build_capture(preset, file, filetype=filetype)
+                    capture = await self.build_capture(preset, file)
                 except Exception as e:
                     log.info(f"Failed to take snapshot: {e}")
                 else:
@@ -165,9 +169,7 @@ class BoschPTZCamera(BoschCameraBase):
         else:
             try:
                 file = await func(self.config.rtsp_uri)
-                capture = await self.build_capture(
-                    "snapshot", file, filetype=filetype
-                )
+                capture = await self.build_capture("snapshot", file)
             except Exception as e:
                 log.info(f"Failed to take snapshot: {e}")
             else:

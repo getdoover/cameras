@@ -51,11 +51,9 @@ ANNOTATED_SUFFIX = "-detected"
 # "missing hard hat" violation from it. Matching the detector to the event removes that
 # whole class of finding and halves the inference per frame.
 #
-# A reason that carries no classification -- schedule, manual, intruder, motion -- maps
-# to nothing here and runs everything, because there we genuinely don't know what's in
-# frame. `motion` is the interesting one: a camera whose day runs off basic motion
-# detection sends every moving frame here precisely because it *hasn't* classified it,
-# so this is the reason that must never be narrowed.
+# A reason that carries no classification -- schedule, manual, intruder -- maps to
+# nothing here and runs everything, because there we genuinely don't know what's in
+# frame.
 DETECTORS_FOR_REASON = {
     "person": frozenset({"ppe"}),
     "ppe": frozenset({"ppe"}),

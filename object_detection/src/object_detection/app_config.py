@@ -117,7 +117,6 @@ class ObjectDetectionConfig(config.Schema):
                 "schedule",
                 "manual",
                 "intruder",
-                "motion",
                 "person",
                 "vehicle",
                 "anpr",

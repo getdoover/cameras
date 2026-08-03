@@ -120,44 +120,6 @@ storage — the `record` linkage would arm and silently write nothing.
 
 <br/>
 
-### Hikvision DeepinView (iDS-2CD5xxx, e.g. iDS-2CD5T87G2/V-X)
-
-These carry the full on-camera analytics engine and run several algorithms at once, so this driver is
-the AcuSense one plus on-camera **ANPR** and **PPE / hard-hat** events. Zones, the night deterrent, event
-clips, clock sync and snapshots all behave as they do on AcuSense.
-
-**Day and night are triggered by different detectors**, which is the one place it diverges:
-
-| | Trigger | What happens |
-|---|---|---|
-| **Night** (Night Start → End Hour) | On-camera perimeter analytics (`fielddetection`), classified human/vehicle | Flash, siren, strobe/horn, event video — as AcuSense. Only a real target should wake a siren, and the camera's own arming schedule keeps the deterrent working while doover is offline |
-| **Day** | Plain built-in **motion detection** (VMD) — *not* the smart rules | Every bit of motion takes a still (`reason: motion`), marked for object detection so **the cloud** classifies it for high-vis / PPE and plates. No alarm, no notification, no `camera_event` |
-
-Motion capture is **always a still**, even where *Snapshot Mode* is `Video`: the frame exists to be
-analysed and the models can't read an mp4. Scheduled and manual snapshots still honour the setting.
-
-Using VMD by day is deliberate: the camera's classifier decides "person" or "nothing" with no idea what
-we're looking for, so **anything it rejects is a frame no model ever gets to see**. Capturing broadly and
-deduplicating in the cloud trades bandwidth and some uninteresting frames for not missing detections.
-
-VMD and the perimeter rules never both drive capture — the driver drops VMD at night and drops perimeter
-events by day, whether or not the camera accepted its arming schedules, so a target is never captured
-twice. Region entrance (the AcuSense daytime rule) is switched off on this engine; its zones are kept.
-
-> Motion detection is left enabled around the clock and gated in the app, rather than given an arming
-> schedule like the smart events, because VMD's schedule endpoint isn't the smart events' and a wrong
-> guess there fails as a malformed body rather than a bad path. The camera's motion **sensitivity and
-> region are left exactly as configured** — capturing more is the point, so nothing here narrows them —
-> except that a camera with no motion region at all is given a full-frame one, since otherwise motion is
-> "enabled" over nothing and never fires.
->
-> Motion re-fires for as long as something is moving, so there's a **15s floor** between motion snapshots
-> (`MOTION_SNAPSHOT_MIN_INTERVAL_SEC`). Without it one car crossing the yard is a dozen uploads and a
-> dozen cloud inference runs of the same vehicle. The **Motion Snapshots** section's hour window and
-> *Object Detection* flag both apply to these frames.
-
-<br/>
-
 ### Snapshot & video messages
 
 Every snapshot/video is published to the app's own channel with a **thumbnail** attached alongside each
@@ -179,7 +141,7 @@ camera a visible and a thermal view. So `media` is always a list, even when ther
 | `media[].name` | The view — a preset name, or `snapshot` / `visible` / `thermal` / `event` |
 | `media[].file` | Filename of the full-size attachment |
 | `media[].thumbnail` | Filename of its preview. Absent if one couldn't be made, or wouldn't represent the view (the thermal channel gets none — a visible-stream preview would show a different image) |
-| `reason` | Why it was captured: `schedule`, `manual`, `intruder`, `motion`, `person`, `vehicle`, `anpr` — matches the `camera_event` `kind`, except `motion`, which has none (nothing was classified) |
+| `reason` | Why it was captured: `schedule`, `manual`, `intruder`, `person`, `vehicle`, `anpr` — matches the `camera_event` `kind` |
 | `night` | `true`/`false` — **only present when the camera states it outright** (see below) |
 
 Thumbnails sit beside their media (`Preset1.jpg` / `Preset1-thumbnail.jpg`) and are captured **at the same
@@ -209,12 +171,9 @@ event video. During the day none of that is wanted, but the picture often still 
 it's what the **Object Detection** app analyses for hard-hat / high-vis compliance and
 number plates.
 
-This section governs those pictures. A motion event captures a still; these settings let
-you confine that to an hour window and mark the results for analysis.
-
-What counts as a motion event depends on the camera. AcuSense captures on a **classified**
-person/vehicle event (`reason: person` / `vehicle`). DeepinView captures on **any** motion
-(`reason: motion`) — see below.
+This section governs those pictures. A classified person/vehicle event has always
+captured a still; these settings let you confine that to an hour window and mark the
+results for analysis.
 
 | Setting | Description | Default |
 |---------|-------------|---------|

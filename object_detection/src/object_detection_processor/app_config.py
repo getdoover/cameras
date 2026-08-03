@@ -90,7 +90,6 @@ class ObjectDetectionProcessorConfig(config.Schema):
                 "schedule",
                 "manual",
                 "intruder",
-                "motion",
                 "person",
                 "vehicle",
                 "anpr",
@@ -111,8 +110,8 @@ class ObjectDetectionProcessorConfig(config.Schema):
         "on a person event, plates on a vehicle event. Halves the inference per frame "
         "and removes false findings from the model that wasn't relevant (a traffic cone "
         "read as a person on a vehicle event, for instance). Unclassified snapshots "
-        "(schedule, manual, intruder, motion) still run everything. Turn off to always "
-        "run both -- worth doing if people arrive by vehicle and you need PPE checked on the "
+        "(schedule, manual, intruder) still run everything. Turn off to always run both "
+        "-- worth doing if people arrive by vehicle and you need PPE checked on the "
         "vehicle event itself.",
         default=True,
         advanced=True,

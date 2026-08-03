@@ -15,23 +15,8 @@ DeepinView algorithms on top:
   * ``eventType == ANPR``            -> plate / vehicle read  -> ``anpr_callback``
   * ``eventType == hardHatDetection`` -> PPE violation        -> ``ppe_callback``
 
-Day and night are triggered by **different detectors**, which is where this engine
-diverges from the AcuSense base:
-
-  * **Night** is the on-camera perimeter analytics (``fielddetection``), classified
-    human / vehicle. Only a real target should set off a siren, and the camera's own
-    arming schedule keeps the deterrent working while doover is offline.
-  * **Day** is plain built-in motion detection (``VMD``) — *not* the smart rules. Every
-    bit of motion takes a frame, which goes to the cloud marked for object detection and
-    is classified there for high-vis / PPE and plates. The camera's classifier is the
-    thing being deliberately bypassed: it decides "person" or "nothing" on a 2MP frame
-    with no notion of what we're looking for, so anything it rejects is a frame we never
-    get to run a real model over. Capturing broadly and deduplicating in the cloud
-    trades bandwidth (and some uninteresting frames) for not missing detections.
-
-So VMD and the perimeter rules never both drive capture: the engine drops VMD at night
-and drops perimeter events during the day. That holds regardless of whether the camera
-accepted its arming schedules, which is what stops a target from being captured twice.
+Everything else (fielddetection / linedetection smart events, the intruder alarm,
+zones) is handled by the AcuSense base.
 
 Because DeepinView subclasses AcuSense, the ``isinstance(engine, HikvisionAcuSense
 Camera)`` checks in application.py (clock sync, native arming schedule, intruder
@@ -40,8 +25,8 @@ handling) automatically apply to this engine too.
 
 import logging
 
-from ..events import ANPREvent, MotionDetectEvent, MotionDetectEventType, PPEEvent
-from .hikvision_acusense import SMART_EVENT_TYPES, HikvisionAcuSenseCamera
+from ..events import ANPREvent, PPEEvent
+from .hikvision_acusense import HikvisionAcuSenseCamera
 
 
 log = logging.getLogger(__name__)
@@ -58,10 +43,6 @@ HARD_HAT_EVENT_TYPES = {
 
 
 class HikvisionDeepinViewCamera(HikvisionAcuSenseCamera):
-    # Daytime capture is driven by VMD (see the module docstring), which the app has to
-    # know about — unclassified motion means nothing to it otherwise.
-    daytime_motion_capture = True
-
     def __init__(
         self,
         config,
@@ -102,54 +83,7 @@ class HikvisionDeepinViewCamera(HikvisionAcuSenseCamera):
             except Exception as e:
                 log.warning(f"Failed to enable PPE detection: {e}", exc_info=e)
 
-        await self.setup_daytime_motion()
-
         return True
-
-    async def setup_daytime_motion(self):
-        """Turn on basic motion detection, which drives daytime capture.
-
-        Left enabled around the clock and gated in :meth:`on_cam_event` instead of by an
-        arming schedule. VMD's schedule lives somewhere other than the smart events'
-        (:attr:`HikvisionClient._SCHEDULE_COLLECTIONS` has no entry for it) and a wrong
-        guess there reads as a malformed body rather than a bad path, so the day/night
-        split is enforced where it can be relied on. The cost is the camera evaluating
-        motion at night for events we throw away, which costs us nothing.
-
-        The camera's own sensitivity and region are left alone — this is the one detector
-        an operator is likely to have already tuned in the web UI, and "capture more" is
-        the point, so nothing here should narrow it.
-        """
-        try:
-            await self.client.set_motion_detection(enabled=True)
-        except Exception as e:
-            log.warning(
-                f"Failed to enable basic motion detection: {e} — daytime capture will "
-                f"not happen on this camera.",
-                exc_info=e,
-            )
-            return
-
-        try:
-            await self.client.ensure_motion_stream_linkage()
-        except Exception as e:
-            log.info(f"Couldn't confirm motion events are sent to doover: {e}")
-
-        log.info("Basic motion detection (VMD) enabled; it drives daytime capture.")
-
-    async def setup_region_entrance(self, sensitivity: int):
-        """Disable region entrance — VMD owns the day on this engine, not the analytics.
-
-        The AcuSense base arms this rule for the daytime snapshot window. Here it would
-        be a second trigger for the same person walking through, so it's switched off
-        (its polygons survive, see ``disable_smart_rule``). Its events are dropped in
-        :meth:`on_cam_event` regardless, in case the camera has it on for other reasons.
-        """
-        if not await self.client.disable_smart_rule("regionEntrance"):
-            log.info(
-                "Couldn't confirm region entrance is disabled; its events are ignored "
-                "on this engine anyway."
-            )
 
     async def on_cam_event(self, event: dict):
         event_type = event.get("eventType", "")
@@ -177,31 +111,6 @@ class HikvisionDeepinViewCamera(HikvisionAcuSenseCamera):
             ppe = PPEEvent.from_alert(event)
             log.info(f"PPE violation: hard hat missing (count={ppe.no_hardhat}).")
             await self._invoke(self.on_ppe_event_callback, ppe)
-            return
-
-        # Basic motion detection: the daytime trigger. Unclassified by design — the
-        # frame is what matters, and the classifying happens in the cloud. Only the
-        # leading edge is a trigger; "inactive" is the clear.
-        if event_type == "VMD":
-            if event.get("eventState", "active") != "active":
-                return
-            if self.config.is_night():
-                # Night belongs to the classified intrusion rule, which is what should
-                # be deciding whether to wake a siren.
-                return
-            log.info("Daytime motion (VMD) detected.")
-            await self._invoke(
-                self.on_motion_event_callback,
-                MotionDetectEvent(MotionDetectEventType.motion, event),
-            )
-            return
-
-        # Perimeter analytics are the night trigger only. During the day VMD has already
-        # captured this target, so passing the smart event on as well would double every
-        # daytime trigger — a snapshot, an upload and a cloud inference run each.
-        if not self.config.is_night():
-            if event_type in SMART_EVENT_TYPES:
-                log.debug(f"Ignoring daytime {event_type}; VMD drives daytime capture.")
             return
 
         # Everything else (fielddetection / linedetection perimeter events, the

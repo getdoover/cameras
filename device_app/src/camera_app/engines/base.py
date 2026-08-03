@@ -58,12 +58,6 @@ def ensure_ffmpeg() -> None:
 
 
 class CameraBase:
-    # Whether this engine drives *daytime* capture off the camera's basic motion
-    # detection (VMD) rather than its on-camera classification. The app needs to know
-    # because unclassified motion is otherwise not actionable outside the night alarm
-    # window — see CameraApplication.on_unclassified_motion.
-    daytime_motion_capture = False
-
     # What this camera can do with detection zones, so the frontend can constrain
     # drawing (point limits, how many zones) instead of guessing and being silently
     # rejected. Engines that support zones override this; the default advertises
@@ -141,24 +135,8 @@ class CameraBase:
     async def fetch_presets(self) -> list[str]:
         return []
 
-    def snapshot_func(self, still: bool = False) -> tuple:
-        """The capture function to use, and the extension its output should carry.
-
-        ``still`` forces an image even when the camera is configured for video. Motion
-        capture passes it: that frame exists to be analysed in the cloud, which can't
-        read an mp4, and at the rate motion fires video would be untenable to upload
-        anyway.
-        """
-        if not still and Mode(self.config.snapshot.mode.value) is Mode.video:
-            return self.get_video_snapshot, "mp4"
-        return self.get_still_snapshot, "jpg"
-
     async def build_capture(
-        self,
-        name: str,
-        media: File,
-        with_thumbnail: bool = True,
-        filetype: str = None,
+        self, name: str, media: File, with_thumbnail: bool = True
     ) -> Capture:
         """Name a captured file and pair it with a thumbnail of the same view.
 
@@ -166,8 +144,7 @@ class CameraBase:
         the thumbnail is grabbed here and now, not later.
         """
         safe_name = re.sub(r"[^A-Za-z0-9_\-]", "_", name)
-        filetype = filetype or self.config.snapshot.mode_as_filetype
-        media.filename = f"{safe_name}.{filetype}"
+        media.filename = f"{safe_name}.{self.config.snapshot.mode_as_filetype}"
 
         thumbnail = None
         if with_thumbnail:
@@ -180,8 +157,13 @@ class CameraBase:
 
         return Capture(safe_name, media, thumbnail)
 
-    async def get_snapshot(self, still: bool = False) -> list[Capture]:
-        func, filetype = self.snapshot_func(still)
+    async def get_snapshot(self) -> list[Capture]:
+        mode = self.config.snapshot.mode.value
+
+        if Mode(mode) is Mode.video:
+            func = self.get_video_snapshot
+        else:
+            func = self.get_still_snapshot
 
         try:
             data = await func(self.config.rtsp_uri)
@@ -197,7 +179,7 @@ class CameraBase:
         #     # None signifies an error, so use the parent retry handler which will run this a few times
         #     return None
 
-        return [await self.build_capture("snapshot", data, filetype=filetype)]
+        return [await self.build_capture("snapshot", data)]
 
     async def get_thumbnail(self) -> File:
         """A small preview image for the gallery / timeline, or None if we can't.
