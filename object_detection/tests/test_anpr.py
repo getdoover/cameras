@@ -15,7 +15,6 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-
 from object_detection.detectors.anpr import (
     MIN_CROP_WIDTH,
     ANPRDetector,
@@ -26,7 +25,7 @@ from object_detection.yolo import Detection
 
 
 def cfg(min_chars=4, confidence=40):
-    v = lambda value: SimpleNamespace(value=value)  # noqa: E731
+    v = lambda value: SimpleNamespace(value=value)
     return SimpleNamespace(min_plate_chars=v(min_chars), confidence=v(confidence))
 
 
@@ -65,7 +64,7 @@ class TestRunOcrReturnShapes:
         assert conf == pytest.approx(0.8)
 
     def test_bare_list_of_strings(self):
-        text, conf = detector(FakeOCR(["ABC123"]))._run_ocr(np.zeros((10, 10, 3)))
+        text, _ = detector(FakeOCR(["ABC123"]))._run_ocr(np.zeros((10, 10, 3)))
         assert text == "ABC123"
 
     def test_texts_and_confidences_tuple(self):

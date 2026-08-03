@@ -14,9 +14,7 @@ from object_detection.application import (
 
 
 def attachment(filename, content_type="image/jpeg"):
-    return SimpleNamespace(
-        filename=filename, content_type=content_type, size=1, url=""
-    )
+    return SimpleNamespace(filename=filename, content_type=content_type, size=1, url="")
 
 
 class TestImageAttachments:
@@ -27,7 +25,11 @@ class TestImageAttachments:
         double the CPU cost for a worse answer."""
         payload = {
             "media": [
-                {"name": "Preset1", "file": "Preset1.jpg", "thumbnail": "Preset1-thumbnail.jpg"}
+                {
+                    "name": "Preset1",
+                    "file": "Preset1.jpg",
+                    "thumbnail": "Preset1-thumbnail.jpg",
+                }
             ]
         }
         attachments = [attachment("Preset1.jpg"), attachment("Preset1-thumbnail.jpg")]

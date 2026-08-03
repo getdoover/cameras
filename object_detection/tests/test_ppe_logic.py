@@ -8,18 +8,17 @@ particular set of weights fires on a particular JPEG.
 from types import SimpleNamespace
 
 import pytest
-
 from object_detection.detectors.ppe import (
     CONTAINMENT_THRESHOLD,
-    PPEDetector,
     Person,
+    PPEDetector,
     _containment,
 )
 from object_detection.yolo import Detection
 
 
 def cfg(hard_hat=True, high_vis=True, confidence=40):
-    v = lambda value: SimpleNamespace(value=value)  # noqa: E731
+    v = lambda value: SimpleNamespace(value=value)
     return SimpleNamespace(
         require_hard_hat=v(hard_hat),
         require_high_vis=v(high_vis),

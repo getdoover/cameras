@@ -19,7 +19,7 @@ Two things make that non-trivial:
 
 import logging
 
-from ..yolo import Detection, YoloOnnx, MODEL_DIR, ModelUnavailable
+from ..yolo import MODEL_DIR, Detection, ModelUnavailable, YoloOnnx
 
 log = logging.getLogger(__name__)
 

@@ -73,7 +73,7 @@ def letterbox(
 class YoloOnnx:
     """A YOLOv8/v11 detection model loaded from an ONNX file."""
 
-    def __init__(self, path: Path, class_names: dict[int, str] = None):
+    def __init__(self, path: Path, class_names: dict[int, str] | None = None):
         if not path.exists():
             raise ModelUnavailable(f"model weights not found at {path}")
 
@@ -122,7 +122,7 @@ class YoloOnnx:
         confidence: float = 0.4,
         iou: float = 0.45,
         size: int = 640,
-        wanted: set[str] = None,
+        wanted: set[str] | None = None,
     ) -> list[Detection]:
         """Run the model over a BGR image and return boxes in image coordinates.
 
@@ -147,10 +147,10 @@ class YoloOnnx:
         for i in np.asarray(keep).flatten():
             bx, by, bw, bh = boxes[i]
             # Undo the letterbox: remove padding, then the resize.
-            x1 = int(round((bx - pad_x) / scale))
-            y1 = int(round((by - pad_y) / scale))
-            x2 = int(round((bx + bw - pad_x) / scale))
-            y2 = int(round((by + bh - pad_y) / scale))
+            x1 = round((bx - pad_x) / scale)
+            y1 = round((by - pad_y) / scale)
+            x2 = round((bx + bw - pad_x) / scale)
+            y2 = round((by + bh - pad_y) / scale)
             # A box can legitimately extend past the frame edge (a person half out
             # of shot); clamp rather than drop so the subject is still reported.
             box = (max(0, x1), max(0, y1), min(w, x2), min(h, y2))

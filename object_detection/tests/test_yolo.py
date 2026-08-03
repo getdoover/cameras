@@ -6,7 +6,6 @@ half-box offset here would show up only as slightly-wrong annotations.
 
 import numpy as np
 import pytest
-
 from object_detection.yolo import Detection, YoloOnnx, letterbox
 
 
@@ -29,7 +28,7 @@ class TestLetterbox:
 
     def test_portrait(self):
         img = np.zeros((640, 320, 3), dtype=np.uint8)
-        out, scale, (left, top) = letterbox(img, 640)
+        out, _, (left, top) = letterbox(img, 640)
         assert out.shape == (640, 640, 3)
         assert top == 0
         assert left == 160
@@ -50,8 +49,7 @@ class TestLetterbox:
         )
         # ...and back out, the way detect() does.
         back = tuple(
-            round((v - pad) / scale)
-            for v, pad in zip(padded, (left, top, left, top))
+            round((v - pad) / scale) for v, pad in zip(padded, (left, top, left, top))
         )
         assert back == original
 

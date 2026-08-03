@@ -12,7 +12,7 @@ and dropping it would make the annotated image disagree with the payload.
 import logging
 import re
 
-from ..yolo import Detection, YoloOnnx, MODEL_DIR, ModelUnavailable
+from ..yolo import MODEL_DIR, Detection, ModelUnavailable, YoloOnnx
 
 log = logging.getLogger(__name__)
 
@@ -32,7 +32,9 @@ MIN_CROP_WIDTH = 32
 
 
 class Plate:
-    def __init__(self, detection: Detection, text: str = None, ocr_confidence=None):
+    def __init__(
+        self, detection: Detection, text: str | None = None, ocr_confidence=None
+    ):
         self.detection = detection
         self.text = text
         self.ocr_confidence = ocr_confidence
@@ -144,9 +146,7 @@ class ANPRDetector:
         texts = result
         if isinstance(result, tuple):
             texts = result[0]
-            confidence = self._min_confidence(
-                result[1] if len(result) > 1 else None
-            )
+            confidence = self._min_confidence(result[1] if len(result) > 1 else None)
 
         if isinstance(texts, str):
             return texts, confidence

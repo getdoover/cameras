@@ -162,9 +162,7 @@ class ObjectDetectionApplication(Application):
         media = payload.get("media")
         if not isinstance(media, list):
             return [
-                (a.filename, a)
-                for a in attachments or []
-                if cls._is_image(a.filename)
+                (a.filename, a) for a in attachments or [] if cls._is_image(a.filename)
             ]
 
         targets = []
@@ -291,7 +289,7 @@ class ObjectDetectionApplication(Application):
 
     @staticmethod
     def _annotated_filename(filename: str) -> str:
-        stem, _, suffix = filename.rpartition(".")
+        stem, _, _suffix = filename.rpartition(".")
         if not stem:
             return f"{filename}{ANNOTATED_SUFFIX}.jpg"
         return f"{stem}{ANNOTATED_SUFFIX}.jpg"
@@ -328,8 +326,12 @@ class ObjectDetectionApplication(Application):
             return
 
         await self.tags.violation_count.set(self.tags.violation_count.value + 1)
+        # Epoch milliseconds, matching the camera app's tag of the same name. Its
+        # naive `datetime.now()` yields the same epoch value as this, since
+        # `timestamp()` reads a naive datetime as local time -- being explicit about
+        # the zone just removes the ambiguity for the reader.
         await self.tags.last_ppe_violation.set(
-            int(datetime.now().timestamp() * 1000)
+            int(datetime.now(tz=timezone.utc).timestamp() * 1000)
         )
         await self._publish_camera_event(
             "ppe_violation",
@@ -357,11 +359,7 @@ class ObjectDetectionApplication(Application):
         if violators and self.config.ppe.notify_on_violation.value:
             missing = sorted({m for v in violators for m in v.missing})
             pretty = " and ".join(m.replace("_", " ") for m in missing)
-            who = (
-                "someone"
-                if len(violators) == 1
-                else f"{len(violators)} people"
-            )
+            who = "someone" if len(violators) == 1 else f"{len(violators)} people"
             await self.send_notification(
                 f"{app_key} detected {who} without {pretty}.",
                 severity=NotificationSeverity.Warn,
