@@ -237,6 +237,16 @@ the camera:
 > cooldown. The app asserts it **on** at setup, and re-asserts it after every zone write —
 > writing regions rebuilds the rule body and drops it.
 
+> **The camera does not repeat the smart event while a target stays put.** Verified on an
+> `iDS-2CD5T87G2/V-XHSY` (V5.9.20) with someone standing in the zone for two minutes:
+> `fielddetection` fired `active` **once**, and from then on the camera sent a *different*
+> event every 5s (`targetAlarmInterval`) —
+> `<eventType>duration</eventType>` with `<relationEvent>fielddetection</relationEvent>` —
+> interleaved with `fielddetection`/`inactive`. That heartbeat is the only evidence an
+> intruder hasn't left; there is nothing to poll. The app treats it as a **continuation**:
+> it extends the strobe, horn and recording, and does nothing else — no snapshot, no
+> notification, no `camera_event`, since one arrives every few seconds for the same person.
+
 Only the picture is throttled. The strobe, horn, siren, recording and `camera_event` fire on
 every detection. The **notification** is once per intruder event rather than once per
 re-alarm, since a target standing in the zone would otherwise generate a message every few

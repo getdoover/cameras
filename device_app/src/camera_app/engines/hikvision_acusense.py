@@ -64,6 +64,20 @@ SMART_EVENT_TYPES = {
     "fielddetection",
 }
 
+# How the camera says "that target is still there".
+#
+# It does NOT repeat the smart event. Verified on an iDS-2CD5T87G2/V-XHSY (V5.9.20) with
+# somebody standing in the zone for two minutes: `fielddetection` fired `active` exactly
+# once, and from then on the camera sent `duration` alerts naming it —
+#   <eventType>duration</eventType><eventState>active</eventState>
+#   <DurationList><Duration><relationEvent>fielddetection</relationEvent></Duration>
+# — every `targetAlarmInterval` seconds (5), interleaved with `fielddetection`/`inactive`.
+#
+# This is the only evidence an intruder hasn't left; there is nothing to poll. Ignoring it
+# capped every night alarm at one cooldown after the first detection, however long the
+# intruder stayed. `contAlarmForStaticTargetEnabled` must be on for these to arrive.
+DURATION_EVENT_TYPE = "duration"
+
 # Smart rules this engine turns off, because intrusion covers what they'd report and
 # every one left on is a duplicate event per target. Names are ISAPI path segments and
 # the casing is not uniform -- see `disable_smart_rule`.
@@ -126,6 +140,9 @@ class HikvisionAcuSenseCamera(CameraBase):
         self.sync_presets_func = sync_presets_func
         self.clear_active_preset_func = clear_active_preset_func
 
+        # What the last real detection was classified as, so a `duration` continuation —
+        # which carries no target of its own — can be reported as the same thing.
+        self._last_target: MotionDetectEventType = MotionDetectEventType.motion
         self._deterrent_armed: bool = None
         # When the linkage was last written, for the periodic re-assert.
         self._deterrent_asserted_at: datetime = None
@@ -224,9 +241,31 @@ class HikvisionAcuSenseCamera(CameraBase):
                 return value.split(",")[0].strip().lower()
         return ""
 
+    @staticmethod
+    def _duration_relation(event: dict) -> str:
+        """Which event a ``duration`` alert is reporting the continuation of."""
+        for key, value in event.items():
+            if key.lower().endswith("relationevent") and value:
+                return value.strip()
+        return ""
+
     async def on_cam_event(self, event: dict):
         event_type = event.get("eventType", "")
         event_state = event.get("eventState", "")
+
+        # "Still there." See DURATION_EVENT_TYPE: this, not a repeated smart event, is how
+        # the camera reports a target that hasn't left, so it's what keeps the alarm, the
+        # strobe and the recording running. Forwarded as a continuation, which the app must
+        # not treat as a new detection — one arrives every few seconds.
+        if event_type == DURATION_EVENT_TYPE and event_state == "active":
+            related = self._duration_relation(event)
+            if related in SMART_EVENT_TYPES:
+                log.debug(f"{related} target still present.")
+                await self._invoke(
+                    self.on_motion_event_callback,
+                    MotionDetectEvent(self._last_target, event, continuation=True),
+                )
+            return
 
         if event_type not in SMART_EVENT_TYPES or event_state != "active":
             return
@@ -242,6 +281,7 @@ class HikvisionAcuSenseCamera(CameraBase):
                 event_type_enum = MotionDetectEventType.motion
 
         log.info(f"AcuSense {event_type} target={target or 'unknown'}")
+        self._last_target = event_type_enum
         await self._invoke(
             self.on_motion_event_callback,
             MotionDetectEvent(event_type_enum, event),

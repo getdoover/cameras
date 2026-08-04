@@ -910,3 +910,89 @@ def test_alarm_pulse_does_not_block_the_event_stream():
         assert app._alarm_pulse_task is None
 
     asyncio.run(scenario())
+
+
+def test_duration_alert_keeps_the_alarm_alive():
+    """A target that stays put is reported as a `duration` event, not a repeated one.
+
+    Captured from an iDS-2CD5T87G2/V-XHSY (V5.9.20) with somebody standing in the zone:
+    `fielddetection` fired `active` once at 14:06:48 and never again, and from then on the
+    camera sent these every 5s. Dropping them ended every night alarm one cooldown after
+    the first detection, however long the intruder stayed.
+    """
+    import asyncio
+    import xml.etree.ElementTree as ET
+
+    from camera_app.clients.hikvision import _xml_to_dict
+    from camera_app.engines.hikvision_acusense import HikvisionAcuSenseCamera
+    from camera_app.events import MotionDetectEventType
+
+    # Verbatim from the capture, minus the boilerplate address fields.
+    duration_alert = _xml_to_dict(ET.fromstring(
+        "<EventNotificationAlert><channelID>1</channelID>"
+        "<dateTime>2026-08-04T14:06:51+10:00</dateTime>"
+        "<eventType>duration</eventType><eventState>active</eventState>"
+        "<eventDescription>duration alarm</eventDescription>"
+        "<DurationList><Duration><relationEvent>fielddetection</relationEvent></Duration>"
+        "</DurationList></EventNotificationAlert>"
+    ))
+
+    def route(alert, last_target=MotionDetectEventType.person):
+        seen = []
+        cam = HikvisionAcuSenseCamera.__new__(HikvisionAcuSenseCamera)
+        cam._last_target = last_target
+        cam.on_motion_event_callback = seen.append
+        asyncio.run(cam.on_cam_event(alert))
+        return seen
+
+    (event,) = route(duration_alert)
+    assert event.continuation is True
+    # It carries no target of its own, so it inherits the last real classification -
+    # otherwise a "person" event would degrade to "motion" halfway through.
+    assert event.type is MotionDetectEventType.person
+
+    # A duration alert for a rule we don't act on is not our event to extend.
+    other = dict(duration_alert)
+    other["DurationList.Duration.relationEvent"] = "linedetection"
+    assert route(other) == []
+
+
+def test_continuation_extends_only_a_live_event():
+    """A continuation extends an intruder event; it never starts or revives one."""
+    import asyncio
+    import types
+    from datetime import datetime, timedelta, timezone
+
+    from camera_app.application import CameraApplication
+
+    def make_app(last_event_at):
+        app = CameraApplication.__new__(CameraApplication)
+        app.config = types.SimpleNamespace(
+            alarm=types.SimpleNamespace(
+                event_clip_cooldown=types.SimpleNamespace(value=15)
+            )
+        )
+        app.engine = types.SimpleNamespace(event_clip_mode=None)
+        app._last_intruder_event_at = last_event_at
+        app._external_alarm_task = types.SimpleNamespace(done=lambda: False)
+        return app
+
+    now = datetime.now(tz=timezone.utc)
+
+    # Live event: the timestamp the strobe/horn/recording all watch moves forward, so they
+    # keep running for as long as the intruder is there.
+    app = make_app(now - timedelta(seconds=10))
+    asyncio.run(app.on_detection_continues())
+    assert (app._last_intruder_event_at - now).total_seconds() > -1
+
+    # Already over (cooldown lapsed): the clip has been fetched and uploaded by now, so
+    # reviving it would produce a second clip of an intruder we've already reported.
+    stale = now - timedelta(seconds=60)
+    app = make_app(stale)
+    asyncio.run(app.on_detection_continues())
+    assert app._last_intruder_event_at == stale
+
+    # Never had one: a continuation on its own must not start an alarm.
+    app = make_app(None)
+    asyncio.run(app.on_detection_continues())
+    assert app._last_intruder_event_at is None

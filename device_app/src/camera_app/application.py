@@ -824,7 +824,40 @@ class CameraApplication(Application):
         self._last_motion_snapshot_at = now
         return True
 
+    async def on_detection_continues(self):
+        """The target that set off a live intruder event still hasn't left.
+
+        This is what keeps the strobe, the horn and the recording going for as long as
+        somebody is actually there. It only ever *extends* an event already in progress —
+        ``watch_for_event_end`` reads the same timestamp — and deliberately does nothing
+        else: no snapshot, no notification, no ``camera_event``, because the camera sends
+        one of these every few seconds and each is the same intruder, not a new one.
+
+        An event whose cooldown has already lapsed is left alone rather than resurrected:
+        by then the recording has been fetched and uploaded, and reviving it would start a
+        second clip of an intruder we've already reported.
+        """
+        last = self._last_intruder_event_at
+        if last is None:
+            return
+
+        cooldown = self.config.alarm.event_clip_cooldown.value
+        if (datetime.now(tz=timezone.utc) - last).total_seconds() > cooldown:
+            return
+
+        self._last_intruder_event_at = datetime.now(tz=timezone.utc)
+        # Both are no-ops while already running; they matter if one lost its race with the
+        # cooldown while the intruder was, in fact, still standing there.
+        self.start_external_alarm()
+        if getattr(self.engine, "event_clip_mode", None):
+            self.start_event_video()
+
     async def on_motion_event_callback(self, event: MotionDetectEvent):
+        # Not a new detection — the camera saying the last one is still going on.
+        if event.continuation:
+            await self.on_detection_continues()
+            return
+
         log.info(f"Motion event detected, type: {event.type}.")
 
         # Night intruder handling — applies to the Hikvision event cameras when

@@ -28,9 +28,24 @@ class MotionDetectEventType(Enum):
 
 
 class MotionDetectEvent:
-    def __init__(self, type_: MotionDetectEventType, data: dict):
+    """A detection from a camera, or a report that one is still going on.
+
+    ``continuation`` marks the latter: the target hasn't left yet. It is **not** a new
+    detection and must not be treated as one — no notification, no snapshot, no
+    ``camera_event`` — because a camera sends one every few seconds for as long as
+    somebody stands there. What it is for is telling the alarm the intruder is still
+    present, which is otherwise unknowable (there's nothing to poll).
+    """
+
+    def __init__(
+        self,
+        type_: MotionDetectEventType,
+        data: dict,
+        continuation: bool = False,
+    ):
         self.type = type_
         self.data = data
+        self.continuation = continuation
         # Where the camera saw the target(s), when it says. Empty on cameras (or
         # firmware) that don't report a rect, so callers must treat it as optional.
         self.boxes = TargetBox.list_from_alert(data)
