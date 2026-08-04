@@ -19,7 +19,7 @@ import aiohttp
 import async_timeout
 
 from .dahua import DigestAuth
-from ..events import TARGET_REGIONS_KEY
+from ..events import EVENT_IMAGE_KEY, TARGET_REGIONS_KEY
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
@@ -28,6 +28,17 @@ TIMEOUT_SECONDS = 20
 # Hikvision XML namespace
 ISAPI_NS = "http://www.hikvision.com/ver20/XMLSchema"
 NS = {"hik": ISAPI_NS}
+
+ALERT_END = b"</EventNotificationAlert>"
+ALERT_START = b"<EventNotificationAlert"
+
+# The alertStream is multipart, and the parts that aren't XML are the camera's own JPEG of
+# the event. Bounds on collecting one: how long to keep an alert waiting for its picture
+# before giving up on it, and how much unparsed stream to hold before deciding we've lost
+# sync and starting again. A picture measured 199KB (720p, AcuSense) to 416KB (1080p,
+# DeepinView).
+EVENT_IMAGE_WAIT_SECS = 3
+MAX_STREAM_BUFFER = 8 * 1024 * 1024
 
 # Hikvision expresses smart-detection coordinates against a virtual screen of this
 # size rather than the real resolution (reported as <normalizedScreenSize>).
@@ -1438,11 +1449,20 @@ class HikvisionClient:
         """
         Subscribe to the ISAPI event notification stream (alertStream).
 
-        A long-lived HTTP connection returning ``multipart/mixed`` parts (the
-        boundary is the literal string ``boundary``). Each part is either an
-        ``application/xml`` ``<EventNotificationAlert>`` or, for ANPR, a trailing
-        ``image/jpeg`` part we ignore. We accumulate a buffer and hand each
-        complete ``<EventNotificationAlert>`` block to :meth:`_process_event`.
+        A long-lived HTTP connection returning ``multipart/mixed`` parts (the boundary is
+        the literal string ``boundary``). Each part is either an ``application/xml``
+        ``<EventNotificationAlert>`` or an ``image/jpeg`` — **the camera's own frame of the
+        event**, captured at the instant it classified the target rather than whenever we
+        next get round to asking for a picture. That frame used to be discarded; it is now
+        paired with the alert it belongs to and handed over with it (see
+        :attr:`EVENT_IMAGE_KEY`), which is the only way to get a picture of something moving
+        through frame at the moment it was actually there.
+
+        Pairing is by position — the JPEG is the part after the XML — so an alert that
+        advertises a picture is held back until it arrives, bounded by
+        :data:`EVENT_IMAGE_WAIT_SECS` and released early if the next alert beats it. The
+        alarm path depends on events arriving promptly, so nothing here may wait
+        indefinitely on a picture that may not come.
         """
         url = f"{self._base}/ISAPI/Event/notification/alertStream"
         if not (self._username or self._password):
@@ -1455,15 +1475,41 @@ class HikvisionClient:
             response.raise_for_status()
 
             buffer = b""
-            async for data, _ in response.content.iter_chunks():
-                buffer += data
-                # Extract every complete alert block currently in the buffer.
-                while b"</EventNotificationAlert>" in buffer:
-                    end = buffer.index(b"</EventNotificationAlert>") + len(
-                        b"</EventNotificationAlert>"
+            # An alert that says a picture is coming, held until it arrives so the event
+            # and its frame reach the app together.
+            pending: dict | None = None
+            chunks = response.content.iter_chunks().__aiter__()
+
+            while True:
+                try:
+                    # Only ever wait a bounded time when something is pending: an alert
+                    # must not sit here because a promised picture never turned up.
+                    data, _ = await asyncio.wait_for(
+                        chunks.__anext__(),
+                        EVENT_IMAGE_WAIT_SECS if pending is not None else None,
                     )
-                    block, buffer = buffer[:end], buffer[end:]
-                    await self._process_event(callback, block)
+                except StopAsyncIteration:
+                    break
+                except asyncio.TimeoutError:
+                    _LOGGER.debug("Picture didn't arrive in time; forwarding the event.")
+                    await self._dispatch(callback, pending)
+                    pending = None
+                    continue
+
+                buffer += data
+                buffer, pending = await self._drain(callback, buffer, pending)
+
+                if len(buffer) > MAX_STREAM_BUFFER:
+                    # Lost sync (a part we can't parse, or a picture bigger than we'll
+                    # hold). Start clean rather than grow forever; the next alert is a
+                    # fresh start because each is self-delimiting.
+                    _LOGGER.warning(
+                        f"Discarding {len(buffer)} bytes of unparsed event stream."
+                    )
+                    buffer = b""
+                    if pending is not None:
+                        await self._dispatch(callback, pending)
+                        pending = None
 
         except asyncio.CancelledError:
             raise
@@ -1477,30 +1523,124 @@ class HikvisionClient:
             if response is not None:
                 response.close()
 
-    async def _process_event(self, callback, data: bytes):
-        """Parse and forward a single <EventNotificationAlert> from the stream."""
+    async def _drain(self, callback, buffer: bytes, pending: dict | None):
+        """Consume every complete part in ``buffer``, dispatching what's finished.
+
+        Returns the leftover buffer and the alert (if any) still waiting for its picture.
+        """
+        while True:
+            if pending is not None:
+                # The picture belongs to `pending` only if it arrives before the next
+                # alert does — otherwise the camera has moved on and we'd be stapling
+                # one event's frame onto another's.
+                next_alert = buffer.find(ALERT_START)
+                marker = buffer.lower().find(b"content-type: image/")
+
+                if marker != -1 and (next_alert == -1 or marker < next_alert):
+                    image, rest = self._read_image_part(buffer, marker)
+                    if image is None:
+                        return buffer, pending  # still arriving
+                    await self._dispatch(callback, pending, image)
+                    buffer, pending = rest, None
+                    continue
+
+                if next_alert != -1:
+                    # The next event beat the picture, so it isn't coming.
+                    await self._dispatch(callback, pending)
+                    pending = None
+                    continue
+
+                return buffer, pending
+
+            end = buffer.find(ALERT_END)
+            if end == -1:
+                return buffer, pending
+            end += len(ALERT_END)
+            block, buffer = buffer[:end], buffer[end:]
+
+            alert = self._parse_alert(block)
+            if alert is None:
+                continue
+            if self._alert_has_picture(alert):
+                pending = alert
+                continue
+            await self._dispatch(callback, alert)
+
+    @staticmethod
+    def _read_image_part(buffer: bytes, marker: int):
+        """The JPEG starting at ``marker``, and what's left. ``(None, None)`` if partial."""
+        header_end = buffer.find(b"\r\n\r\n", marker)
+        if header_end == -1:
+            return None, None
+        match = re.search(
+            rb"Content-Length:\s*(\d+)", buffer[marker:header_end], re.IGNORECASE
+        )
+        if match is None:
+            return None, None
+
+        body = header_end + 4
+        end = body + int(match.group(1))
+        if len(buffer) < end:
+            return None, None
+        return buffer[body:end], buffer[end:]
+
+    @staticmethod
+    def _alert_has_picture(alert: dict) -> bool:
+        """Whether the camera says it's attaching a JPEG of this event.
+
+        Verified on both firmware lines: a classified smart event carries
+        ``detectionPictureTransType=binary`` with ``picturesNumber=1``, and the JPEG follows
+        as the next multipart part. Heartbeat (``duration``) and ``videoloss`` alerts don't.
+        """
+        if (alert.get("detectionPictureTransType") or "").strip().lower() != "binary":
+            return False
+        for key in ("detectionPicturesNumber", "picturesNumber"):
+            try:
+                if int(alert.get(key) or 0) > 0:
+                    return True
+            except (TypeError, ValueError):
+                continue
+        return False
+
+    def _parse_alert(self, data: bytes) -> dict | None:
+        """Parse one <EventNotificationAlert> block into a flattened dict."""
         try:
             text = data.decode(errors="ignore")
             start = text.find("<EventNotificationAlert")
             if start == -1:
-                return
+                return None
             root = ET.fromstring(text[start:])
-            event = _xml_to_dict(root)
-
-            # Bounding boxes come off the tree, not the flattened dict, so several
-            # targets in one alert all survive (see :meth:`_target_regions`).
-            regions = self._target_regions(root)
-            if regions:
-                event[TARGET_REGIONS_KEY] = regions
-
-            if asyncio.iscoroutinefunction(callback):
-                await callback(event)
-            else:
-                callback(event)
         except ET.ParseError:
-            pass
+            return None
         except Exception as e:
-            _LOGGER.debug(f"Failed to process event: {e}")
+            _LOGGER.debug(f"Failed to parse event: {e}")
+            return None
+
+        event = _xml_to_dict(root)
+
+        # Bounding boxes come off the tree, not the flattened dict, so several
+        # targets in one alert all survive (see :meth:`_target_regions`).
+        regions = self._target_regions(root)
+        if regions:
+            event[TARGET_REGIONS_KEY] = regions
+        return event
+
+    @staticmethod
+    async def _dispatch(callback, alert: dict, image: bytes = None) -> None:
+        """Hand an alert (and the camera's own frame of it, if any) to the engine."""
+        if alert is None:
+            return
+        if image:
+            alert[EVENT_IMAGE_KEY] = image
+        try:
+            if asyncio.iscoroutinefunction(callback):
+                await callback(alert)
+            else:
+                callback(alert)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            _LOGGER.warning(f"Event callback failed: {e}", exc_info=e)
 
     # -- HTTP helpers --
 

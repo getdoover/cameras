@@ -13,7 +13,266 @@
         "image_name": "registry.doover.com/apps/object_detection:main",
         "build_args": "--platform linux/arm64",
         "export_ui_command": "NO_EXPORT",
-        "organisation_id": null
+        "organisation_id": null,
+        "config_schema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$id": "",
+            "title": "$default",
+            "type": "object",
+            "properties": {
+                "camera_apps": {
+                    "title": "Camera Apps",
+                    "x-name": "camera_apps",
+                    "x-hidden": false,
+                    "type": "array",
+                    "x-required": true,
+                    "description": "App keys of the camera apps whose snapshots to analyse, e.g. 'doover_camera_1'. One instance can watch several cameras -- preferred over deploying one instance per camera, since each instance loads its own copy of the models into RAM.",
+                    "x-position": 0,
+                    "items": {
+                        "title": "App Key",
+                        "x-name": "app_key",
+                        "x-hidden": false,
+                        "type": "string",
+                        "x-required": true,
+                        "description": "Camera app key"
+                    }
+                },
+                "ppe_detection": {
+                    "title": "PPE Detection",
+                    "x-name": "ppe_detection",
+                    "x-hidden": false,
+                    "type": "object",
+                    "x-required": true,
+                    "x-position": 1,
+                    "properties": {
+                        "enabled": {
+                            "title": "Enabled",
+                            "x-name": "enabled",
+                            "x-hidden": false,
+                            "type": [
+                                "boolean",
+                                "null"
+                            ],
+                            "x-required": false,
+                            "description": "Run hard-hat / high-vis detection on incoming snapshots.",
+                            "default": false,
+                            "x-position": 1
+                        },
+                        "require_hard_hat": {
+                            "title": "Require Hard Hat",
+                            "x-name": "require_hard_hat",
+                            "x-hidden": false,
+                            "type": [
+                                "boolean",
+                                "null"
+                            ],
+                            "x-required": false,
+                            "description": "Flag a person who isn't wearing a hard hat.",
+                            "default": true,
+                            "x-position": 2
+                        },
+                        "require_highvis": {
+                            "title": "Require High-Vis",
+                            "x-name": "require_highvis",
+                            "x-hidden": false,
+                            "type": [
+                                "boolean",
+                                "null"
+                            ],
+                            "x-required": false,
+                            "description": "Flag a person who isn't wearing a high-vis vest.",
+                            "default": true,
+                            "x-position": 3
+                        },
+                        "minimum_confidence": {
+                            "title": "Minimum Confidence",
+                            "x-name": "minimum_confidence",
+                            "x-hidden": false,
+                            "type": [
+                                "integer",
+                                "null"
+                            ],
+                            "x-required": false,
+                            "description": "Drop detections below this confidence (0-100). Lower catches more distant people but invents them: on a real site camera a traffic cone came back as a person at 0.49, which at the old default of 40 raised a violation.",
+                            "default": 55,
+                            "x-position": 4,
+                            "x-advanced": true,
+                            "minimum": 1,
+                            "maximum": 100
+                        },
+                        "notify_on_violation": {
+                            "title": "Notify On Violation",
+                            "x-name": "notify_on_violation",
+                            "x-hidden": false,
+                            "type": [
+                                "boolean",
+                                "null"
+                            ],
+                            "x-required": false,
+                            "description": "Send a notification when someone is missing required PPE.",
+                            "default": true,
+                            "x-position": 5
+                        }
+                    },
+                    "additionalElements": true,
+                    "required": [],
+                    "x-collapsible": true,
+                    "x-defaultCollapsed": false
+                },
+                "number_plate_recognition": {
+                    "title": "Number Plate Recognition",
+                    "x-name": "number_plate_recognition",
+                    "x-hidden": false,
+                    "type": "object",
+                    "x-required": true,
+                    "x-position": 2,
+                    "properties": {
+                        "enabled": {
+                            "title": "Enabled",
+                            "x-name": "enabled",
+                            "x-hidden": false,
+                            "type": [
+                                "boolean",
+                                "null"
+                            ],
+                            "x-required": false,
+                            "description": "Detect and read vehicle number plates on incoming snapshots.",
+                            "default": false,
+                            "x-position": 1
+                        },
+                        "minimum_confidence": {
+                            "title": "Minimum Confidence",
+                            "x-name": "minimum_confidence",
+                            "x-hidden": false,
+                            "type": [
+                                "integer",
+                                "null"
+                            ],
+                            "x-required": false,
+                            "description": "Drop plate detections below this confidence (0-100).",
+                            "default": 40,
+                            "x-position": 2,
+                            "x-advanced": true,
+                            "minimum": 1,
+                            "maximum": 100
+                        },
+                        "minimum_plate_characters": {
+                            "title": "Minimum Plate Characters",
+                            "x-name": "minimum_plate_characters",
+                            "x-hidden": false,
+                            "type": [
+                                "integer",
+                                "null"
+                            ],
+                            "x-required": false,
+                            "description": "Discard OCR results shorter than this many characters. Guards against a partial read being published as a real plate.",
+                            "default": 4,
+                            "x-position": 3,
+                            "x-advanced": true,
+                            "minimum": 1,
+                            "maximum": 12
+                        },
+                        "notify_on_plate_read": {
+                            "title": "Notify On Plate Read",
+                            "x-name": "notify_on_plate_read",
+                            "x-hidden": false,
+                            "type": [
+                                "boolean",
+                                "null"
+                            ],
+                            "x-required": false,
+                            "description": "Send a notification for every plate read. Off by default -- on a busy site this is a lot of notifications.",
+                            "default": false,
+                            "x-position": 4
+                        }
+                    },
+                    "additionalElements": true,
+                    "required": [],
+                    "x-collapsible": true,
+                    "x-defaultCollapsed": false
+                },
+                "analyse_snapshots_because_of": {
+                    "title": "Analyse Snapshots Because Of",
+                    "x-name": "analyse_snapshots_because_of",
+                    "x-hidden": false,
+                    "type": "array",
+                    "x-required": true,
+                    "description": "Only analyse snapshots captured for these reasons. Matches the 'reason' field the camera app publishes. Empty means analyse everything.",
+                    "x-position": 3,
+                    "items": {
+                        "enum": [
+                            "schedule",
+                            "manual",
+                            "intruder",
+                            "person",
+                            "vehicle",
+                            "anpr",
+                            "ppe"
+                        ],
+                        "title": "Reason",
+                        "x-name": "reason",
+                        "x-hidden": false,
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "x-required": false,
+                        "description": "Snapshot reason",
+                        "default": "intruder"
+                    }
+                },
+                "annotate_images": {
+                    "title": "Annotate Images",
+                    "x-name": "annotate_images",
+                    "x-hidden": false,
+                    "type": [
+                        "boolean",
+                        "null"
+                    ],
+                    "x-required": false,
+                    "description": "Draw labelled boxes on the frame and publish it back to the camera's channel so the timeline shows what was flagged.",
+                    "default": true,
+                    "x-position": 4
+                },
+                "publish_results_with_no_findings": {
+                    "title": "Publish Results With No Findings",
+                    "x-name": "publish_results_with_no_findings",
+                    "x-hidden": false,
+                    "type": [
+                        "boolean",
+                        "null"
+                    ],
+                    "x-required": false,
+                    "description": "Publish a result even when nothing was detected. Off by default so the camera timeline isn't filled with empty analyses.",
+                    "default": false,
+                    "x-position": 5,
+                    "x-advanced": true
+                },
+                "inference_size": {
+                    "title": "Inference Size",
+                    "x-name": "inference_size",
+                    "x-hidden": false,
+                    "type": [
+                        "integer",
+                        "null"
+                    ],
+                    "x-required": false,
+                    "description": "Square size (px) frames are letterboxed to before inference. Larger catches smaller/more distant subjects but costs CPU time and RAM.",
+                    "default": 640,
+                    "x-position": 6,
+                    "x-advanced": true,
+                    "minimum": 320,
+                    "maximum": 1280
+                }
+            },
+            "additionalElements": true,
+            "required": [
+                "camera_apps",
+                "ppe_detection",
+                "number_plate_recognition",
+                "analyse_snapshots_because_of"
+            ]
+        }
     },
     "object_detection_processor": {
         "name": "object_detection_processor",

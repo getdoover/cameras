@@ -6,7 +6,12 @@ from urllib.parse import quote
 import aiohttp
 from pydoover import rpc, ui
 from pydoover.docker import Application
-from pydoover.models import EventSubscription, AggregateUpdateEvent, NotificationSeverity
+from pydoover.models import (
+    AggregateUpdateEvent,
+    EventSubscription,
+    File,
+    NotificationSeverity,
+)
 
 from .app_config import CameraConfig, CameraType
 from .app_tags import CameraTags
@@ -29,6 +34,7 @@ from .events import (
     PPEEvent,
     SDPOfferPayload,
     TargetBox,
+    event_image,
     CAMERA_CONTROL_CHANNEL,
     SET_ZONES_CMD,
 )
@@ -70,6 +76,10 @@ SNAPSHOT_REASONS = (
     "anpr",
     "ppe",
 )
+
+# The camera's own frame of an event, uploaded beside the snapshot we fetch. Named so it
+# reads as a distinct view in `media` rather than looking like the main capture.
+EVENT_FRAME_NAME = "event-frame"
 
 # The reasons that count as a "motion snapshot" — a picture taken because the camera
 # classified something, as opposed to the schedule, a manual request, or the night
@@ -301,11 +311,14 @@ class CameraApplication(Application):
         return False
 
     async def lock_snapshot_and_run(
-        self, reason: str = REASON_SCHEDULE, boxes: list = None
+        self,
+        reason: str = REASON_SCHEDULE,
+        boxes: list = None,
+        event_frame: bytes = None,
     ):
         self.snapshot_running = True
         try:
-            await self.run_snapshot(reason, boxes=boxes)
+            await self.run_snapshot(reason, boxes=boxes, event_frame=event_frame)
         except Exception as e:
             log.error(f"Error getting snapshot: {str(e)}", exc_info=e)
         self.snapshot_running = False
@@ -322,6 +335,7 @@ class CameraApplication(Application):
         retries: int = 3,
         ping_timeout: int = 20,
         boxes: list = None,
+        event_frame: bytes = None,
     ):
         await self.power_management.acquire()
 
@@ -334,7 +348,13 @@ class CameraApplication(Application):
 
         if not await self.engine.ping(ping_timeout + wake_delay):
             log.info("Failed to ping camera, skipping snapshot.")
-            # maybe this should put an error banner up on the UI? log the error somehow?
+            # ...but if the camera handed us a frame with the event, that frame is still
+            # worth having — arguably more so, since the camera has stopped answering.
+            if event_frame:
+                log.info("Publishing the camera's own event frame anyway.")
+                await self.upload_media(
+                    [self.build_event_frame(event_frame)], reason, boxes
+                )
             return None
 
         # at this point, dahua cameras will be ready to take a snapshot, but unifi / generic ones
@@ -363,7 +383,17 @@ class CameraApplication(Application):
 
         if files is None:
             log.info("Failed to get snapshot after retries")
+            if event_frame:
+                log.info("Publishing the camera's own event frame anyway.")
+                await self.upload_media(
+                    [self.build_event_frame(event_frame)], reason, boxes
+                )
             return False
+
+        # The camera's frame goes up beside ours rather than instead of it: ours is clean
+        # and full resolution, theirs is the moment the target was actually in the zone.
+        if event_frame:
+            files = [*files, self.build_event_frame(event_frame)]
 
         try:
             # Every capture goes up, not just the first — a PTZ camera returns one
@@ -373,6 +403,23 @@ class CameraApplication(Application):
             log.warning(f"Failed to publish snapshot: {e}", exc_info=e)
         else:
             await asyncio.sleep(2)
+
+    @staticmethod
+    def build_event_frame(image: bytes) -> Capture:
+        """Wrap the camera's own event JPEG as a capture, so it uploads like any other view.
+
+        No thumbnail: it goes up beside a snapshot that has one, and these frames are
+        already small enough (200-420KB) that a preview would cost more than it saves.
+        """
+        return Capture(
+            EVENT_FRAME_NAME,
+            File(
+                filename=f"{EVENT_FRAME_NAME}.jpg",
+                data=image,
+                size=len(image),
+                content_type="image/jpeg",
+            ),
+        )
 
     async def setup_rtsp_server(self):
         if not self.config.rtsp_server.enabled.value:
@@ -621,7 +668,9 @@ class CameraApplication(Application):
         # The plate rect isn't classified by the camera - it's a plate because of the
         # event it arrived on - so it gets labelled here.
         await self.lock_snapshot_and_run(
-            "anpr", TargetBox.list_from_alert(event.data, default_target="plate")
+            "anpr",
+            TargetBox.list_from_alert(event.data, default_target="plate"),
+            event_frame=event_image(event.data),
         )
 
         await self.publish_camera_event(
@@ -784,7 +833,11 @@ class CameraApplication(Application):
         # Automations hook off this; publish before the slow snapshot work.
         await self.publish_camera_event("ppe", violation="no_hardhat", count=count)
 
-        await self.lock_snapshot_and_run("ppe", TargetBox.list_from_alert(event.data))
+        await self.lock_snapshot_and_run(
+            "ppe",
+            TargetBox.list_from_alert(event.data),
+            event_frame=event_image(event.data),
+        )
 
         if self.config.ppe.notify.value:
             who = f"{count} people" if count and count > 1 else "someone"
@@ -915,7 +968,9 @@ class CameraApplication(Application):
             if getattr(self.engine, "event_clip_mode", None):
                 self.start_event_video()
             elif self.claim_motion_snapshot():
-                await self.lock_snapshot_and_run(REASON_INTRUDER, event.boxes)
+                await self.lock_snapshot_and_run(
+                    REASON_INTRUDER, event.boxes, event_frame=event.image
+                )
 
             # The camera's own deterrent (flash / siren) is already armed natively.
             self.start_alarm_pulse()
@@ -942,7 +997,9 @@ class CameraApplication(Application):
                 f"window."
             )
         elif self.claim_motion_snapshot():
-            await self.lock_snapshot_and_run(event.type.value, event.boxes)
+            await self.lock_snapshot_and_run(
+                event.type.value, event.boxes, event_frame=event.image
+            )
 
         if event.type in (MotionDetectEventType.person, MotionDetectEventType.vehicle):
             await self.publish_camera_event(event.type.value, target=event.type.value)

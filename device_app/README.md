@@ -193,6 +193,7 @@ camera a visible and a thermal view. So `media` is always a list, even when ther
 | `reason` | Why it was captured: `schedule`, `manual`, `intruder`, `person`, `vehicle`, `anpr` — matches the `camera_event` `kind` |
 | `night` | `true`/`false` — **only present when the camera states it outright** (see below) |
 | `detections` | Where the camera localised the targets that triggered the capture. **Only present when the event carried boxes** (see below) |
+| `media[].name` `event-frame` | The camera's **own** JPEG of the event, uploaded beside the fetched snapshot (see below) |
 
 Thumbnails sit beside their media (`Preset1.jpg` / `Preset1-thumbnail.jpg`) and are captured **at the same
 moment as the media** — on a PTZ camera that has to happen while it's still pointed at the preset.
@@ -233,12 +234,11 @@ boxes this time" from "this camera doesn't report boxes", and analysis is free t
 the full frame. What it's *for* is cropping a plate read to the region the camera already found, and
 having something concrete to deduplicate consecutive events on.
 
-> Two caveats, both because this is read from real alerts rather than a spec that pins it down. Units
-> differ by firmware — some report fractions of the frame, others the normalized `0–1000` screen the zone
-> endpoints use — so anything over `1` is scaled down, which lands both in the same space. And the **y
-> axis is passed through as the camera sends it**: Hikvision *zone* coordinates are y-up (the engine flips
-> them) but the alert rect is documented top-left, and that hasn't been confirmed against a capture. If
-> boxes come back vertically mirrored, the flip is a one-line change in `_parse_rect`.
+> Units differ by firmware — some report fractions of the frame, others the normalized `0–1000` screen the
+> zone endpoints use — so anything over `1` is scaled down, which lands both in the same space. The **y axis
+> is top-left origin** and passed through unflipped: confirmed against a real event frame, where a box at
+> `y=0.076..0.348` sat around a person in the upper third of the picture. (Zone *polygons* are y-up and
+> still get flipped — that asymmetry is the camera's, not ours.)
 
 <br/>
 
@@ -345,6 +345,52 @@ detection app treats that as authoritative in both directions, overriding its ow
 reason filter — so a camera can be watched for plates without every one of its motion
 snapshots being run through the models. It only marks the frame as wanted; no inference
 happens in this app.
+
+<br/>
+
+### The camera's own event frame
+
+On a classified detection these cameras **attach a JPEG to the alert** — their own picture of the event,
+taken at the instant they classified the target. It arrives as an `image/jpeg` part on the alertStream, on
+the connection the app already holds open, and it used to be discarded. It is now uploaded **beside** the
+snapshot the app fetches, as a `media` entry named `event-frame`:
+
+```json
+{"reason": "vehicle", "object_detection": true,
+ "detections": [{"target": "vehicle", "box": [0.55, 0.08, 0.58, 0.43]}],
+ "media": [{"name": "snapshot", "file": "snapshot.jpg", "thumbnail": "snapshot-thumbnail.jpg"},
+           {"name": "event-frame", "file": "event-frame.jpg"}]}
+```
+
+Why both, rather than one or the other:
+
+| | `event-frame` | `snapshot` |
+|---|---|---|
+| **when** | the instant of classification | ~0.3s later, when the app gets round to asking |
+| **resolution** | 1280×720 (AcuSense) / 1920×1080 (DeepinView) | full main-stream, 1920×1080 |
+| **overlays** | detection zone + target box **burnt in** | clean; timestamp and camera name only |
+| **size** | 199–418KB measured | ~181KB |
+
+For anything moving — a vehicle crossing a gate — the event frame is the one that actually has the target
+in it, because it was taken while the target was still in the zone. The fetched snapshot is the clean,
+full-resolution one. Neither is a substitute for the other, so both go up.
+
+- **The frame is published even when the snapshot fails.** If the camera has stopped answering HTTP, the
+  frame it already handed us is *more* valuable, not less — so a failed ping or a failed capture still
+  publishes the event frame on its own.
+- **Pairing is positional**: the JPEG is the multipart part after the XML. An alert that advertises a
+  picture (`detectionPictureTransType=binary`, `picturesNumber>0`) is held back until it arrives — bounded
+  by `EVENT_IMAGE_WAIT_SECS` (3s) and released early if the next alert beats it. Nothing waits
+  indefinitely: the alarm path needs events promptly, and a heartbeat (`duration`) or `videoloss` alert
+  carries no picture at all.
+- **It has no thumbnail.** It sits beside a snapshot that has one, and at a few hundred KB a preview would
+  cost more than it saves.
+
+> **Two things to know before pointing the Object Detection app at these.** The overlays are burnt in, so
+> the models see a red polygon and a red target box drawn over the scene — turn off the camera's
+> rules/target-info display if that matters more than having the aid for human review. And the frame is a
+> second image attachment, so the detection app will analyse **both** frames: twice the inference per
+> event, with two chances at a plate.
 
 <br/>
 

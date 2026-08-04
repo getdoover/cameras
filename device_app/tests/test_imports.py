@@ -1220,3 +1220,144 @@ def test_always_on_survives_expiry_but_honours_a_deliberate_release():
     asyncio.run(mgr.acquire_for(timedelta(seconds=60)))
     assert mgr._suspended is False
     assert do_calls[-1] == (4, True)
+
+
+def _alert_xml(event_type="fielddetection", state="active", pictures=1):
+    """An alert shaped like the real ones, with or without an advertised picture."""
+    pic = (
+        "<detectionPictureTransType>binary</detectionPictureTransType>"
+        f"<detectionPicturesNumber>{pictures}</detectionPicturesNumber>"
+        f"<picturesNumber>{pictures}</picturesNumber>"
+        if pictures
+        else ""
+    )
+    return (
+        "<EventNotificationAlert><channelID>1</channelID>"
+        f"<eventType>{event_type}</eventType><eventState>{state}</eventState>"
+        "<DetectionRegionList><DetectionRegionEntry>"
+        "<detectionTarget>human</detectionTarget>"
+        "<TargetRect><X>0.7766</X><Y>0.0764</Y><width>0.0344</width>"
+        "<height>0.2722</height></TargetRect>"
+        "</DetectionRegionEntry></DetectionRegionList>"
+        f"{pic}</EventNotificationAlert>"
+    ).encode()
+
+
+def _image_part(jpeg: bytes) -> bytes:
+    """The multipart wrapper the camera really uses for the event frame."""
+    return (
+        b"--boundary\r\n"
+        b'Content-Disposition: form-data; name="fielddetection"; filename="fielddetection"\r\n'
+        b"Content-Type: image/jpeg\r\n"
+        b"Content-Length: " + str(len(jpeg)).encode() + b"\r\n\r\n" + jpeg
+    )
+
+
+def test_event_frame_is_paired_with_its_alert():
+    """The camera attaches its own frame of the event; it used to be discarded."""
+    import asyncio
+
+    from camera_app.clients.hikvision import HikvisionClient
+    from camera_app.events import EVENT_IMAGE_KEY
+
+    jpeg = b"\xff\xd8\xff\xe0" + b"x" * 500 + b"\xff\xd9"
+    client = HikvisionClient.__new__(HikvisionClient)
+
+    def drain(chunks, pending=None):
+        got = []
+        buffer = b""
+        for chunk in chunks:
+            buffer += chunk
+            buffer, pending = asyncio.run(
+                client._drain(got.append, buffer, pending)
+            )
+        return got, buffer, pending
+
+    # The frame follows the XML, and arrives with it as one event.
+    got, _, pending = drain([b"--boundary\r\n" + _alert_xml() + _image_part(jpeg)])
+    assert len(got) == 1 and got[0][EVENT_IMAGE_KEY] == jpeg
+    assert pending is None
+    # The box survives alongside it.
+    assert got[0]["TargetRegions"][0]["target"] == "human"
+
+    # Split across TCP chunks part-way through the JPEG: the alert waits for the rest
+    # rather than going out frameless.
+    head = b"--boundary\r\n" + _alert_xml()
+    whole = head + _image_part(jpeg)
+    cut = len(head) + 200  # inside the image body
+    got, buffer, pending = drain([whole[:cut]])
+    assert got == [] and pending is not None
+    got2, _, pending = drain([buffer + whole[cut:]], pending)
+    assert len(got2) == 1 and got2[0][EVENT_IMAGE_KEY] == jpeg
+    assert pending is None
+
+    # An alert that advertises no picture is dispatched immediately - the alarm path can't
+    # wait on a frame that was never coming.
+    got, _, pending = drain([b"--boundary\r\n" + _alert_xml(pictures=0)])
+    assert len(got) == 1 and EVENT_IMAGE_KEY not in got[0]
+    assert pending is None
+
+    # If the next alert beats the picture, the picture isn't coming: release the first
+    # rather than staple a later event's frame onto it.
+    got, _, pending = drain(
+        [b"--boundary\r\n" + _alert_xml() + b"--boundary\r\n" + _alert_xml(pictures=0)]
+    )
+    assert len(got) == 2
+    assert EVENT_IMAGE_KEY not in got[0] and EVENT_IMAGE_KEY not in got[1]
+
+
+def test_alert_has_picture_gate():
+    from camera_app.clients.hikvision import HikvisionClient
+
+    has = HikvisionClient._alert_has_picture
+    # Verified on both firmware lines for a classified smart event.
+    assert has(
+        {
+            "detectionPictureTransType": "binary",
+            "detectionPicturesNumber": "1",
+            "picturesNumber": "1",
+        }
+    )
+    # Heartbeat and videoloss alerts carry no picture, and must not hold up dispatch.
+    assert not has({"eventType": "duration", "eventState": "active"})
+    assert not has({"detectionPictureTransType": "binary", "picturesNumber": "0"})
+    assert not has({"detectionPictureTransType": "url", "picturesNumber": "1"})
+    assert not has({})
+
+
+def test_event_frame_uploads_alongside_the_snapshot():
+    import asyncio
+    import types
+
+    from camera_app.application import EVENT_FRAME_NAME, CameraApplication
+    from camera_app.engines.base import Capture
+
+    published = []
+
+    async def _none():
+        return None
+
+    async def _capture(app_key, payload, files):
+        published.append((payload, files))
+
+    def make_app():
+        app = CameraApplication.__new__(CameraApplication)
+        app.app_key = "doover_camera_1"
+        app.engine = types.SimpleNamespace(detect_night=_none)
+        app.config = types.SimpleNamespace(motion_snapshot_object_detection=True)
+        app.device_agent = types.SimpleNamespace(create_message=_capture)
+        return app
+
+    jpeg = b"\xff\xd8\xff\xe0eventframe\xff\xd9"
+    frame = CameraApplication.build_event_frame(jpeg)
+    assert frame.media.filename == f"{EVENT_FRAME_NAME}.jpg"
+    assert frame.media.data == jpeg
+    assert frame.thumbnail is None
+
+    snapshot = Capture("snapshot", types.SimpleNamespace(filename="snapshot.jpg"))
+    asyncio.run(make_app().upload_media([snapshot, frame], "vehicle"))
+    payload, _ = published[-1]
+    # Both views are described, so a gallery (and the cloud) can tell them apart.
+    assert [m["name"] for m in payload["media"]] == ["snapshot", EVENT_FRAME_NAME]
+    assert payload["media"][1]["file"] == f"{EVENT_FRAME_NAME}.jpg"
+    assert "thumbnail" not in payload["media"][1]

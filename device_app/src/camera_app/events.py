@@ -17,6 +17,16 @@ SET_ZONES_CMD = "set_detection_zones"
 # because it's the contract between the two: the client fills it, TargetBox reads it.
 TARGET_REGIONS_KEY = "TargetRegions"
 
+# Where a vendor client stashes the JPEG the camera attached to an alert — its own frame of
+# the event, taken at the moment it classified the target. Raw bytes, absent when the camera
+# didn't send one.
+EVENT_IMAGE_KEY = "EventImage"
+
+
+def event_image(alert: dict) -> bytes | None:
+    """The camera's own frame of an event, if it sent one with the alert."""
+    return (alert or {}).get(EVENT_IMAGE_KEY)
+
 
 class MotionDetectEventType(Enum):
     vehicle = "vehicle"
@@ -49,6 +59,9 @@ class MotionDetectEvent:
         # Where the camera saw the target(s), when it says. Empty on cameras (or
         # firmware) that don't report a rect, so callers must treat it as optional.
         self.boxes = TargetBox.list_from_alert(data)
+        # The camera's own JPEG of this event, when it attached one — the frame at the
+        # moment of detection, rather than one fetched a moment later.
+        self.image = event_image(data)
 
 
 class ANPREvent:
