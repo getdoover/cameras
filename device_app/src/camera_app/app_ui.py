@@ -35,26 +35,7 @@ class CameraUI(ui.UI):
     #         ui.Container(
     #             name="detection",
     #             display_name="Object Detection",
-    #             hidden=not (
-    #                 Q("$config.app().human_detect_enabled:boolean")
-    #                 | Q("$config.app().human_detect_enabled:boolean")
-    #             ),
-    #             children=[
-    #                 ui.Switch(
-    #                     "Alert me for Vehicle Motion",
-    #                     name="alert_me_on_vehicle_motion",
-    #                     icon="fa-car",
-    #                     # hidden=not config.vehicle_detect_enabled,
-    #                     hidden=not Q("$config.app().vehicle_detect_enabled:boolean"),
-    #                 ),
-    #                 ui.Switch(
-    #                     "Alert me for Human Motion",
-    #                     name="alert_me_on_human_motion",
-    #                     icon="fa-user",
-    #                     hidden=not Q("$config.app().human_detect_enabled:boolean"),
-    #                     # hidden=not config.human_detect_enabled,
-    #                 ),
-    #             ],
+    #             children=[],
     #         ),
     #     ],
     # )
@@ -86,25 +67,19 @@ class CameraUI(ui.UI):
         else:
             live_views = [self.live_view]
 
-        self.vehicle_detection = ui.Switch(
-            "Alert me for Vehicle Motion",
-            name="alert_me_on_vehicle_motion",
-            icon="fa-car",
-            hidden=not self.config.vehicle_detect_enabled,
-        )
-        self.human_detection = ui.Switch(
-            "Alert me for Human Motion",
-            name="alert_me_on_human_motion",
-            icon="fa-user",
-            hidden=not self.config.human_detect_enabled,
-        )
+        # Deliberately empty, and deliberately still here: it holds the third tab's place
+        # so the tab layout doesn't shift.
+        #
+        # It used to carry "Alert me for Vehicle/Human Motion" switches that gated the
+        # notifications. Detections now always notify, so the switches are gone — and they
+        # were worse than redundant: they were created with no value, and each was `hidden`
+        # unless its target was in the Object Detection config, so reading one raised
+        # `KeyError: alert_me_on_human_motion` out of the middle of the motion callback and
+        # took the rest of the handler with it.
         container = ui.Container(
-            children=[self.vehicle_detection, self.human_detection],
+            children=[],
             name="detection",
             display_name="Object Detection",
-            hidden=not (
-                self.config.vehicle_detect_enabled or self.config.human_detect_enabled
-            ),
         )
 
         # Carries JSON rather than a simple value, so it's a plain interaction the

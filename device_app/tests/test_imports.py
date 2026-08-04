@@ -1361,3 +1361,70 @@ def test_event_frame_uploads_alongside_the_snapshot():
     assert [m["name"] for m in payload["media"]] == ["snapshot", EVENT_FRAME_NAME]
     assert payload["media"][1]["file"] == f"{EVENT_FRAME_NAME}.jpg"
     assert "thumbnail" not in payload["media"][1]
+
+
+def test_classified_detections_always_notify():
+    """No UI switch gates a notification, and none is read on the motion path.
+
+    The switches this replaces were created without values, so reading one raised
+    `KeyError: alert_me_on_human_motion` out of the middle of the motion callback and took
+    the rest of the handler - camera_event, snapshot, alarm - down with it.
+    """
+    import asyncio
+    import types
+
+    from camera_app.application import CameraApplication
+    from camera_app.engines.hikvision_acusense import HikvisionAcuSenseCamera
+    from camera_app.events import MotionDetectEvent, MotionDetectEventType
+
+    notifications, events = [], []
+
+    def make_app():
+        app = CameraApplication.__new__(CameraApplication)
+        app.app_display_name = "Camera 1"
+        app.engine = HikvisionAcuSenseCamera.__new__(HikvisionAcuSenseCamera)
+        app.config = types.SimpleNamespace(
+            alarm=types.SimpleNamespace(
+                intruder_alarm_enabled=types.SimpleNamespace(value=False)
+            ),
+            is_night=lambda: False,
+            motion_snapshot_allowed=lambda: False,  # no picture, keeps the test to notifies
+        )
+
+        async def notify(msg, severity=None, topic=None):
+            notifications.append((topic, msg))
+
+        async def publish(kind, **extra):
+            events.append(kind)
+
+        app.send_notification = notify
+        app.publish_camera_event = publish
+        # Deliberately absent: any attempt to read a UI value must fail the test rather
+        # than being silently tolerated.
+        app.ui_manager = None
+        return app
+
+    for kind in (MotionDetectEventType.person, MotionDetectEventType.vehicle):
+        asyncio.run(make_app().on_motion_event_callback(MotionDetectEvent(kind, {})))
+
+    assert [t for t, _ in notifications] == [
+        "motion_event_person",
+        "motion_event_vehicle",
+    ]
+    assert events == ["person", "vehicle"]
+
+
+def test_third_tab_is_empty_and_still_present():
+    """The alert switches are gone; the tab keeps its place so the layout doesn't shift."""
+    import inspect
+
+    from camera_app import app_ui
+
+    source = inspect.getsource(app_ui)
+    # No switch is declared anywhere, including in the commented-out future-UI sketch.
+    # (The names still appear in a comment explaining why they went, which is the point.)
+    assert 'name="alert_me_on' not in source
+    assert "ui.Switch" not in source
+    # The container is still built and still handed to the TabContainer.
+    assert 'name="detection"' in source
+    assert "children=[self.history, *live_views, container]" in source

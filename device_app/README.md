@@ -41,7 +41,7 @@ App to view and manage IP cameras. Choose between Dahua PTZ or Fixed, UniFi and 
 | **Snapshot Enabled** | Whether periodic snapshots are enabled | `true` |
 | **Snapshot Period** | Seconds between snapshots | `14400` |
 | **Snapshot Mode** | Video or Image format | `Image` |
-| **Object Detection** | Objects to detect (Person, Vehicle) | `None` |
+| **Object Detection** | Objects the *camera* is told to detect (Dahua/Bosch only; Hikvision always does both) | `None` |
 | **Control Enabled** | Allow control (movement) of PTZ cameras | `true` |
 
 <br/>
@@ -113,8 +113,10 @@ re-alarm-on-a-static-target **on** (see below — the night alarm depends on it)
 they would, and every rule left on is a second event — and so a second snapshot, upload and inference
 run — for the same person walking through.
 
-Events carry the classification per-event and map onto the `person` / `vehicle` callbacks. (The **Object Detection** setting shapes which
-events raise notifications downstream; it no longer limits what the camera looks for.)
+Events carry the classification per-event and map onto the `person` / `vehicle` callbacks, and **every
+classified detection notifies** — there is no per-camera switch for it. (**Object Detection** does nothing
+on this engine: the intrusion rule always classifies both human and vehicle. It still selects the on-camera
+targets on Dahua and Bosch.)
 
 The night intruder alarm uses the camera's built-in **active response** — on `/SRB` models the flash light
 (`whiteLight`) and audible siren (`audio`) are linked to the intrusion event, and the app writes the
@@ -138,7 +140,7 @@ a notification.
 
 | Setting | Description | Default |
 |---------|-------------|---------|
-| **Object Detection** | Which classified events raise notifications (Person, Vehicle) | `Person` |
+| **Object Detection** | Not used by this engine — the camera always classifies human *and* vehicle | `Person` |
 | **Detection Sensitivity** | On-camera intrusion detection sensitivity (0–100) | `50` |
 | **Intruder Alarm › Enabled** | At night, trigger the flash+siren active response + pulse the relay + notify on a classified detection | `false` |
 | **Intruder Alarm › Flash Light** | Flash the camera's built-in light on a smart event at night | `true` |

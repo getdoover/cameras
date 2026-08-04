@@ -1004,22 +1004,24 @@ class CameraApplication(Application):
         if event.type in (MotionDetectEventType.person, MotionDetectEventType.vehicle):
             await self.publish_camera_event(event.type.value, target=event.type.value)
 
+        # A classified detection always notifies. It used to be gated on a pair of UI
+        # switches, which were created without values — so reading one raised
+        # `KeyError: alert_me_on_human_motion` from the middle of this handler and killed
+        # everything after it, which is a lot worse than an unwanted notification.
         match event.type:
             case MotionDetectEventType.person:
-                if self.ui_manager.get_value("alert_me_on_human_motion") is True:
-                    await self.send_notification(
-                        f"{self.app_display_name} has detected a person.",
-                        severity=NotificationSeverity.Info,
-                        topic="motion_event_person",
-                    )
+                await self.send_notification(
+                    f"{self.app_display_name} has detected a person.",
+                    severity=NotificationSeverity.Info,
+                    topic="motion_event_person",
+                )
 
             case MotionDetectEventType.vehicle:
-                if self.ui_manager.get_value("alert_me_on_vehicle_motion") is True:
-                    await self.send_notification(
-                        f"{self.app_display_name} has detected a vehicle.",
-                        severity=NotificationSeverity.Info,
-                        topic="motion_event_vehicle",
-                    )
+                await self.send_notification(
+                    f"{self.app_display_name} has detected a vehicle.",
+                    severity=NotificationSeverity.Info,
+                    topic="motion_event_vehicle",
+                )
 
             case MotionDetectEventType.unknown:
                 log.warning("Unknown event detected.")
