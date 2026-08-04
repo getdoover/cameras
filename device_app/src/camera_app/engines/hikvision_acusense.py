@@ -10,11 +10,12 @@ region is the trigger, so it catches a target that is already in frame, one that
 inside the region, and one that crosses only the outer margin -- none of which region
 entrance can see, because entrance needs the target tracked *outside* the region first.
 The reason entrance used to own the day was intrusion's re-alarm on a static target,
-which turned one parked car into a stream of snapshots; that is switched off at the
-camera instead (``set_static_target_alarm``), with the app's snapshot cooldown as the
-backstop for firmware that ignores it. One rule also means **one** set of zones: the two
-rules had separate defaults that nothing reconciled, so what a user drew and what the
-camera detected by day could silently differ.
+which turned one parked car into a stream of snapshots. That re-alarm is kept — it is the
+only signal that an intruder is *still there*, which the night alarm is built on — and the
+duplicate cost is handled in the app instead, where the picture can be throttled without
+throttling the alarm (see ``CameraApplication.claim_motion_snapshot``). One rule also means
+**one** set of zones: the two rules had separate defaults that nothing reconciled, so what
+a user drew and what the camera detected by day could silently differ.
 
 Events arrive over the ISAPI alertStream. AcuSense smart events carry the
 classification per-event inside ``<DetectionRegionList><DetectionRegionEntry>``:
@@ -73,11 +74,12 @@ UNUSED_SMART_RULES = ("regionEntrance", "regionExiting", "LineDetection")
 # downstream, not what the camera looks for.
 RULE_TARGETS = ["human", "vehicle"]
 
-# How often the app re-writes the flash/siren linkage when it owns the arming (i.e.
-# whenever the camera is armed wider than the night window). Purely a correction for
-# drift we didn't cause — the day/night transition itself is handled the moment the
-# main loop notices it, not on this cadence.
-DETERRENT_REASSERT_SECS = 10 * 60
+# How often the app re-writes the camera's arming schedule and the flash/siren linkage.
+# Purely a correction for drift we didn't cause — a web-UI visit, a firmware quirk, a
+# factory reset — since both live on the camera and nothing tells us when they change.
+# Neither the day/night transition nor a config edit waits for this cadence: both are
+# acted on the moment the main loop notices them.
+REASSERT_SECS = 10 * 60
 
 # App target vocabulary <-> Hikvision's tokens (from the camera's advertised
 # detectionTarget opt="all,human,vehicle,animal,others").
@@ -127,9 +129,14 @@ class HikvisionAcuSenseCamera(CameraBase):
         self._deterrent_armed: bool = None
         # When the linkage was last written, for the periodic re-assert.
         self._deterrent_asserted_at: datetime = None
-        # True once the camera has accepted a native arming schedule, in which case
-        # the app must stop toggling the linkage itself (the schedule owns it).
+        # True once the camera has accepted a native arming schedule *and* that schedule
+        # means night and nothing else, in which case the app must stop toggling the
+        # linkage itself (the schedule owns it). See assert_arming_schedule.
         self.native_schedule_active: bool = False
+        # The windows last written to the camera, and when — so a config edit is noticed
+        # without waiting for the periodic re-assert, and the re-assert is cheap.
+        self._schedule_windows: list = None
+        self._schedule_asserted_at: datetime = None
         # How event clips get captured: "sd" (camera records to its microSD, we
         # fetch over ContentMgmt), "ffmpeg" (we record the RTSP stream ourselves),
         # or None (clips off / not possible). Resolved in setup().
@@ -170,16 +177,24 @@ class HikvisionAcuSenseCamera(CameraBase):
         except Exception as e:
             log.warning(f"Failed to configure intrusion detection: {e}", exc_info=e)
 
-        # Report a target once instead of re-alarming while it sits in the region. Without
-        # this, intrusion can't be the daytime rule: a parked car would keep costing a
-        # snapshot, an upload and a cloud inference run.
-        await self.client.set_static_target_alarm(False)
+        # Keep re-alarming while a target stays in the region, and assert it rather than
+        # trusting the camera's default. It is the only way the app can tell an intruder is
+        # still present, so the night alarm holding the strobe/horn/recording for the length
+        # of an event depends on it -- as does the camera's own light/buzzer, which follows
+        # the event. Duplicate daytime snapshots are the app's problem, not the camera's.
+        interval = await self.client.set_static_target_alarm(True)
+        self._warn_if_realarm_outlasts_cooldown(interval)
 
         await self.disable_unused_rules()
 
         # Resolve this before arming: the deterrent only adds the `record` linkage
         # when we're actually going to read recordings back off the camera.
         self.event_clip_mode = await self._resolve_event_clip_mode()
+
+        # Before the deterrent: it branches on whether the camera can gate the linkage
+        # itself, which is what this decides. Written even with the alarm disabled — the
+        # schedule controls when the camera detects at all, not just when it flashes.
+        await self.assert_arming_schedule()
 
         if self.config.alarm.intruder_alarm_enabled.value:
             await self.setup_night_deterrent()
@@ -337,14 +352,89 @@ class HikvisionAcuSenseCamera(CameraBase):
         except Exception as e:
             log.warning(f"Failed to set alarm linkage: {e}", exc_info=e)
 
-    async def setup_night_deterrent(self):
-        """Arm the night deterrent, preferring the camera's native arming schedule.
+    def _arming_windows(self) -> list:
+        """The hour windows the camera must be armed for, as (start, end) pairs.
 
-        Preferred path: link flash / siren / record to the intrusion event
-        permanently and let the camera's own arming schedule gate them to the night
-        window, so the deterrent fires even while doover is offline. If the firmware
-        won't accept a schedule we fall back to the app toggling the linkage at the
-        night boundary (:meth:`arm_night_deterrent`, called each main loop).
+        The schedule gates the **event**, not just its linkages: an hour outside it
+        produces no ``fielddetection`` at all, so the camera classifies nothing and the app
+        hears nothing (measured — walking in front of the camera at 12:47 with a night-only
+        schedule produced only an unclassified ``VMD`` event). Intrusion is the daytime rule
+        as well as the night one, so this is the night window *plus* the motion-snapshot
+        window; ``set_event_arming_schedule`` takes their union.
+        """
+        night = (
+            self.config.alarm.night_start_hour.value,
+            self.config.alarm.night_end_hour.value,
+        )
+        day = self.config.motion_snapshot_window
+        return [night] + ([day] if day else [])
+
+    async def assert_arming_schedule(self, force: bool = False) -> None:
+        """Write the camera's arming schedule, and keep it written.
+
+        Called at setup and then from every main loop. It rewrites when the windows have
+        changed — so editing Night Start Hour takes effect without a restart — and
+        otherwise every :data:`REASSERT_SECS`, because the schedule lives on the camera
+        where a web-UI visit or a factory reset can silently change it and nothing tells us.
+        Drift here is invisible in the worst direction: the camera stops reporting events
+        for part of the day and the app simply never hears anything.
+
+        This runs whether or not the intruder alarm is enabled. The schedule is not a
+        deterrent setting — it decides when the camera detects at all, so a site that only
+        wants daytime snapshots needs it just as much as one that wants a siren.
+        """
+        windows = self._arming_windows()
+        now = datetime.now(tz=timezone.utc)
+        stale = (
+            self._schedule_asserted_at is None
+            or (now - self._schedule_asserted_at).total_seconds() >= REASSERT_SECS
+        )
+        changed = windows != self._schedule_windows
+        if not (force or changed or stale):
+            return
+
+        try:
+            accepted = await self.client.set_event_arming_schedule(windows)
+        except Exception as e:
+            log.warning(f"Failed to write native arming schedule: {e}", exc_info=e)
+            accepted = False
+
+        self._schedule_asserted_at = now
+        self._schedule_windows = windows if accepted else None
+
+        # Whether the *camera* can gate the deterrent for us, which is a stronger claim
+        # than "the camera took a schedule". It can only do that when the schedule means
+        # night and nothing else; once it also covers the day, a permanently-armed linkage
+        # would sound the siren at a delivery driver at midday. So when the schedule is
+        # wider than the night, the app owns arming — the cost of intrusion covering the
+        # day, and the reason arm_night_deterrent runs every main loop.
+        day_covered = len(windows) > 1
+        was_native = self.native_schedule_active
+        self.native_schedule_active = accepted and not day_covered
+
+        if changed and not stale:
+            log.info(f"Arming windows changed; rewrote the camera's schedule as {windows}.")
+        if accepted and day_covered and not was_native:
+            log.info(
+                "Arming schedule covers the daytime motion window as well as the night, so "
+                "the app arms the deterrent at the night boundary rather than the camera. "
+                "NOTE: that does not survive doover being offline across dusk."
+            )
+        elif not accepted:
+            log.info(
+                "Camera did not accept a native arming schedule; it stays armed whenever "
+                "it was, and the app owns the deterrent."
+            )
+
+    async def setup_night_deterrent(self):
+        """Set up the flash / siren active response on the intrusion event.
+
+        Where the camera's schedule means night and nothing else, the linkage is left
+        permanently armed and the camera gates it — so the deterrent fires even while doover
+        is offline. Otherwise the app toggles the linkage at the night boundary
+        (:meth:`arm_night_deterrent`, called each main loop, re-asserting every
+        :data:`REASSERT_SECS`). :meth:`assert_arming_schedule` decides which, so it must
+        have run first.
         """
         methods = self._deterrent_methods()
         if not methods:
@@ -358,39 +448,6 @@ class HikvisionAcuSenseCamera(CameraBase):
             except Exception as e:
                 log.warning(f"Failed to set supplement light mode: {e}", exc_info=e)
 
-        night = (
-            self.config.alarm.night_start_hour.value,
-            self.config.alarm.night_end_hour.value,
-        )
-        # The schedule gates the **event**, not just its linkages: an hour outside it
-        # produces no `fielddetection` at all, so the camera classifies nothing and the app
-        # hears nothing (measured — walking in front of the camera at 12:47 with a
-        # night-only schedule produced only an unclassified VMD event). Intrusion is now the
-        # daytime rule too, so the schedule has to cover the motion-snapshot window as well
-        # as the night, and `set_event_arming_schedule` takes their union.
-        day = self.config.motion_snapshot_window
-        windows = [night] + ([day] if day else [])
-
-        try:
-            accepted = await self.client.set_event_arming_schedule(windows)
-        except Exception as e:
-            log.warning(f"Failed to write native arming schedule: {e}", exc_info=e)
-            accepted = False
-
-        # Whether the *camera* can gate the deterrent for us, which is a stronger claim
-        # than "the camera took a schedule". It can only do that when the schedule means
-        # night and nothing else; once it also covers the day, a permanently-armed linkage
-        # would sound the siren at a delivery driver at midday. So when the schedule is
-        # wider than the night, the app owns arming — the cost of intrusion covering the
-        # day, and the reason arm_night_deterrent still runs every main loop.
-        self.native_schedule_active = accepted and not day
-        if accepted and day:
-            log.info(
-                "Arming schedule covers the daytime motion window as well as the night, "
-                "so the app arms the deterrent at the night boundary rather than the "
-                "camera. NOTE: this does not survive doover being offline across dusk."
-            )
-
         if self.native_schedule_active:
             # The schedule gates the linkage, so leave it permanently armed.
             await self._set_linkage(True)
@@ -399,12 +456,27 @@ class HikvisionAcuSenseCamera(CameraBase):
                 f"native arming schedule."
             )
         else:
-            log.info(
-                "Camera did not accept a native arming schedule; falling back to "
-                "app-driven arming, which re-asserts periodically and does NOT survive "
-                "doover being offline across dusk."
-            )
             await self.arm_night_deterrent(self.config.is_night())
+
+    def _warn_if_realarm_outlasts_cooldown(self, interval: int) -> None:
+        """Warn when the camera re-alarms slower than the app gives up waiting.
+
+        The night alarm treats "no detection for ``event_clip_cooldown`` seconds" as the
+        intruder having left. If the camera only re-reports a stationary target every
+        ``targetAlarmInterval`` seconds and that is the longer of the two, then someone
+        standing still ends the alarm on a timer while they're still standing there — which
+        looks like the alarm cutting out for no reason.
+        """
+        if interval is None:
+            return
+        cooldown = self.config.alarm.event_clip_cooldown.value
+        if interval >= cooldown:
+            log.warning(
+                f"The camera re-reports a stationary target every {interval}s but the app "
+                f"treats {cooldown}s of quiet as the intruder having left, so a motionless "
+                f"intruder will end the alarm early. Raise Event Video Cooldown above "
+                f"{interval}s."
+            )
 
     async def disable_unused_rules(self):
         """Switch off the smart rules intrusion makes redundant.
@@ -440,7 +512,7 @@ class HikvisionAcuSenseCamera(CameraBase):
         stale = (
             self._deterrent_asserted_at is None
             or (now - self._deterrent_asserted_at).total_seconds()
-            >= DETERRENT_REASSERT_SECS
+            >= REASSERT_SECS
         )
         if not (changed or stale):
             return
@@ -639,9 +711,9 @@ class HikvisionAcuSenseCamera(CameraBase):
         await self.client.set_field_detection_regions(regions)
 
         # The region write rebuilds the rule body, which drops any rule-level field it
-        # doesn't know about — including the static-target re-alarm switch. Re-assert it,
-        # or editing a zone quietly turns the duplicate-snapshot behaviour back on.
-        await self.client.set_static_target_alarm(False)
+        # doesn't know about — including the static-target re-alarm switch. Re-assert it, or
+        # editing a zone quietly costs the night alarm its "intruder still present" signal.
+        await self.client.set_static_target_alarm(True)
 
     async def get_thumbnail(self) -> File:
         """Grab the camera's sub-stream picture rather than scaling one ourselves.

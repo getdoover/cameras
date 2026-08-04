@@ -72,7 +72,7 @@ AcuSense cameras classify targets **on-camera as human / vehicle / animal** via 
 detection over ISAPI — this is the driver for **person / intruder detection**. On setup the app
 **creates the intrusion rule** if the camera doesn't have one, with a default full-frame zone detecting
 **both human and vehicle** at the configured **Detection Sensitivity**, a 1-second dwell time, and
-re-alarm-on-a-static-target switched off. It then **disables `regionEntrance`, `regionExiting` and
+re-alarm-on-a-static-target **on** (see below — the night alarm depends on it). It then **disables `regionEntrance`, `regionExiting` and
 `LineDetection`** (their polygons are preserved) and ignores their events: intrusion already reports what
 they would, and every rule left on is a second event — and so a second snapshot, upload and inference
 run — for the same person walking through.
@@ -224,11 +224,25 @@ pinned to **1 second**, the firmware minimum, so a target that crosses quickly s
 the stock rule shipped `5`, which silently missed anyone faster than that.
 
 The catch intrusion brings is that it re-alarms while a target *stays* in the region, so a
-parked car would keep costing a snapshot, an upload and an inference run. The app switches
-that off at the camera (`contAlarmForStaticTargetEnabled`) — and because this firmware will
-answer OK to a field and then ignore it, **Minimum Seconds Between Snapshots** is the
-backstop that doesn't depend on the camera cooperating. Only the picture is throttled: the
-alarm, the notification and the `camera_event` always fire.
+parked car would otherwise keep costing a snapshot, an upload and an inference run. That is
+throttled **in the app** — **Minimum Seconds Between Snapshots** — and deliberately not at
+the camera:
+
+> **Do not switch `contAlarmForStaticTargetEnabled` off.** That repeat is the only signal
+> that an intruder is *still there* — there's no "target still present" event and nothing to
+> poll — so the night alarm's "keep going while they're in frame" behaviour is built on it,
+> as is the camera's own light/buzzer linkage (`whiteLightDurationTime=0` means "follow the
+> event", and with no re-alarms the event is a single instant). Turning it off to stop
+> duplicate daytime snapshots looks tempting and quietly caps every night alarm at one
+> cooldown. The app asserts it **on** at setup, and re-asserts it after every zone write —
+> writing regions rebuilds the rule body and drops it.
+
+Only the picture is throttled. The strobe, horn, siren, recording and `camera_event` fire on
+every detection. The **notification** is once per intruder event rather than once per
+re-alarm, since a target standing in the zone would otherwise generate a message every few
+seconds. If the camera's `targetAlarmInterval` is longer than **Event Video Cooldown**, a
+motionless intruder ends the alarm early — the app logs a warning naming both numbers at
+startup, because that combination looks like the alarm cutting out for no reason.
 
 > **Off by default is the existing behaviour.** With *Only Capture During Hours* off, a
 > classified person/vehicle event captures a still whatever the time, exactly as
@@ -250,14 +264,27 @@ site only keeps daytime images.
 > made daytime person/vehicle detection **completely blind** — measured on a real
 > camera, walking in front of it at 12:47 produced only an unclassified `VMD` event.
 >
-> So the schedule is now the **union** of the night window and this one. The cost is
+> So the schedule is the **union** of the night window and this one. The cost is
 > that the schedule no longer means "night", so the camera can't gate the flash/siren
-> for us: the app arms the deterrent at dusk and disarms it at dawn instead, and
-> re-asserts every 10 minutes in case something changes the linkage on the camera.
+> for us: the app arms the deterrent at dusk and disarms it at dawn instead.
 > **That loses the offline guarantee at the boundary** — if doover is down when dusk
 > passes, the deterrent stays disarmed until it comes back. Leave the motion-snapshot
 > window off if native, doover-independent night deterrence matters more than daytime
 > detection on that camera.
+
+**Both the schedule and the linkage are re-asserted every 10 minutes**, and immediately
+when something changes. They live on the camera, where a web-UI visit, a firmware quirk or
+a factory reset can silently change them, and drift is invisible in the worst direction —
+the camera stops reporting for part of the day and the app simply never hears anything. So:
+
+- **Coming back from being offline**, the app writes the schedule and applies the correct
+  armed state at startup, so a device that missed dusk and returns at midday arms nothing
+  and disarms the siren immediately — it doesn't wait for the next boundary.
+- **Editing the night or motion-snapshot hours** takes effect on the next main loop, with
+  no restart and no waiting out the 10 minutes.
+- The schedule is re-asserted **even with the intruder alarm off**. It isn't a deterrent
+  setting: on this firmware it decides when the camera detects *at all*, so a site that
+  only wants daytime snapshots depends on it just as much as one that wants a siren.
 
 **Object Detection** adds `"object_detection": true|false` to the snapshot message. The
 detection app treats that as authoritative in both directions, overriding its own

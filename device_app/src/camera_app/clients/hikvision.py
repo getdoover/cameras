@@ -691,18 +691,26 @@ class HikvisionClient:
             rf"<{tag}>.*?</{tag}>", f"<{tag}>{value}</{tag}>", body, count=count
         )
 
-    async def set_static_target_alarm(self, enabled: bool, channel: int = 1) -> bool:
+    async def set_static_target_alarm(self, enabled: bool, channel: int = 1) -> int:
         """Turn intrusion's re-alarm-on-a-static-target on or off.
 
-        This is what makes intrusion usable as the *only* rule, day and night. Left on
-        (the camera's default) the rule re-fires every ``targetAlarmInterval`` for as long
-        as a target stays in the region, so a car that parks in frame keeps costing a
-        snapshot, an upload and a cloud inference run. Off, it reports a target once.
+        **The app wants this on**, which is the camera's own default, and asserts it rather
+        than assuming it. With it on the rule re-fires every ``targetAlarmInterval`` for as
+        long as a target stays in the region; with it off the camera reports a target once.
 
-        Returns whether the camera had the setting to change. It is deliberately **not**
-        added when absent, and the caller shouldn't treat False as failure -- the app's own
-        snapshot cooldown is the backstop for exactly this, because these cameras will also
-        answer OK to a field and then quietly ignore it.
+        That repeat is the *only* signal that an intruder is still present -- there is no
+        "target still here" event and nothing to poll -- so the night alarm's whole
+        "keep the siren going while they're there" behaviour is built on it, as is the
+        camera's own light/buzzer linkage (``whiteLightDurationTime=0`` means "follow the
+        event", and without re-alarms the event is a single instant). Switching it off to
+        stop duplicate daytime snapshots looks tempting and silently breaks the night
+        alarm; the snapshot cooldown in the app is the right place for that, because it can
+        throttle the picture without throttling the alarm.
+
+        Returns the camera's re-alarm interval in seconds, or ``None`` when it can't be
+        read -- callers should treat None as "unknown", not as failure. The element is
+        deliberately **not** created when absent, since these cameras answer 400 on
+        unexpected content (and will also answer OK to a field and then ignore it).
         """
         endpoint = f"/ISAPI/Smart/FieldDetection/{channel}"
         tag = "contAlarmForStaticTargetEnabled"
@@ -710,23 +718,32 @@ class HikvisionClient:
             raw = (await self.get_bytes(endpoint)).decode(errors="ignore")
         except Exception as e:
             _LOGGER.info(f"Couldn't read intrusion config to set {tag}: {e}")
-            return False
+            return None
+
+        interval = None
+        match = re.search(r"<targetAlarmInterval>(\d+)</targetAlarmInterval>", raw)
+        if match:
+            interval = int(match.group(1))
 
         if f"<{tag}>" not in raw:
-            _LOGGER.info(
-                f"Camera has no {tag}; leaving re-alarm behaviour as-is and relying on "
-                f"the app's snapshot cooldown."
+            _LOGGER.warning(
+                f"Camera has no {tag}. If it does not re-alarm while a target stays in the "
+                f"zone, the app cannot tell an intruder is still present and the night "
+                f"alarm will stop one cooldown after the first detection."
             )
-            return False
+            return interval
 
         body = self._rewrite_element(raw, tag, "true" if enabled else "false")
         try:
             await self.put(endpoint, body=body)
         except Exception as e:
             _LOGGER.warning(f"Failed to set {tag}: {e}")
-            return False
-        _LOGGER.info(f"Intrusion re-alarm on static targets {'on' if enabled else 'off'}.")
-        return True
+            return interval
+        _LOGGER.info(
+            f"Intrusion re-alarm on a static target {'on' if enabled else 'OFF'} "
+            f"(interval={interval if interval is not None else 'unknown'}s)."
+        )
+        return interval
 
     async def get_field_detection_regions(self, channel: int = 1) -> list:
         """

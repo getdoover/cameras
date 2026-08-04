@@ -232,9 +232,9 @@ def test_set_zones_blanks_unused_slots():
     assert regions[0]["targets"] == ["human"]
     assert all(r["points"] == [] for r in regions[1:])
     # Writing regions rebuilds the rule body and drops rule-level fields with it, so the
-    # static-target re-alarm switch has to be re-asserted or editing a zone quietly turns
-    # duplicate snapshots back on.
-    assert written["static_alarm"] is False
+    # static-target re-alarm switch has to be re-asserted -- or editing a zone quietly costs
+    # the night alarm the only signal it has that an intruder is still present.
+    assert written["static_alarm"] is True
 
 
 def test_zone_capabilities_advertised():
@@ -701,23 +701,24 @@ def test_rewrite_element_leaves_absent_tags_alone():
     assert rewrite(four, "timeThreshold", "1").count("<timeThreshold>1<") == 4
 
 
-def test_night_deterrent_arming_ownership():
-    """Who gates the siren: the camera only when the schedule means night and nothing else."""
+def test_arming_schedule_assert_and_ownership():
+    """The schedule gates whether the camera detects at all, so it's kept written."""
     import asyncio
     import types
+    from datetime import timedelta
 
-    from camera_app.engines.hikvision_acusense import HikvisionAcuSenseCamera
+    from camera_app.engines.hikvision_acusense import REASSERT_SECS, HikvisionAcuSenseCamera
 
-    def make_cam(day_window, schedule_accepted=True):
-        written = {}
+    def make_cam(day_window, accepted=True):
+        written = {"schedules": [], "linkage": []}
         v = lambda x: types.SimpleNamespace(value=x)
 
         async def set_schedule(windows, event="fielddetection", index=1, channel=1):
-            written["windows"] = windows
-            return schedule_accepted
+            written["schedules"].append(windows)
+            return accepted
 
         async def set_linkage(armed, methods=None, **kwargs):
-            written.setdefault("linkage", []).append(armed)
+            written["linkage"].append(armed)
 
         async def set_light(mode, channel=1):
             written["light"] = mode
@@ -742,36 +743,101 @@ def test_night_deterrent_arming_ownership():
         cam._deterrent_armed = None
         cam._deterrent_asserted_at = None
         cam.native_schedule_active = False
+        cam._schedule_windows = None
+        cam._schedule_asserted_at = None
         return cam, written
 
-    # Intrusion now covers the day too, so the schedule must include the day window -
-    # outside the schedule this firmware emits no event at all and the app hears nothing.
+    # Intrusion covers the day too, so the schedule must include the day window - outside
+    # it this firmware emits no event at all and the app hears nothing.
     cam, written = make_cam((6, 18))
-    asyncio.run(cam.setup_night_deterrent())
-    assert written["windows"] == [(18, 6), (6, 18)]
+    asyncio.run(cam.assert_arming_schedule())
+    assert written["schedules"] == [[(18, 6), (6, 18)]]
     # ...and because the schedule no longer means "night", the camera must NOT be trusted
-    # to gate the deterrent: a permanently-armed linkage would sound the siren at a
-    # delivery driver at midday.
+    # to gate the deterrent: a permanently-armed linkage would siren at a delivery driver
+    # at midday. The app arms it instead - disarmed here, since it's daytime.
     assert cam.native_schedule_active is False
-    assert written["linkage"] == [False]  # disarmed now, it's daytime
+    asyncio.run(cam.setup_night_deterrent())
+    assert written["linkage"] == [False]
 
-    # An unrestricted window is still a day window: (0, 24) is not falsy-equivalent here.
+    # Re-asserting inside the window is a no-op: nothing changed, nothing stale.
+    asyncio.run(cam.assert_arming_schedule())
+    assert len(written["schedules"]) == 1
+
+    # A config edit (night hours changed) is picked up on the next loop - no restart, and
+    # no waiting out the re-assert interval.
+    cam.config.alarm.night_start_hour.value = 20
+    asyncio.run(cam.assert_arming_schedule())
+    assert written["schedules"][-1] == [(20, 6), (6, 18)]
+
+    # Otherwise it's rewritten every REASSERT_SECS, because the schedule lives on the
+    # camera and a web-UI visit or factory reset can change it silently.
+    cam._schedule_asserted_at -= timedelta(seconds=REASSERT_SECS)
+    asyncio.run(cam.assert_arming_schedule())
+    assert len(written["schedules"]) == 3
+
+    # An unrestricted window is still a day window: (0, 24) must not read as "no window".
     cam, written = make_cam((0, 24))
-    asyncio.run(cam.setup_night_deterrent())
+    asyncio.run(cam.assert_arming_schedule())
     assert cam.native_schedule_active is False
 
-    # No day window at all (motion snapshots off): the schedule means night, so the
-    # camera can gate it and the deterrent survives doover being offline across dusk.
+    # No day window at all (motion snapshots off): the schedule means night, so the camera
+    # gates it and the deterrent survives doover being offline across dusk.
     cam, written = make_cam(None)
-    asyncio.run(cam.setup_night_deterrent())
-    assert written["windows"] == [(18, 6)]
+    asyncio.run(cam.assert_arming_schedule())
+    assert written["schedules"] == [[(18, 6)]]
     assert cam.native_schedule_active is True
+    asyncio.run(cam.setup_night_deterrent())
     assert written["linkage"] == [True]  # permanently armed; the schedule gates it
 
-    # Firmware that rejects the schedule always falls back to app-driven arming.
-    cam, written = make_cam(None, schedule_accepted=False)
-    asyncio.run(cam.setup_night_deterrent())
+    # Firmware that rejects the schedule always falls back to app-driven arming, and is
+    # retried next loop rather than remembered as written.
+    cam, written = make_cam(None, accepted=False)
+    asyncio.run(cam.assert_arming_schedule())
     assert cam.native_schedule_active is False
+    assert cam._schedule_windows is None
+    asyncio.run(cam.assert_arming_schedule())
+    assert len(written["schedules"]) == 2
+
+
+def test_arming_schedule_reasserted_without_an_alarm():
+    """The schedule decides when the camera detects, so it isn't an alarm setting."""
+    import asyncio
+    import types
+
+    from camera_app.application import CameraApplication
+    from camera_app.engines.hikvision_acusense import HikvisionAcuSenseCamera
+
+    calls = []
+
+    engine = HikvisionAcuSenseCamera.__new__(HikvisionAcuSenseCamera)
+
+    async def assert_schedule(force=False):
+        calls.append("schedule")
+
+    async def arm(armed):
+        calls.append(("arm", armed))
+
+    engine.assert_arming_schedule = assert_schedule
+    engine.arm_night_deterrent = arm
+
+    app = CameraApplication.__new__(CameraApplication)
+    app.engine = engine
+    app.config = types.SimpleNamespace(
+        alarm=types.SimpleNamespace(
+            intruder_alarm_enabled=types.SimpleNamespace(value=False)
+        ),
+        is_night=lambda: True,
+    )
+
+    asyncio.run(app.update_alarm_schedule())
+    # No alarm to arm, but the schedule still has to be kept written - otherwise a
+    # daytime-snapshots-only site can silently stop detecting for part of the day.
+    assert calls == ["schedule"]
+
+    calls.clear()
+    app.config.alarm.intruder_alarm_enabled.value = True
+    asyncio.run(app.update_alarm_schedule())
+    assert calls == ["schedule", ("arm", True)]
 
 
 def test_claim_motion_snapshot_cooldown():
@@ -799,3 +865,48 @@ def test_claim_motion_snapshot_cooldown():
     app = make_app(0)
     assert all(app.claim_motion_snapshot() for _ in range(5))
     assert app._last_motion_snapshot_at is None
+
+
+def test_alarm_pulse_does_not_block_the_event_stream():
+    """The relay pulse must not be awaited inline: it's how we go deaf mid-intrusion."""
+    import asyncio
+    import types
+
+    from camera_app.application import CameraApplication
+
+    async def scenario():
+        pulses = []
+
+        async def fire_alarm():
+            pulses.append("start")
+            await asyncio.sleep(0.05)  # stands in for pulse_secs (10s in the field)
+            pulses.append("end")
+
+        app = CameraApplication.__new__(CameraApplication)
+        app.engine = types.SimpleNamespace(fire_alarm=fire_alarm)
+        app._alarm_pulse_task = None
+
+        app.start_alarm_pulse()
+        # Returns immediately - the alertStream reader awaiting this callback has to stay
+        # free to hear the re-alarms proving the intruder is still there.
+        assert pulses == ["start"] or pulses == []
+
+        # A re-alarm while the relay is still held does NOT start a second pulse: the
+        # second one's release would cut the first short.
+        app.start_alarm_pulse()
+        app.start_alarm_pulse()
+        await app._alarm_pulse_task
+        assert pulses == ["start", "end"]
+
+        # Once it's finished, the next event pulses again.
+        app.start_alarm_pulse()
+        await app._alarm_pulse_task
+        assert pulses.count("start") == 2
+
+        # An engine with no relay (generic cameras) is a no-op, not an AttributeError.
+        app.engine = types.SimpleNamespace()
+        app._alarm_pulse_task = None
+        app.start_alarm_pulse()
+        assert app._alarm_pulse_task is None
+
+    asyncio.run(scenario())

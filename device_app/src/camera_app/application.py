@@ -119,6 +119,9 @@ class CameraApplication(Application):
         # long as an intruder is present. Re-triggers extend it rather than restart it.
         self._external_alarm_task = None
 
+        # In-flight pulse of the camera's own alarm relay (see start_alarm_pulse).
+        self._alarm_pulse_task = None
+
         # the below is probably a "fix in doover 2.0" problem to have some better / more native
         # camera feels
         # self.ui_manager._transform_interaction_name = self._transform_interaction_name
@@ -206,6 +209,8 @@ class CameraApplication(Application):
             self._intruder_clip_task.cancel()
         if self._external_alarm_task:
             self._external_alarm_task.cancel()
+        if self._alarm_pulse_task:
+            self._alarm_pulse_task.cancel()
         if self.engine:
             await self.engine.close()
 
@@ -254,13 +259,24 @@ class CameraApplication(Application):
             await self.lock_snapshot_and_run()
 
     async def update_alarm_schedule(self):
-        """Arm/disarm the camera's native night alarm based on the time window.
+        """Keep the camera's arming schedule and night alarm in step with the config.
 
-        Only a fallback for AcuSense: when the camera accepted a native arming
-        schedule at setup, it gates the linkage itself and arm_night_deterrent
-        no-ops. The relay pulse happens per-event (see on_motion_event_callback).
-        Both arm calls are idempotent, so running every loop is cheap.
+        Two separate things, on the same 10-minute correction cadence, both idempotent so
+        running every loop is cheap:
+
+        * **The arming schedule** — which hours the camera detects *at all* on this
+          firmware, so it is re-asserted whether or not there's an alarm, and rewritten
+          immediately if the night or motion-snapshot window was edited. This is also what
+          fixes itself when the device comes back from being offline: setup writes it, and
+          the loop keeps it written.
+        * **The deterrent linkage** — armed at dusk and disarmed at dawn, but only when the
+          app owns it; when the camera's schedule means night and nothing else it gates the
+          linkage itself and ``arm_night_deterrent`` no-ops. The relay pulse is per-event
+          (see on_motion_event_callback).
         """
+        if isinstance(self.engine, HikvisionAcuSenseCamera):
+            await self.engine.assert_arming_schedule()
+
         if not self.config.alarm.intruder_alarm_enabled.value:
             return
         night = self.config.is_night()
@@ -622,6 +638,24 @@ class CameraApplication(Application):
             topic="anpr_event",
         )
 
+    def start_alarm_pulse(self):
+        """Pulse the camera's alarm relay, without going deaf while it holds.
+
+        ``fire_alarm`` holds the relay high for ``pulse_secs`` (10s by default) and this
+        callback is being awaited by the engine's alertStream reader — so awaiting it inline
+        stops the app hearing anything for those 10 seconds, including the re-alarms that are
+        its only evidence the intruder is still there. Long enough, and the event looks over
+        while it's still happening.
+
+        A pulse already in flight is left to finish rather than restarted: the relay is one
+        piece of hardware, and a second pulse's release would cut the first one short.
+        """
+        if not hasattr(self.engine, "fire_alarm"):
+            return
+        if self._alarm_pulse_task and not self._alarm_pulse_task.done():
+            return
+        self._alarm_pulse_task = asyncio.create_task(self.engine.fire_alarm())
+
     def start_external_alarm(self):
         """Start the external strobe/horn for this event, unless already running.
 
@@ -815,6 +849,15 @@ class CameraApplication(Application):
                 "intruder", target=event.type.value, label=label
             )
 
+            # Whether this is a fresh intruder, or the camera re-reporting one it already
+            # told us about. Worked out *before* the timestamp moves, and used only to keep
+            # the notification to one per event: the camera re-alarms every few seconds
+            # while a target stays in the zone, so notifying per event would be a message
+            # every few seconds for one intruder. The alarm itself is never throttled.
+            new_intruder = self._last_intruder_event_at is None or (
+                datetime.now(tz=timezone.utc) - self._last_intruder_event_at
+            ).total_seconds() > self.config.alarm.event_clip_cooldown.value
+
             # Mark the intruder as present now — both the event-video recorder and the
             # external strobe/horn track this timestamp (+ cooldown, via
             # watch_for_event_end) to tell when the intruder has gone. A re-fire just
@@ -833,14 +876,14 @@ class CameraApplication(Application):
                 await self.lock_snapshot_and_run(REASON_INTRUDER, event.boxes)
 
             # The camera's own deterrent (flash / siren) is already armed natively.
-            if hasattr(self.engine, "fire_alarm"):
-                await self.engine.fire_alarm()
+            self.start_alarm_pulse()
 
-            await self.send_notification(
-                f"{self.app_display_name} detected {label} (possible intruder).",
-                severity=NotificationSeverity.Warn,
-                topic="motion_event_intruder",
-            )
+            if new_intruder:
+                await self.send_notification(
+                    f"{self.app_display_name} detected {label} (possible intruder).",
+                    severity=NotificationSeverity.Warn,
+                    topic="motion_event_intruder",
+                )
             return
 
         # Outside the night window (or alarm disabled), raw unclassified motion
