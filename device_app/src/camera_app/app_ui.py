@@ -1,9 +1,11 @@
 from pydoover import ui
 
 from .app_config import CameraConfig, CameraType
-from .app_tags import CameraTags
 from .events import SET_ZONES_CMD
 
+
+class ObjectDetections(ui.Container):
+    type = "uiCameraDetections"
 
 class CameraUI(ui.UI):
     config: CameraConfig
@@ -67,21 +69,6 @@ class CameraUI(ui.UI):
         else:
             live_views = [self.live_view]
 
-        # Deliberately empty, and deliberately still here: it holds the third tab's place
-        # so the tab layout doesn't shift.
-        #
-        # It used to carry "Alert me for Vehicle/Human Motion" switches that gated the
-        # notifications. Detections now always notify, so the switches are gone — and they
-        # were worse than redundant: they were created with no value, and each was `hidden`
-        # unless its target was in the Object Detection config, so reading one raised
-        # `KeyError: alert_me_on_human_motion` out of the middle of the motion callback and
-        # took the rest of the handler with it.
-        container = ui.Container(
-            children=[],
-            name="detection",
-            display_name="Object Detection",
-        )
-
         # Carries JSON rather than a simple value, so it's a plain interaction the
         # zone editor drives. It has to be in the tree for the UI command manager to
         # resolve the handler (it looks the interaction up by name to build the
@@ -95,7 +82,7 @@ class CameraUI(ui.UI):
         )
 
         self.tab_container = ui.TabContainer(
-            children=[self.history, *live_views, container],
+            children=[self.history, *live_views, ObjectDetections("Object Detections")],
             name="tabs",
             display_name="Tabs",
         )
