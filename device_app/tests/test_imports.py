@@ -205,7 +205,14 @@ def test_set_zones_blanks_unused_slots():
     async def fake_write(regions, channel=1):
         written["regions"] = regions
 
-    cam.client = types.SimpleNamespace(set_field_detection_regions=fake_write)
+    async def fake_static_alarm(enabled, channel=1):
+        written["static_alarm"] = enabled
+        return True
+
+    cam.client = types.SimpleNamespace(
+        set_field_detection_regions=fake_write,
+        set_static_target_alarm=fake_static_alarm,
+    )
 
     zone = DetectionZone(
         id=1,
@@ -224,6 +231,10 @@ def test_set_zones_blanks_unused_slots():
     assert regions[0]["sensitivity"] == 70
     assert regions[0]["targets"] == ["human"]
     assert all(r["points"] == [] for r in regions[1:])
+    # Writing regions rebuilds the rule body and drops rule-level fields with it, so the
+    # static-target re-alarm switch has to be re-asserted or editing a zone quietly turns
+    # duplicate snapshots back on.
+    assert written["static_alarm"] is False
 
 
 def test_zone_capabilities_advertised():
@@ -509,3 +520,282 @@ def test_is_night():
 # def test_state():
 #     from app_template.app_state import SampleState
 #     assert SampleState
+
+def test_target_regions_from_alert():
+    """Bounding boxes: every target in an alert, in the app's own coordinate space."""
+    import xml.etree.ElementTree as ET
+
+    from camera_app.clients.hikvision import HikvisionClient, _xml_to_dict
+
+    def alert(entries):
+        return ET.fromstring(
+            '<EventNotificationAlert xmlns="http://www.hikvision.com/ver20/XMLSchema">'
+            "<eventType>regionEntrance</eventType><DetectionRegionList>"
+            f"{entries}</DetectionRegionList></EventNotificationAlert>"
+        )
+
+    def entry(target, x, y, w, h, tag="TargetRect"):
+        return (
+            f"<DetectionRegionEntry><detectionTarget>{target}</detectionTarget>"
+            f"<{tag}><X>{x}</X><Y>{y}</Y><width>{w}</width><height>{h}</height></{tag}>"
+            f"</DetectionRegionEntry>"
+        )
+
+    # Fractional units (0..1) pass through; x/y/w/h becomes x1/y1/x2/y2.
+    root = alert(entry("human", 0.1, 0.2, 0.3, 0.4))
+    assert HikvisionClient._target_regions(root) == [
+        {"box": [0.1, 0.2, 0.4, 0.6], "target": "human"}
+    ]
+
+    # Normalized 0..1000 units (the space the zone endpoints use) are scaled down, so
+    # both firmware conventions land in the same 0..1 space.
+    root = alert(entry("vehicle", 500, 250, 100, 200))
+    assert HikvisionClient._target_regions(root) == [
+        {"box": [0.5, 0.25, 0.6, 0.45], "target": "vehicle"}
+    ]
+
+    # TWO targets in one alert must both survive. The flattened event dict cannot do
+    # this - repeated siblings collapse onto one key - which is why boxes are read off
+    # the tree instead.
+    root = alert(entry("human", 0.1, 0.1, 0.1, 0.1) + entry("human", 0.5, 0.5, 0.2, 0.2))
+    assert len(HikvisionClient._target_regions(root)) == 2
+    flat = _xml_to_dict(root)
+    assert flat["DetectionRegionList.DetectionRegionEntry.TargetRect.X"] == "0.5"
+
+    # A rect the camera didn't classify (e.g. an ANPR plate) still yields a box.
+    root = ET.fromstring(
+        "<EventNotificationAlert><ANPR><boundingBox><X>0.2</X><Y>0.2</Y>"
+        "<width>0.1</width><height>0.05</height></boundingBox></ANPR>"
+        "</EventNotificationAlert>"
+    )
+    assert HikvisionClient._target_regions(root) == [{"box": [0.2, 0.2, 0.3, 0.25]}]
+
+    # An alert with no rect at all - most of them - carries no boxes, and doesn't fail.
+    assert HikvisionClient._target_regions(ET.fromstring("<EventNotificationAlert/>")) == []
+    # Nor does a malformed one (empty or non-numeric coordinates).
+    root = alert(entry("human", "", 0.2, 0.3, 0.4))
+    assert HikvisionClient._target_regions(root) == []
+    # ...or one missing a dimension entirely.
+    root = alert("<DetectionRegionEntry><TargetRect><X>0.1</X></TargetRect></DetectionRegionEntry>")
+    assert HikvisionClient._target_regions(root) == []
+
+    # Out-of-frame coordinates are clamped rather than published as-is.
+    root = alert(entry("human", 0.9, 0.9, 0.5, 0.5))
+    assert HikvisionClient._target_regions(root)[0]["box"] == [0.9, 0.9, 1.0, 1.0]
+
+
+def test_target_box_payload():
+    from camera_app.events import (
+        TARGET_REGIONS_KEY,
+        MotionDetectEvent,
+        MotionDetectEventType,
+        TargetBox,
+    )
+
+    alert = {
+        TARGET_REGIONS_KEY: [
+            {"box": [0.1, 0.2, 0.4, 0.6], "target": "human"},
+            {"box": [0.5, 0.5, 0.6, 0.6]},
+        ]
+    }
+
+    # The camera's vocabulary is normalised on the way in: it says human, we say person.
+    boxes = MotionDetectEvent(MotionDetectEventType.person, alert).boxes
+    assert [b.to_dict() for b in boxes] == [
+        {"box": [0.1, 0.2, 0.4, 0.6], "target": "person"},
+        {"box": [0.5, 0.5, 0.6, 0.6]},  # unclassified: no target key at all
+    ]
+
+    # An unclassified rect can be labelled by the event it arrived on (ANPR -> plate),
+    # and a classified one is never overridden by that default.
+    labelled = TargetBox.list_from_alert(alert, default_target="plate")
+    assert [b.target for b in labelled] == ["person", "plate"]
+
+    # An event with no boxes yields none, and doesn't blow up on a missing/None alert.
+    assert TargetBox.list_from_alert({}) == []
+    assert TargetBox.list_from_alert(None) == []
+
+
+def test_upload_media_publishes_detections():
+    import asyncio
+    import types
+
+    from camera_app.application import CameraApplication
+    from camera_app.engines.base import Capture
+    from camera_app.events import TargetBox
+
+    published = []
+
+    def make_app():
+        app = CameraApplication.__new__(CameraApplication)
+        app.app_key = "doover_camera_1"
+        app.engine = types.SimpleNamespace(detect_night=_none)
+        app.config = types.SimpleNamespace(motion_snapshot_object_detection=True)
+        app.device_agent = types.SimpleNamespace(create_message=_capture)
+        return app
+
+    async def _none():
+        return None
+
+    async def _capture(app_key, payload, files):
+        published.append(payload)
+
+    media = types.SimpleNamespace(filename="snapshot.jpg")
+    capture = Capture("snapshot", media)
+
+    boxes = [TargetBox([0.1, 0.2, 0.4, 0.6], "person")]
+    asyncio.run(make_app().upload_media([capture], "person", boxes))
+    assert published[-1]["detections"] == [
+        {"box": [0.1, 0.2, 0.4, 0.6], "target": "person"}
+    ]
+
+    # Absent, not empty, when the camera reported nothing - so a consumer can tell
+    # "no boxes this time" from "this camera doesn't do boxes".
+    asyncio.run(make_app().upload_media([capture], "person", []))
+    assert "detections" not in published[-1]
+    asyncio.run(make_app().upload_media([capture], "schedule"))
+    assert "detections" not in published[-1]
+
+
+def test_intrusion_is_the_only_rule():
+    """One rule, day and night: entrance/exit/line are off, and their events ignored."""
+    from camera_app.clients.hikvision import INTRUSION_DWELL_SECS, HikvisionClient
+    from camera_app.engines.hikvision_acusense import (
+        SMART_EVENT_TYPES,
+        UNUSED_SMART_RULES,
+    )
+
+    assert SMART_EVENT_TYPES == {"fielddetection"}
+    # Accepting an event type we never enable is a latent duplicate per target.
+    assert "regionEntrance" not in SMART_EVENT_TYPES
+    assert "regionEntrance" in UNUSED_SMART_RULES
+
+    # Dwell time is the "regardless of how fast they run in" knob. The stock rule shipped
+    # 5s, which silently misses anyone crossing the region quicker than that.
+    assert INTRUSION_DWELL_SECS == 1
+    client = HikvisionClient.__new__(HikvisionClient)
+    body = client._default_field_detection_body(True, ["human"], 50, 1)
+    assert "<timeThreshold>1</timeThreshold>" in body
+    # ...and the same value on the path that writes user-drawn zones, so editing a zone
+    # can't quietly change how fast a target has to move to be missed.
+    region = {"id": 1, "points": [(10, 10)], "targets": ["human"], "sensitivity": 50}
+    assert "<timeThreshold>1</timeThreshold>" in client._field_detection_region(region)
+
+
+def test_rewrite_element_leaves_absent_tags_alone():
+    from camera_app.clients.hikvision import HikvisionClient
+
+    rewrite = HikvisionClient._rewrite_element
+    body = "<FieldDetection><contAlarmForStaticTargetEnabled>true</contAlarmForStaticTargetEnabled></FieldDetection>"
+    assert "<contAlarmForStaticTargetEnabled>false</" in rewrite(
+        body, "contAlarmForStaticTargetEnabled", "false"
+    )
+    # A tag the firmware doesn't have is NOT invented - these cameras 400 on unexpected
+    # content, which would lose the whole write.
+    assert rewrite("<FieldDetection/>", "contAlarmForStaticTargetEnabled", "false") == (
+        "<FieldDetection/>"
+    )
+    # Every occurrence is rewritten: one <timeThreshold> per region slot, and they must
+    # agree or detection differs by corner of the frame for no visible reason.
+    four = "".join("<timeThreshold>5</timeThreshold>" for _ in range(4))
+    assert rewrite(four, "timeThreshold", "1").count("<timeThreshold>1<") == 4
+
+
+def test_night_deterrent_arming_ownership():
+    """Who gates the siren: the camera only when the schedule means night and nothing else."""
+    import asyncio
+    import types
+
+    from camera_app.engines.hikvision_acusense import HikvisionAcuSenseCamera
+
+    def make_cam(day_window, schedule_accepted=True):
+        written = {}
+        v = lambda x: types.SimpleNamespace(value=x)
+
+        async def set_schedule(windows, event="fielddetection", index=1, channel=1):
+            written["windows"] = windows
+            return schedule_accepted
+
+        async def set_linkage(armed, methods=None, **kwargs):
+            written.setdefault("linkage", []).append(armed)
+
+        async def set_light(mode, channel=1):
+            written["light"] = mode
+
+        cam = HikvisionAcuSenseCamera.__new__(HikvisionAcuSenseCamera)
+        cam.client = types.SimpleNamespace(
+            set_event_arming_schedule=set_schedule,
+            set_smart_alarm_linkage=set_linkage,
+            set_supplement_light_mode=set_light,
+        )
+        cam.config = types.SimpleNamespace(
+            alarm=types.SimpleNamespace(
+                white_light_deterrent=v(True),
+                audio_alarm=v(True),
+                night_start_hour=v(18),
+                night_end_hour=v(6),
+            ),
+            motion_snapshot_window=day_window,
+            is_night=lambda: False,
+        )
+        cam.event_clip_mode = None
+        cam._deterrent_armed = None
+        cam._deterrent_asserted_at = None
+        cam.native_schedule_active = False
+        return cam, written
+
+    # Intrusion now covers the day too, so the schedule must include the day window -
+    # outside the schedule this firmware emits no event at all and the app hears nothing.
+    cam, written = make_cam((6, 18))
+    asyncio.run(cam.setup_night_deterrent())
+    assert written["windows"] == [(18, 6), (6, 18)]
+    # ...and because the schedule no longer means "night", the camera must NOT be trusted
+    # to gate the deterrent: a permanently-armed linkage would sound the siren at a
+    # delivery driver at midday.
+    assert cam.native_schedule_active is False
+    assert written["linkage"] == [False]  # disarmed now, it's daytime
+
+    # An unrestricted window is still a day window: (0, 24) is not falsy-equivalent here.
+    cam, written = make_cam((0, 24))
+    asyncio.run(cam.setup_night_deterrent())
+    assert cam.native_schedule_active is False
+
+    # No day window at all (motion snapshots off): the schedule means night, so the
+    # camera can gate it and the deterrent survives doover being offline across dusk.
+    cam, written = make_cam(None)
+    asyncio.run(cam.setup_night_deterrent())
+    assert written["windows"] == [(18, 6)]
+    assert cam.native_schedule_active is True
+    assert written["linkage"] == [True]  # permanently armed; the schedule gates it
+
+    # Firmware that rejects the schedule always falls back to app-driven arming.
+    cam, written = make_cam(None, schedule_accepted=False)
+    asyncio.run(cam.setup_night_deterrent())
+    assert cam.native_schedule_active is False
+
+
+def test_claim_motion_snapshot_cooldown():
+    """The picture is throttled; the alarm never is."""
+    import types
+    from datetime import timedelta
+
+    from camera_app.application import CameraApplication
+
+    def make_app(interval):
+        app = CameraApplication.__new__(CameraApplication)
+        app.config = types.SimpleNamespace(motion_snapshot_min_interval=interval)
+        app._last_motion_snapshot_at = None
+        return app
+
+    app = make_app(15)
+    assert app.claim_motion_snapshot() is True
+    # The camera re-reporting the same parked car must not cost another snapshot,
+    # upload and cloud inference run.
+    assert app.claim_motion_snapshot() is False
+    app._last_motion_snapshot_at -= timedelta(seconds=15)
+    assert app.claim_motion_snapshot() is True
+
+    # 0 means "capture on every event" - no floor, and no state kept.
+    app = make_app(0)
+    assert all(app.claim_motion_snapshot() for _ in range(5))
+    assert app._last_motion_snapshot_at is None

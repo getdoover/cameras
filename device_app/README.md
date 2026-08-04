@@ -71,8 +71,13 @@ night-time intruder alarm, falls back to basic motion detection (which coexists 
 AcuSense cameras classify targets **on-camera as human / vehicle / animal** via intrusion (field)
 detection over ISAPI — this is the driver for **person / intruder detection**. On setup the app
 **creates the intrusion rule** if the camera doesn't have one, with a default full-frame zone detecting
-**both human and vehicle** at the configured **Detection Sensitivity**. Events carry the classification
-per-event and map onto the `person` / `vehicle` callbacks. (The **Object Detection** setting shapes which
+**both human and vehicle** at the configured **Detection Sensitivity**, a 1-second dwell time, and
+re-alarm-on-a-static-target switched off. It then **disables `regionEntrance`, `regionExiting` and
+`LineDetection`** (their polygons are preserved) and ignores their events: intrusion already reports what
+they would, and every rule left on is a second event — and so a second snapshot, upload and inference
+run — for the same person walking through.
+
+Events carry the classification per-event and map onto the `person` / `vehicle` callbacks. (The **Object Detection** setting shapes which
 events raise notifications downstream; it no longer limits what the camera looks for.)
 
 The night intruder alarm uses the camera's built-in **active response** — on `/SRB` models the flash light
@@ -143,6 +148,7 @@ camera a visible and a thermal view. So `media` is always a list, even when ther
 | `media[].thumbnail` | Filename of its preview. Absent if one couldn't be made, or wouldn't represent the view (the thermal channel gets none — a visible-stream preview would show a different image) |
 | `reason` | Why it was captured: `schedule`, `manual`, `intruder`, `person`, `vehicle`, `anpr` — matches the `camera_event` `kind` |
 | `night` | `true`/`false` — **only present when the camera states it outright** (see below) |
+| `detections` | Where the camera localised the targets that triggered the capture. **Only present when the event carried boxes** (see below) |
 
 Thumbnails sit beside their media (`Preset1.jpg` / `Preset1-thumbnail.jpg`) and are captured **at the same
 moment as the media** — on a PTZ camera that has to happen while it's still pointed at the preset.
@@ -162,6 +168,34 @@ non-Hikvision cameras aren't asked). When it's absent, work it out from the thum
 > (avg luma 136) than a full-colour test pattern (125). What gives it away is that it carries no colour:
 > average saturation sits at ~0. Key off **saturation**, not brightness.
 
+**`detections`** is what the camera itself localised. AcuSense and DeepinView put a `<TargetRect>` beside
+the `<detectionTarget>` in their smart events, so a person/vehicle/intruder snapshot can say *where* in
+the frame the target was; an ANPR event's plate rect comes through the same way, labelled `plate`:
+
+```json
+{"reason": "person", "object_detection": true,
+ "detections": [{"target": "person", "box": [0.31, 0.42, 0.49, 0.78]},
+                {"target": "vehicle", "box": [0.05, 0.50, 0.28, 0.71]}],
+ "media": [{"name": "snapshot", "file": "snapshot.jpg", "thumbnail": "snapshot-thumbnail.jpg"}]}
+```
+
+| | |
+|---|---|
+| `box` | `[x1, y1, x2, y2]` as **fractions of the frame, origin top-left**. Same ordering as the Object Detection app's own `findings` boxes, but normalised rather than pixels, so it stays valid whatever resolution the snapshot came back at — and the same space as detection-zone points |
+| `target` | `person`, `vehicle`, `animal`, `other` or `plate`. **Omitted** when the camera reported a box without classifying it. Vendor tokens are normalised (Hikvision's `human` → `person`); an unknown token from newer firmware is passed through rather than dropped |
+
+It's **advisory**: the whole key is absent when the event carried no boxes, so a consumer can tell "no
+boxes this time" from "this camera doesn't report boxes", and analysis is free to ignore it and run over
+the full frame. What it's *for* is cropping a plate read to the region the camera already found, and
+having something concrete to deduplicate consecutive events on.
+
+> Two caveats, both because this is read from real alerts rather than a spec that pins it down. Units
+> differ by firmware — some report fractions of the frame, others the normalized `0–1000` screen the zone
+> endpoints use — so anything over `1` is scaled down, which lands both in the same space. And the **y
+> axis is passed through as the camera sends it**: Hikvision *zone* coordinates are y-up (the engine flips
+> them) but the alert rect is documented top-left, and that hasn't been confirmed against a capture. If
+> boxes come back vertically mirrored, the flip is a one-line change in `_parse_rect`.
+
 <br/>
 
 ### Motion snapshots (daytime pictures, no alarm)
@@ -171,15 +205,30 @@ event video. During the day none of that is wanted, but the picture often still 
 it's what the **Object Detection** app analyses for hard-hat / high-vis compliance and
 number plates.
 
-This section governs those pictures. A classified person/vehicle event has always
-captured a still; these settings let you confine that to an hour window and mark the
+This section governs those pictures. A classified person/vehicle event captures a still;
+these settings let you confine that to an hour window, rate-limit it, and mark the
 results for analysis.
 
 | Setting | Description | Default |
 |---------|-------------|---------|
 | **Only Capture During Hours** | Confine motion snapshots to the window below | `false` |
 | **Start Hour / End Hour** | Hour window (0–23, site-local) snapshots are captured in | `6` / `18` |
+| **Minimum Seconds Between Snapshots** | Shortest gap between two motion snapshots. `0` captures on every event | `15` |
 | **Object Detection** | Offer these snapshots to the Object Detection app | `false` |
+
+**The same rule (intrusion) drives day and night**, so the zone you draw is the zone that
+detects, at any hour. Intrusion triggers on a target being *in* the region, which is what
+catches someone already in frame, someone appearing inside it, and someone crossing only
+the outer margin — none of which a boundary-crossing rule can see. Its dwell time is
+pinned to **1 second**, the firmware minimum, so a target that crosses quickly still fires;
+the stock rule shipped `5`, which silently missed anyone faster than that.
+
+The catch intrusion brings is that it re-alarms while a target *stays* in the region, so a
+parked car would keep costing a snapshot, an upload and an inference run. The app switches
+that off at the camera (`contAlarmForStaticTargetEnabled`) — and because this firmware will
+answer OK to a field and then ignore it, **Minimum Seconds Between Snapshots** is the
+backstop that doesn't depend on the camera cooperating. Only the picture is throttled: the
+alarm, the notification and the `camera_event` always fire.
 
 > **Off by default is the existing behaviour.** With *Only Capture During Hours* off, a
 > classified person/vehicle event captures a still whatever the time, exactly as

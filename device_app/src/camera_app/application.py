@@ -28,6 +28,7 @@ from .events import (
     MotionDetectEventType,
     PPEEvent,
     SDPOfferPayload,
+    TargetBox,
     CAMERA_CONTROL_CHANNEL,
     SET_ZONES_CMD,
 )
@@ -105,6 +106,9 @@ class CameraApplication(Application):
 
         self.snapshot_running = None
         self._shutdown_at = None
+
+        # When a motion snapshot was last taken, for the capture cooldown.
+        self._last_motion_snapshot_at = None
 
         # Event-video state: recording runs for as long as the intruder keeps
         # re-triggering, and stops once the cooldown lapses with no new detection.
@@ -280,10 +284,12 @@ class CameraApplication(Application):
 
         return False
 
-    async def lock_snapshot_and_run(self, reason: str = REASON_SCHEDULE):
+    async def lock_snapshot_and_run(
+        self, reason: str = REASON_SCHEDULE, boxes: list = None
+    ):
         self.snapshot_running = True
         try:
-            await self.run_snapshot(reason)
+            await self.run_snapshot(reason, boxes=boxes)
         except Exception as e:
             log.error(f"Error getting snapshot: {str(e)}", exc_info=e)
         self.snapshot_running = False
@@ -295,7 +301,11 @@ class CameraApplication(Application):
         await self.sync_presets()
 
     async def run_snapshot(
-        self, reason: str = REASON_SCHEDULE, retries: int = 3, ping_timeout: int = 20
+        self,
+        reason: str = REASON_SCHEDULE,
+        retries: int = 3,
+        ping_timeout: int = 20,
+        boxes: list = None,
     ):
         await self.power_management.acquire()
 
@@ -342,7 +352,7 @@ class CameraApplication(Application):
         try:
             # Every capture goes up, not just the first — a PTZ camera returns one
             # per preset, and a thermal camera a visible and a thermal view.
-            await self.upload_media(files, reason)
+            await self.upload_media(files, reason, boxes)
         except Exception as e:
             log.warning(f"Failed to publish snapshot: {e}", exc_info=e)
         else:
@@ -433,7 +443,7 @@ class CameraApplication(Application):
                     camera_name, {"sdp": answer}, max_age_secs=-1
                 )
 
-    async def upload_media(self, captures: list, reason: str):
+    async def upload_media(self, captures: list, reason: str, boxes: list = None):
         """Publish captures, each with its thumbnail, plus a payload describing them.
 
         A single message carries every view captured in one go — a PTZ camera
@@ -454,6 +464,11 @@ class CameraApplication(Application):
         ``night`` is only present when the camera states it outright; when it's
         absent the image itself can be inspected (an IR frame is monochrome), which
         is left to the consumer rather than paying for it on the device.
+
+        ``boxes`` are where the camera says it saw the targets that triggered the
+        capture (:class:`TargetBox`), published as ``detections``. Absent — not empty —
+        when the event carried none, so a consumer can tell "the camera reported no
+        boxes" from "this camera doesn't report boxes at all".
         """
         files, media = [], []
         for capture in captures:
@@ -471,6 +486,12 @@ class CameraApplication(Application):
         # without every one of its motion snapshots being run through the models.
         if reason in MOTION_SNAPSHOT_REASONS:
             payload["object_detection"] = self.config.motion_snapshot_object_detection
+
+        # What the camera itself localised, for whoever analyses the frame: a region to
+        # crop a plate read to, and something concrete to deduplicate consecutive events
+        # on. Advisory — a consumer is free to ignore it and run over the whole frame.
+        if boxes:
+            payload["detections"] = [b.to_dict() for b in boxes]
 
         try:
             night = await self.engine.detect_night()
@@ -581,7 +602,11 @@ class CameraApplication(Application):
         log.info(f"ANPR event: plate={event.plate}, vehicle={event.vehicle_type}.")
         if event.plate:
             await self.tags.last_plate.set(event.plate)
-        await self.lock_snapshot_and_run("anpr")
+        # The plate rect isn't classified by the camera - it's a plate because of the
+        # event it arrived on - so it gets labelled here.
+        await self.lock_snapshot_and_run(
+            "anpr", TargetBox.list_from_alert(event.data, default_target="plate")
+        )
 
         await self.publish_camera_event(
             "anpr",
@@ -725,7 +750,7 @@ class CameraApplication(Application):
         # Automations hook off this; publish before the slow snapshot work.
         await self.publish_camera_event("ppe", violation="no_hardhat", count=count)
 
-        await self.lock_snapshot_and_run("ppe")
+        await self.lock_snapshot_and_run("ppe", TargetBox.list_from_alert(event.data))
 
         if self.config.ppe.notify.value:
             who = f"{count} people" if count and count > 1 else "someone"
@@ -734,6 +759,36 @@ class CameraApplication(Application):
                 severity=NotificationSeverity.Warn,
                 topic="ppe_event",
             )
+
+    def claim_motion_snapshot(self) -> bool:
+        """Whether a motion snapshot may be taken now, claiming the slot if so.
+
+        The camera is asked to report a target once rather than re-alarm while it stays in
+        the zone (``set_static_target_alarm``), which is what lets one rule cover both day
+        and night. This is the backstop for that: the setting only exists on some firmware,
+        and these cameras will answer OK to a field and then ignore it — in which case a
+        vehicle parked in frame would otherwise be a snapshot, an upload and a cloud
+        inference run every few seconds.
+
+        Only the *picture* is throttled. The alarm, the notification and the
+        ``camera_event`` are not: a siren that skips the second detection because the first
+        was 10 seconds ago would be a real bug, whereas a near-identical frame is waste.
+        """
+        interval = self.config.motion_snapshot_min_interval
+        if not interval:
+            return True
+
+        now = datetime.now(tz=timezone.utc)
+        last = self._last_motion_snapshot_at
+        if last is not None and (now - last).total_seconds() < interval:
+            log.info(
+                f"Skipping snapshot — last one was under {interval}s ago (the camera is "
+                f"still reporting the same target)."
+            )
+            return False
+
+        self._last_motion_snapshot_at = now
+        return True
 
     async def on_motion_event_callback(self, event: MotionDetectEvent):
         log.info(f"Motion event detected, type: {event.type}.")
@@ -774,8 +829,8 @@ class CameraApplication(Application):
             # resolve a capture mode we keep the single-snapshot behaviour.
             if getattr(self.engine, "event_clip_mode", None):
                 self.start_event_video()
-            else:
-                await self.lock_snapshot_and_run(REASON_INTRUDER)
+            elif self.claim_motion_snapshot():
+                await self.lock_snapshot_and_run(REASON_INTRUDER, event.boxes)
 
             # The camera's own deterrent (flash / siren) is already armed natively.
             if hasattr(self.engine, "fire_alarm"):
@@ -796,13 +851,13 @@ class CameraApplication(Application):
         # The picture is gated by the motion-snapshot window, but the event is not:
         # an automation still wants to know a person was seen at 3am even when the
         # site only keeps daytime images.
-        if self.config.motion_snapshot_allowed():
-            await self.lock_snapshot_and_run(event.type.value)
-        else:
+        if not self.config.motion_snapshot_allowed():
             log.info(
                 f"Skipping {event.type.value} snapshot — outside the motion snapshot "
                 f"window."
             )
+        elif self.claim_motion_snapshot():
+            await self.lock_snapshot_and_run(event.type.value, event.boxes)
 
         if event.type in (MotionDetectEventType.person, MotionDetectEventType.vehicle):
             await self.publish_camera_event(event.type.value, target=event.type.value)

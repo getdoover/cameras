@@ -12,6 +12,11 @@ CAMERA_CONTROL_CHANNEL = "camera_control"
 # `ui_cmds` aggregate holds the current zones, as it would for any other interaction.
 SET_ZONES_CMD = "set_detection_zones"
 
+# Where a vendor client stashes the bounding boxes it found in an alert, on the same
+# flattened event dict it hands the engines. It lives here rather than in a client
+# because it's the contract between the two: the client fills it, TargetBox reads it.
+TARGET_REGIONS_KEY = "TargetRegions"
+
 
 class MotionDetectEventType(Enum):
     vehicle = "vehicle"
@@ -26,6 +31,9 @@ class MotionDetectEvent:
     def __init__(self, type_: MotionDetectEventType, data: dict):
         self.type = type_
         self.data = data
+        # Where the camera saw the target(s), when it says. Empty on cameras (or
+        # firmware) that don't report a rect, so callers must treat it as optional.
+        self.boxes = TargetBox.list_from_alert(data)
 
 
 class ANPREvent:
@@ -127,6 +135,61 @@ class DetectionTarget(Enum):
     vehicle = "vehicle"
     animal = "animal"
     other = "other"
+
+
+class TargetBox:
+    """Where a camera saw a target in the frame, and what it thought it was.
+
+    ``box`` is ``[x1, y1, x2, y2]`` as **fractions of the frame, origin top-left**. That
+    ordering matches how the Object Detection app publishes its own findings, so the two
+    can be compared without a translation step; the units differ deliberately (fractions,
+    not pixels) so a box stays meaningful whatever resolution the snapshot came back at,
+    and it's the same space as :class:`DetectionZone` points.
+
+    The camera's own vocabulary is normalised on the way in — Hikvision says ``human``,
+    everything doover-side says ``person``. An unrecognised token is passed through
+    rather than dropped: a newer firmware inventing a target we don't know about is
+    still worth reporting.
+    """
+
+    def __init__(self, box: list, target: str = None):
+        self.box = box
+        self.target = target
+
+    @staticmethod
+    def _app_target(token: str) -> str:
+        if not token:
+            return None
+        token = token.strip().lower()
+        if token == "human":
+            return DetectionTarget.person.value
+        try:
+            return DetectionTarget(token).value
+        except ValueError:
+            return token
+
+    @classmethod
+    def list_from_alert(cls, alert: dict, default_target: str = None) -> list:
+        """Every box in a camera alert, in the order the camera reported them.
+
+        ``default_target`` labels boxes the alert didn't classify — an ANPR plate rect,
+        say, which is a plate by virtue of the event it arrived on rather than because
+        the camera said so.
+        """
+        boxes = []
+        for region in (alert or {}).get(TARGET_REGIONS_KEY) or []:
+            box = region.get("box")
+            if not box:
+                continue
+            target = cls._app_target(region.get("target")) or default_target
+            boxes.append(cls(box, target))
+        return boxes
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = {"box": self.box}
+        if self.target:
+            payload["target"] = self.target
+        return payload
 
 
 class DetectionZone:

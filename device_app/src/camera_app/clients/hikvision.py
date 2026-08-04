@@ -19,6 +19,7 @@ import aiohttp
 import async_timeout
 
 from .dahua import DigestAuth
+from ..events import TARGET_REGIONS_KEY
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
@@ -36,6 +37,12 @@ NORMALIZED_SCREEN = 1000
 # units. Entrance needs the target seen outside the region before it crosses in, so
 # unlike intrusion this cannot be full-frame -- see _default_region_entrance_body.
 ENTRANCE_INSET = 250
+
+# How long a target must be inside an intrusion region before the rule fires, in
+# seconds. The lowest the firmware accepts is 1, and 1 is what we want: this is the
+# "regardless of how fast they run in" knob, and anything higher silently misses anyone
+# who crosses the region quicker than that. The stock rule shipped 5.
+INTRUSION_DWELL_SECS = 1
 
 # A zone whose points come this close to the frame edge leaves too little room for a
 # target to be tracked outside it, so entrance may never fire for that zone. Used to warn
@@ -525,7 +532,7 @@ class HikvisionClient:
             f"<FieldDetectionRegion>"
             f"<id>1</id><enabled>true</enabled>"
             f"<sensitivityLevel>{sensitivity}</sensitivityLevel>"
-            f"<timeThreshold>5</timeThreshold>"
+            f"<timeThreshold>{INTRUSION_DWELL_SECS}</timeThreshold>"
             f"<RegionCoordinatesList>{coords}</RegionCoordinatesList>"
             f"<detectionTarget>{target}</detectionTarget>"
             f"</FieldDetectionRegion>"
@@ -616,15 +623,20 @@ class HikvisionClient:
         targets: list = None,
         sensitivity: int = 50,
         channel: int = 1,
+        dwell_secs: int = INTRUSION_DWELL_SECS,
     ) -> dict:
         """
         Create/enable intrusion (field) detection and set its target + sensitivity.
 
         If the camera already has a rule (with its own region/calibration) we
         GET-modify-PUT it, preserving the region and only touching the enable flags,
-        target filter and sensitivity. If there is no rule yet we PUT a default
-        full-frame region so the feature works out of the box. ``targets`` is a list
-        of Hikvision target tokens (``human``, ``vehicle``, ...).
+        target filter, sensitivity and dwell time. If there is no rule yet we PUT a
+        default full-frame region so the feature works out of the box. ``targets`` is a
+        list of Hikvision target tokens (``human``, ``vehicle``, ...).
+
+        ``dwell_secs`` is written to every region slot, so the rule can't be left with a
+        long dwell on one slot and a short one on another -- which is how a camera ends up
+        detecting nobody in one corner of the frame for no visible reason.
         """
         try:
             raw = (await self.get_bytes(
@@ -659,7 +671,62 @@ class HikvisionClient:
                 raw,
                 count=1,
             )
+        raw = self._rewrite_element(raw, "timeThreshold", str(dwell_secs))
         return await self.put(f"/ISAPI/Smart/FieldDetection/{channel}", body=raw)
+
+    @staticmethod
+    def _rewrite_element(body: str, tag: str, value: str, count: int = 0) -> str:
+        """Set an element's text wherever it already appears; leave an absent tag alone.
+
+        Absent means this firmware doesn't have the feature, and inventing the element is
+        worse than skipping it -- these cameras answer 400 "Invalid XML Content" on
+        unexpected content rather than ignoring it, which would lose the whole write.
+        Editing in place also keeps the schema's element order, which a rebuilt body can
+        get wrong.
+
+        ``count=0`` rewrites every occurrence: a rule carries one ``<timeThreshold>`` per
+        region slot and they should all agree.
+        """
+        return re.sub(
+            rf"<{tag}>.*?</{tag}>", f"<{tag}>{value}</{tag}>", body, count=count
+        )
+
+    async def set_static_target_alarm(self, enabled: bool, channel: int = 1) -> bool:
+        """Turn intrusion's re-alarm-on-a-static-target on or off.
+
+        This is what makes intrusion usable as the *only* rule, day and night. Left on
+        (the camera's default) the rule re-fires every ``targetAlarmInterval`` for as long
+        as a target stays in the region, so a car that parks in frame keeps costing a
+        snapshot, an upload and a cloud inference run. Off, it reports a target once.
+
+        Returns whether the camera had the setting to change. It is deliberately **not**
+        added when absent, and the caller shouldn't treat False as failure -- the app's own
+        snapshot cooldown is the backstop for exactly this, because these cameras will also
+        answer OK to a field and then quietly ignore it.
+        """
+        endpoint = f"/ISAPI/Smart/FieldDetection/{channel}"
+        tag = "contAlarmForStaticTargetEnabled"
+        try:
+            raw = (await self.get_bytes(endpoint)).decode(errors="ignore")
+        except Exception as e:
+            _LOGGER.info(f"Couldn't read intrusion config to set {tag}: {e}")
+            return False
+
+        if f"<{tag}>" not in raw:
+            _LOGGER.info(
+                f"Camera has no {tag}; leaving re-alarm behaviour as-is and relying on "
+                f"the app's snapshot cooldown."
+            )
+            return False
+
+        body = self._rewrite_element(raw, tag, "true" if enabled else "false")
+        try:
+            await self.put(endpoint, body=body)
+        except Exception as e:
+            _LOGGER.warning(f"Failed to set {tag}: {e}")
+            return False
+        _LOGGER.info(f"Intrusion re-alarm on static targets {'on' if enabled else 'off'}.")
+        return True
 
     async def get_field_detection_regions(self, channel: int = 1) -> list:
         """
@@ -711,7 +778,7 @@ class HikvisionClient:
             f"<FieldDetectionRegion><id>{region['id']}</id>"
             f"<enabled>true</enabled>"
             f"<sensitivityLevel>{region['sensitivity']}</sensitivityLevel>"
-            f"<timeThreshold>{region.get('time_threshold', 1)}</timeThreshold>"
+            f"<timeThreshold>{region.get('time_threshold', INTRUSION_DWELL_SECS)}</timeThreshold>"
             f"<RegionCoordinatesList>{coords}</RegionCoordinatesList>"
             f"<detectionTarget>{','.join(region['targets'])}</detectionTarget>"
             f"</FieldDetectionRegion>"
@@ -1254,6 +1321,102 @@ class HikvisionClient:
         )
         return await self.post_bytes("/ISAPI/ContentMgmt/download", body)
 
+    # Tags a target's bounding box arrives under. ``TargetRect`` is what the AcuSense /
+    # DeepinView perimeter events use (inside <DetectionRegionEntry>, beside
+    # <detectionTarget>); the others cover ANPR and the newer DeepinView analytics, whose
+    # element names aren't in the public spec. Harmless to look for a tag a camera never
+    # sends — an alert with none simply carries no boxes.
+    _RECT_TAGS = ("TargetRect", "boundingBox", "Rect")
+
+    @classmethod
+    def _target_regions(cls, root: ET.Element) -> list:
+        """Every target's bounding box in one alert, in the order it reported them.
+
+        Read off the XML tree rather than the flattened dict on purpose:
+        :func:`_xml_to_dict` writes repeated siblings to the same dotted key, so on a
+        two-person event the second ``DetectionRegionEntry`` overwrites the first and only
+        the last box would survive. Boxes are exactly the thing there can be several of.
+        """
+        # ElementTree nodes don't know their parent, and a rect's classification is its
+        # sibling, so the link has to be built up front.
+        parents = {child: parent for parent in root.iter() for child in parent}
+
+        regions = []
+        for element in root.iter():
+            if _strip_ns(element.tag) not in cls._RECT_TAGS:
+                continue
+            box = cls._parse_rect(element)
+            if box is None:
+                continue
+            region = {"box": box}
+            target = cls._rect_target(element, parents)
+            if target:
+                region["target"] = target
+            regions.append(region)
+        return regions
+
+    @staticmethod
+    def _rect_target(element: ET.Element, parents: dict, depth: int = 2) -> str:
+        """The classification belonging to a rect (``human``, ``vehicle``, ...).
+
+        It sits beside the rect — ``<DetectionRegionEntry>`` holds both — so this checks
+        the rect's siblings, then walks up a couple of levels for firmware that nests the
+        rect one deeper. Returns ``""`` when the alert didn't classify the target, which
+        is normal for an ANPR plate rect.
+        """
+        node = element
+        for _ in range(depth + 1):
+            parent = parents.get(node)
+            if parent is None:
+                break
+            for sibling in parent:
+                if _strip_ns(sibling.tag).lower().endswith("detectiontarget"):
+                    text = (sibling.text or "").strip()
+                    if text:
+                        # Multiple entries could be comma-joined; take the first.
+                        return text.split(",")[0].strip().lower()
+            node = parent
+        return ""
+
+    @staticmethod
+    def _parse_rect(element: ET.Element) -> list:
+        """One rect as ``[x1, y1, x2, y2]`` fractions of the frame, or None if unusable.
+
+        Firmware disagrees on units: some report fractions of the frame (0..1), others
+        the normalized 0..1000 screen the zone endpoints use. Anything over 1 is
+        therefore read as normalized and scaled down, which lands both conventions in the
+        0..1 top-left space the rest of the app speaks (see ``events.DetectionZone``).
+        A camera reporting a genuine 0..1 rect that happens to touch the far edge is
+        unaffected: 1.0 is not > 1.
+
+        NOTE: the y axis is passed through as the camera gave it. Hikvision's *zone*
+        coordinates are y-up (hence ``_flip_y`` in the AcuSense engine) but the alert
+        rect is documented top-left, and this hasn't been checked against a real capture.
+        If boxes come back vertically mirrored, flipping is a one-line change here.
+        """
+        values = {}
+        for child in element:
+            try:
+                values[_strip_ns(child.tag).lower()] = float((child.text or "").strip())
+            except ValueError:
+                return None
+
+        try:
+            x, y = values["x"], values["y"]
+            width, height = values["width"], values["height"]
+        except KeyError:
+            return None
+
+        if max(x, y, width, height) > 1:
+            x, y, width, height = (
+                v / NORMALIZED_SCREEN for v in (x, y, width, height)
+            )
+
+        return [
+            round(min(1.0, max(0.0, v)), 4)
+            for v in (x, y, x + width, y + height)
+        ]
+
     async def stream_events(self, callback, heartbeat: int = 5):
         """
         Subscribe to the ISAPI event notification stream (alertStream).
@@ -1306,6 +1469,12 @@ class HikvisionClient:
                 return
             root = ET.fromstring(text[start:])
             event = _xml_to_dict(root)
+
+            # Bounding boxes come off the tree, not the flattened dict, so several
+            # targets in one alert all survive (see :meth:`_target_regions`).
+            regions = self._target_regions(root)
+            if regions:
+                event[TARGET_REGIONS_KEY] = regions
 
             if asyncio.iscoroutinefunction(callback):
                 await callback(event)

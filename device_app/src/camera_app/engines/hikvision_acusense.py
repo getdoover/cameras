@@ -5,6 +5,17 @@ targets on-camera as human / vehicle / animal via line-crossing and intrusion
 (field) detection. Unlike the ANPR "/P" models, these expose real perimeter
 analytics, so this is the driver for person/intruder detection.
 
+**Intrusion (``fielddetection``) is the only rule, day and night.** Presence in the
+region is the trigger, so it catches a target that is already in frame, one that appears
+inside the region, and one that crosses only the outer margin -- none of which region
+entrance can see, because entrance needs the target tracked *outside* the region first.
+The reason entrance used to own the day was intrusion's re-alarm on a static target,
+which turned one parked car into a stream of snapshots; that is switched off at the
+camera instead (``set_static_target_alarm``), with the app's snapshot cooldown as the
+backstop for firmware that ignores it. One rule also means **one** set of zones: the two
+rules had separate defaults that nothing reconciled, so what a user drew and what the
+camera detected by day could silently differ.
+
 Events arrive over the ISAPI alertStream. AcuSense smart events carry the
 classification per-event inside ``<DetectionRegionList><DetectionRegionEntry>``:
 
@@ -30,7 +41,7 @@ from pydoover.models import File
 
 from .base import CameraBase, THUMBNAIL_FILENAME
 from ..clients import HikvisionClient
-from ..clients.hikvision import ENTRANCE_EDGE_WARN, NORMALIZED_SCREEN
+from ..clients.hikvision import INTRUSION_DWELL_SECS, NORMALIZED_SCREEN
 from ..events import (
     DetectionTarget,
     DetectionZone,
@@ -41,18 +52,21 @@ from ..events import (
 
 log = logging.getLogger(__name__)
 
-# AcuSense smart-event types we act on. Deliberately only the two rules this engine
-# actually configures: intrusion for the night alarm, entrance for daytime snapshots.
+# The only smart event this engine acts on — intrusion, the one rule it configures.
 #
-# `regionExiting` and `linedetection` are excluded on purpose rather than by oversight.
-# The camera can run them alongside entrance, and each one that fires is another
-# snapshot, upload and inference run for the same person walking through — an exit event
-# would double every daytime trigger. Accepting an event type we never enable is a
-# latent duplicate waiting for someone to tick a box in the camera's web UI.
+# `regionEntrance`, `regionExiting` and `linedetection` are excluded on purpose rather
+# than by oversight. The camera can run them alongside intrusion, and each one that fires
+# is another snapshot, upload and inference run for the same person walking through.
+# Accepting an event type we never enable is a latent duplicate waiting for someone to
+# tick a box in the camera's web UI — so the engine disables them and ignores them.
 SMART_EVENT_TYPES = {
     "fielddetection",
-    "regionEntrance",
 }
+
+# Smart rules this engine turns off, because intrusion covers what they'd report and
+# every one left on is a duplicate event per target. Names are ISAPI path segments and
+# the casing is not uniform -- see `disable_smart_rule`.
+UNUSED_SMART_RULES = ("regionEntrance", "regionExiting", "LineDetection")
 
 # The on-camera intrusion rule always classifies both, regardless of the app's
 # Object Detection setting — that setting shapes which events raise notifications
@@ -149,14 +163,19 @@ class HikvisionAcuSenseCamera(CameraBase):
         sensitivity = self.config.sensitivity.value
         log.info(
             f"Configuring intrusion detection: targets={RULE_TARGETS} "
-            f"sensitivity={sensitivity}"
+            f"sensitivity={sensitivity} dwell={INTRUSION_DWELL_SECS}s"
         )
         try:
             await self.client.set_field_detection(True, RULE_TARGETS, sensitivity)
         except Exception as e:
             log.warning(f"Failed to configure intrusion detection: {e}", exc_info=e)
 
-        await self.setup_region_entrance(sensitivity)
+        # Report a target once instead of re-alarming while it sits in the region. Without
+        # this, intrusion can't be the daytime rule: a parked car would keep costing a
+        # snapshot, an upload and a cloud inference run.
+        await self.client.set_static_target_alarm(False)
+
+        await self.disable_unused_rules()
 
         # Resolve this before arming: the deterrent only adds the `record` linkage
         # when we're actually going to read recordings back off the camera.
@@ -343,19 +362,14 @@ class HikvisionAcuSenseCamera(CameraBase):
             self.config.alarm.night_start_hour.value,
             self.config.alarm.night_end_hour.value,
         )
-        # Night only, deliberately.
-        #
-        # This schedule used to be the union of the night window and the daytime
-        # motion-snapshot window, because the schedule gates the *event* and a night-only
-        # intrusion rule left daytime person/vehicle detection blind. Region entrance now
-        # covers the day (see setup_region_entrance), so intrusion can go back to meaning
-        # "night" — which is better in three ways:
-        #
-        #   * no duplicate events: intrusion re-alarms on static targets, entrance doesn't
-        #   * the camera gates the deterrent itself again, so flash/siren still fire while
-        #     doover is offline — the property the union sacrificed
-        #   * the app no longer has to arm and disarm the linkage at dusk and dawn
-        windows = [night]
+        # The schedule gates the **event**, not just its linkages: an hour outside it
+        # produces no `fielddetection` at all, so the camera classifies nothing and the app
+        # hears nothing (measured — walking in front of the camera at 12:47 with a
+        # night-only schedule produced only an unclassified VMD event). Intrusion is now the
+        # daytime rule too, so the schedule has to cover the motion-snapshot window as well
+        # as the night, and `set_event_arming_schedule` takes their union.
+        day = self.config.motion_snapshot_window
+        windows = [night] + ([day] if day else [])
 
         try:
             accepted = await self.client.set_event_arming_schedule(windows)
@@ -363,7 +377,19 @@ class HikvisionAcuSenseCamera(CameraBase):
             log.warning(f"Failed to write native arming schedule: {e}", exc_info=e)
             accepted = False
 
-        self.native_schedule_active = accepted
+        # Whether the *camera* can gate the deterrent for us, which is a stronger claim
+        # than "the camera took a schedule". It can only do that when the schedule means
+        # night and nothing else; once it also covers the day, a permanently-armed linkage
+        # would sound the siren at a delivery driver at midday. So when the schedule is
+        # wider than the night, the app owns arming — the cost of intrusion covering the
+        # day, and the reason arm_night_deterrent still runs every main loop.
+        self.native_schedule_active = accepted and not day
+        if accepted and day:
+            log.info(
+                "Arming schedule covers the daytime motion window as well as the night, "
+                "so the app arms the deterrent at the night boundary rather than the "
+                "camera. NOTE: this does not survive doover being offline across dusk."
+            )
 
         if self.native_schedule_active:
             # The schedule gates the linkage, so leave it permanently armed.
@@ -380,68 +406,21 @@ class HikvisionAcuSenseCamera(CameraBase):
             )
             await self.arm_night_deterrent(self.config.is_night())
 
-    async def setup_region_entrance(self, sensitivity: int):
-        """Arm region-entrance detection for the daytime snapshot window.
+    async def disable_unused_rules(self):
+        """Switch off the smart rules intrusion makes redundant.
 
-        Why a second rule rather than just using intrusion all day: intrusion has
-        ``contAlarmForStaticTargetEnabled`` on (and ``targetAlarmInterval`` already at
-        its maximum of 5), so it **re-alarms while a target stays in the region**. A car
-        that drives in and parks therefore keeps producing events, each one costing a
-        snapshot, an upload and an inference run. Region entrance fires once, when
-        something crosses in.
-
-        So the two rules split by job: entrance drives daytime snapshots, intrusion
-        stays for the night alarm where re-alarming on a loiterer is a feature. Both
-        classify targets, so person-vs-vehicle survives either way, and both are already
-        in the engine's ``SMART_EVENT_TYPES``.
+        Each rule left on is a second event for the same person walking through, and so a
+        second snapshot, upload and inference run. Their polygons are preserved (see
+        ``disable_smart_rule``), so nothing a user drew is lost by turning one off, and
+        their events are ignored regardless (see :data:`SMART_EVENT_TYPES`) -- this is
+        about not paying for them, not about correctness.
         """
-        window = self.config.motion_snapshot_window
-        if window is None:
-            log.info("No motion-snapshot window; leaving region entrance disabled.")
-            return
-
-        try:
-            await self.client.set_region_entrance(True, RULE_TARGETS, sensitivity)
-        except Exception as e:
-            log.warning(f"Failed to configure region entrance: {e}", exc_info=e)
-            return
-
-        # Entrance only, not entrance *and* exit. One person crossing the yard would
-        # otherwise fire twice -- once entering, once leaving -- doubling snapshots,
-        # uploads and inference for a single event. Exit is switched off here rather
-        # than merely left alone, because it may have been enabled on the camera
-        # before we got here; its polygons are preserved either way.
-        for unused in ("regionExiting", "LineDetection"):
-            if not await self.client.disable_smart_rule(unused):
+        for rule in UNUSED_SMART_RULES:
+            if not await self.client.disable_smart_rule(rule):
                 log.info(
-                    f"Couldn't confirm {unused} is disabled; if it is on, expect a "
-                    f"second event per target. Its events are ignored regardless "
-                    f"(see SMART_EVENT_TYPES)."
+                    f"Couldn't confirm {rule} is disabled. Its events are ignored either "
+                    f"way, but if it is on the camera is doing work for nothing."
                 )
-
-        # `center` is what puts the event on the alertStream. Without it the camera
-        # handles the event silently and the app never hears about it -- the same trap
-        # the intrusion trigger ships with.
-        try:
-            await self.client.set_smart_alarm_linkage(False, event="regionEntrance")
-        except Exception as e:
-            log.warning(f"Failed to link regionEntrance to center: {e}", exc_info=e)
-            return
-
-        # Its own schedule, covering only the window snapshots are wanted in. The night
-        # deterrent's schedule is separate and belongs to fielddetection.
-        try:
-            accepted = await self.client.set_event_arming_schedule(
-                [window], event="regionEntrance"
-            )
-        except Exception as e:
-            log.warning(f"Failed to schedule region entrance: {e}", exc_info=e)
-            return
-
-        log.info(
-            f"Region entrance armed for {window} "
-            f"({'native schedule' if accepted else 'schedule rejected — always armed'})."
-        )
 
     async def arm_night_deterrent(self, armed: bool):
         """Arm/disarm the built-in flash + siren active response.
@@ -651,53 +630,18 @@ class HikvisionAcuSenseCamera(CameraBase):
                 }
             )
 
-        # One set of zones, written to both rules, so what's drawn in the UI means the
-        # same thing by day (region entrance) and by night (intrusion). Without this the
-        # zone editor only affected the night rule and daytime detection quietly used
-        # whatever full-frame default the app first wrote.
-        log.info(f"Writing {len(zones)} detection zone(s) to the camera (both rules).")
+        # One rule, so one write and nothing to keep in sync. This used to fan the same
+        # regions out to intrusion *and* region entrance, which was the best available fix
+        # for a worse problem: the two rules had separate hardcoded defaults, so until
+        # somebody opened the zone editor the camera detected by day over a region nobody
+        # had chosen, and the read-back (intrusion only) couldn't show it.
+        log.info(f"Writing {len(zones)} detection zone(s) to the camera.")
         await self.client.set_field_detection_regions(regions)
-        try:
-            await self.client.set_region_entrance_regions(regions)
-        except Exception as e:
-            # Intrusion already took the zones, so night detection is correct; only the
-            # daytime rule is stale. Worth a loud log, not worth failing the command.
-            log.error(
-                f"Zones written to intrusion but NOT to region entrance ({e}) -- "
-                f"daytime detection is still using the previous zones.",
-                exc_info=e,
-            )
 
-        self._warn_if_zones_defeat_entrance(regions)
-
-    @staticmethod
-    def _warn_if_zones_defeat_entrance(regions: list) -> None:
-        """Warn about a zone so large that region entrance can never fire in it.
-
-        Entrance needs the target tracked outside the region before it crosses in, so a
-        zone drawn to the frame edge has nowhere to be outside. Measured on a real
-        camera: a 1%-inset region produced no entrance events at all. The zone is left
-        exactly as drawn -- silently shrinking someone's zone would be worse -- but this
-        is the one failure mode that looks like "detection is broken" rather than
-        "my zone is too big".
-        """
-        edge = NORMALIZED_SCREEN - ENTRANCE_EDGE_WARN
-        for region in regions:
-            points = region.get("points") or []
-            if not points:
-                continue
-            if any(
-                x <= ENTRANCE_EDGE_WARN or y <= ENTRANCE_EDGE_WARN
-                or x >= edge or y >= edge
-                for x, y in points
-            ):
-                log.warning(
-                    f"Zone {region['id']} reaches within {ENTRANCE_EDGE_WARN}/"
-                    f"{NORMALIZED_SCREEN} of the frame edge. Intrusion (night) is fine, "
-                    f"but region entrance needs space outside the zone to see a target "
-                    f"cross in, so daytime events may not fire for this zone. Pull it "
-                    f"in from the edges if daytime detection matters."
-                )
+        # The region write rebuilds the rule body, which drops any rule-level field it
+        # doesn't know about — including the static-target re-alarm switch. Re-assert it,
+        # or editing a zone quietly turns the duplicate-snapshot behaviour back on.
+        await self.client.set_static_target_alarm(False)
 
     async def get_thumbnail(self) -> File:
         """Grab the camera's sub-stream picture rather than scaling one ourselves.

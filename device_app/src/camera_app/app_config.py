@@ -369,6 +369,17 @@ class CameraMotionSnapshotConfig(config.Object):
         minimum=0,
         maximum=23,
     )
+    min_interval_secs = config.Integer(
+        "Minimum Seconds Between Snapshots",
+        description="Shortest gap between two motion snapshots. The camera reports a "
+        "target once rather than re-alarming while it stays in the zone, but that depends "
+        "on the camera honouring the setting -- this is the backstop that stops one "
+        "vehicle sitting in frame becoming a stream of snapshots, uploads and cloud "
+        "inference runs. 0 disables it and captures on every event.",
+        default=15,
+        minimum=0,
+        advanced=True,
+    )
     object_detection = config.Boolean(
         "Object Detection",
         description="Offer these snapshots to the Object Detection app for hard-hat / "
@@ -514,6 +525,11 @@ class CameraConfig(config.Schema):
         if start == end:
             return None
         return (start, end)
+
+    @property
+    def motion_snapshot_min_interval(self) -> int:
+        """Shortest gap between motion snapshots, in seconds. 0 means no floor."""
+        return max(0, value_or(self.motion_snapshot.min_interval_secs, 15))
 
     @property
     def motion_snapshot_object_detection(self) -> bool:

@@ -841,6 +841,21 @@
                             "minimum": 0,
                             "maximum": 23
                         },
+                        "minimum_seconds_between_snapshots": {
+                            "title": "Minimum Seconds Between Snapshots",
+                            "x-name": "minimum_seconds_between_snapshots",
+                            "x-hidden": false,
+                            "type": [
+                                "integer",
+                                "null"
+                            ],
+                            "x-required": false,
+                            "description": "Shortest gap between two motion snapshots. The camera reports a target once rather than re-alarming while it stays in the zone, but that depends on the camera honouring the setting -- this is the backstop that stops one vehicle sitting in frame becoming a stream of snapshots, uploads and cloud inference runs. 0 disables it and captures on every event.",
+                            "default": 15,
+                            "x-position": 4,
+                            "x-advanced": true,
+                            "minimum": 0
+                        },
                         "object_detection": {
                             "title": "Object Detection",
                             "x-name": "object_detection",
@@ -852,7 +867,7 @@
                             "x-required": false,
                             "description": "Offer these snapshots to the Object Detection app for hard-hat / high-vis and number-plate analysis. Requires that app to be installed and pointed at this camera; turning it on here only marks the snapshots as wanted, it doesn't run any inference in this app.",
                             "default": false,
-                            "x-position": 4
+                            "x-position": 5
                         }
                     },
                     "additionalElements": true,
