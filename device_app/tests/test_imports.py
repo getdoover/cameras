@@ -1079,3 +1079,144 @@ def test_event_clip_search_uses_the_cameras_clock():
 
     # A match with no parsable span scores zero rather than blowing up the sort.
     assert cam._overlap_secs({}, event_start, event_end) == 0.0
+
+
+def _power_mgr(always_on=True, threshold=3, cycle_secs=15):
+    """A CameraPowerManagement wired to fakes, with no background tasks started."""
+    import types
+
+    from camera_app.power_management import CameraPowerManagement
+
+    v = lambda x: types.SimpleNamespace(value=x)
+    do_calls = []
+
+    async def set_do(pin, state):
+        do_calls.append((pin, state))
+
+    async def publish(*args, **kwargs):
+        pass
+
+    mgr = CameraPowerManagement.__new__(CameraPowerManagement)
+    mgr.config = types.SimpleNamespace(
+        enabled=v(True),
+        always_on=v(always_on),
+        pin=v(4),
+        timeout=v(900),
+        wake_delay=v(0),
+        watchdog_failures=v(threshold),
+        power_cycle_secs=v(cycle_secs),
+    )
+    mgr.app = types.SimpleNamespace(
+        platform_iface=types.SimpleNamespace(set_do=set_do),
+        engine=types.SimpleNamespace(),
+        app_key="doover_camera_1",
+        device_agent=types.SimpleNamespace(update_channel_aggregate=publish),
+        tag_manager=types.SimpleNamespace(
+            get_tag=lambda *a, **k: 0, set_tag=publish
+        ),
+    )
+    mgr._powered_on_at = None
+    mgr._is_pingable = False
+    mgr._last_ping_at = None
+    mgr._ping_task = None
+    mgr._watchdog_task = None
+    mgr._cycling = False
+    mgr._suspended = False
+    mgr.tasks = []
+    return mgr, do_calls
+
+
+def test_always_on_needs_power_management_enabled():
+    mgr, _ = _power_mgr(always_on=True)
+    assert mgr.always_on is True
+    # Always On is meaningless without a power pin to hold.
+    mgr.config.enabled.value = False
+    assert mgr.always_on is False
+    mgr.config.enabled.value = True
+    mgr.config.always_on.value = False
+    assert mgr.always_on is False
+
+
+def test_power_cycle_sequence():
+    """A cycle drops the pin, waits, restores it - and can't be interrupted mid-way."""
+    import asyncio
+    from datetime import datetime, timedelta
+
+    mgr, do_calls = _power_mgr(cycle_secs=0)
+    mgr._powered_on_at = datetime.now()
+
+    async def scenario():
+        # A snapshot arriving mid-cycle must NOT raise the pin: that would abort the reboot
+        # we're doing precisely because the camera stopped answering.
+        async def acquire_during_cycle():
+            await asyncio.sleep(0)
+            await mgr.acquire_for(timedelta(seconds=60))
+
+        await asyncio.gather(mgr._power_cycle(), acquire_during_cycle())
+
+    asyncio.run(scenario())
+
+    assert do_calls == [(4, False), (4, True)]
+    assert mgr._cycling is False  # released even though a caller raced it
+    assert mgr.power_is_on is True
+
+
+def test_watchdog_only_cycles_on_consecutive_failures():
+    import asyncio
+
+    from camera_app import power_management as pm
+
+    mgr, _ = _power_mgr(threshold=3)
+    cycles = []
+
+    async def fake_cycle():
+        cycles.append(len(cycles) + 1)
+
+    mgr._power_cycle = fake_cycle
+
+    # A single dropped ping, then a success, then three in a row. Only the run of three
+    # should reboot the camera - cutting power on one blip is worse than no watchdog.
+    seq = [False, True, False, False, False]
+    state = {"i": 0}
+
+    async def ping(timeout):
+        i = state["i"]
+        state["i"] += 1
+        if i >= len(seq):
+            raise asyncio.CancelledError
+        return seq[i]
+
+    mgr.app.engine.ping = ping
+
+    real_sleep = pm.asyncio.sleep
+
+    async def no_sleep(_secs):
+        return None
+
+    pm.asyncio.sleep = no_sleep
+    try:
+        asyncio.run(mgr._watchdog())
+    finally:
+        pm.asyncio.sleep = real_sleep
+
+    assert cycles == [1]
+    assert state["i"] == len(seq) + 1  # ran to the end of the script
+
+
+def test_always_on_survives_expiry_but_honours_a_deliberate_release():
+    """The expiry check must not drop power, but a device shutdown must."""
+    import asyncio
+    from datetime import timedelta
+
+    mgr, do_calls = _power_mgr()
+
+    # A deliberate release (on_shutdown_at) latches, so the always-on loop can't
+    # immediately power the camera back up behind the shutdown's back.
+    asyncio.run(mgr.release())
+    assert mgr._suspended is True
+    assert (4, False) in do_calls
+
+    # ...and anything that actually wants the camera clears the latch again.
+    asyncio.run(mgr.acquire_for(timedelta(seconds=60)))
+    assert mgr._suspended is False
+    assert do_calls[-1] == (4, True)

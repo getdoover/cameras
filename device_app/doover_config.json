@@ -194,6 +194,19 @@
                             "default": 0,
                             "x-position": 2
                         },
+                        "always_on": {
+                            "title": "Always On",
+                            "x-name": "always_on",
+                            "x-hidden": false,
+                            "type": [
+                                "boolean",
+                                "null"
+                            ],
+                            "x-required": false,
+                            "description": "Keep the camera powered continuously instead of powering it up for each snapshot and switching it off again. 'Off After' no longer applies. The camera is only ever power cycled when it stops answering pings, which is the point of this mode: a camera that has locked up gets rebooted, while one that is working is never interrupted.",
+                            "default": false,
+                            "x-position": 3
+                        },
                         "off_after": {
                             "title": "Off After",
                             "x-name": "off_after",
@@ -203,10 +216,40 @@
                                 "null"
                             ],
                             "x-required": false,
-                            "description": "Number of seconds after which the camera will be powered off",
+                            "description": "Number of seconds after which the camera will be powered off. Ignored when 'Always On' is set.",
                             "default": 900,
-                            "x-position": 3,
+                            "x-position": 4,
                             "x-advanced": true
+                        },
+                        "power_cycle_after_failed_pings": {
+                            "title": "Power Cycle After Failed Pings",
+                            "x-name": "power_cycle_after_failed_pings",
+                            "x-hidden": false,
+                            "type": [
+                                "integer",
+                                "null"
+                            ],
+                            "x-required": false,
+                            "description": "How many consecutive failed pings trigger a power cycle in 'Always On' mode. More than one so a single dropped packet or a busy camera doesn't cut the power.",
+                            "default": 3,
+                            "x-position": 5,
+                            "x-advanced": true,
+                            "minimum": 1
+                        },
+                        "power_cycle_off_duration": {
+                            "title": "Power Cycle Off Duration",
+                            "x-name": "power_cycle_off_duration",
+                            "x-hidden": false,
+                            "type": [
+                                "integer",
+                                "null"
+                            ],
+                            "x-required": false,
+                            "description": "Seconds to hold power off during a power cycle. Long enough for the camera to actually lose power rather than brown out.",
+                            "default": 15,
+                            "x-position": 6,
+                            "x-advanced": true,
+                            "minimum": 1
                         },
                         "wake_delay": {
                             "title": "Wake Delay",
@@ -219,7 +262,7 @@
                             "x-required": false,
                             "description": "Seconds for camera to boot before requesting a snapshot.",
                             "default": 60,
-                            "x-position": 4,
+                            "x-position": 7,
                             "x-advanced": true
                         }
                     },

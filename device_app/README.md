@@ -31,8 +31,11 @@ App to view and manage IP cameras. Choose between Dahua PTZ or Fixed, UniFi and 
 | **Control Port** | Port of control page on camera | `80` |
 | **Power Control Enabled** | Whether power control is enabled for this camera | `false` |
 | **Power Pin** | Digital Output pin that controls power to camera circuit | `0` |
-| **Off After** | Seconds after which the camera will be powered off | `900` |
+| **Always On** | Hold power on permanently; only power cycle an unresponsive camera | `false` |
+| **Off After** | Seconds after which the camera will be powered off (ignored when *Always On*) | `900` |
 | **Wake Delay** | Seconds for camera to boot before requesting a snapshot | `5` |
+| **Power Cycle After Failed Pings** | Consecutive failed pings before a power cycle (*Always On* only) | `3` |
+| **Power Cycle Off Duration** | Seconds to hold power off during a power cycle | `15` |
 | **Live View Enabled** | Whether remote component is enabled for this camera | `true` |
 | **Live View URL** | URL for live view component | `https://getdoover.github.io/cameras/HLSLiveView.js` |
 | **Snapshot Enabled** | Whether periodic snapshots are enabled | `true` |
@@ -40,6 +43,39 @@ App to view and manage IP cameras. Choose between Dahua PTZ or Fixed, UniFi and 
 | **Snapshot Mode** | Video or Image format | `Image` |
 | **Object Detection** | Objects to detect (Person, Vehicle) | `None` |
 | **Control Enabled** | Allow control (movement) of PTZ cameras | `true` |
+
+<br/>
+
+### Camera power: on demand, or always on with a watchdog
+
+By default the power pin is **on demand**: raised when something needs the camera (a
+snapshot, a live view, an event), then dropped once **Off After** lapses. Good for a
+solar site where the camera is the biggest load and is wanted a few times a day.
+
+**Always On** inverts that. The pin is held up for the life of the app and **Off After**
+no longer applies, so the camera is never interrupted mid-event and never has to boot
+before a snapshot. In exchange the app runs a watchdog: it pings the camera every 30s and
+**power cycles it only when it stops answering** — which is the one repair that works on a
+camera that has locked up, and one no amount of retrying over the network can perform.
+
+- **Failures must be consecutive.** A single dropped ping means nothing — the camera is
+  busy encoding, the network blipped — and cutting power on one is worse than having no
+  watchdog at all, because the cycle itself costs a boot during which the camera really is
+  unreachable. **Power Cycle After Failed Pings** is that threshold.
+- **A snapshot arriving mid-cycle cannot abort it.** Raising the pin during the off period
+  would cancel the reboot being performed *because* the camera stopped answering, leaving
+  it locked up. Requests during a cycle are skipped, and the pin is restored by the cycle
+  itself.
+- **After power returns, the watchdog waits out Wake Delay** before counting failures
+  again. Without that it would read the booting camera's silence as fresh failures and
+  cycle it forever.
+- **A deliberate release still works.** The periodic expiry check never drops power in this
+  mode, but the device shutting down does — and that latches, so the always-on loop can't
+  power the camera back up behind the shutdown's back.
+
+> On a **shared power pin** (two camera apps, one circuit), the app with *Always On* keeps
+> the circuit up, which is what you'd want. But note that its watchdog cuts power to the
+> *circuit*, so the other camera reboots with it — unavoidable when they share a supply.
 
 <br/>
 

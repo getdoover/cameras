@@ -65,10 +65,37 @@ class CameraPowerConfig(config.Object):
         description="Digital Output pin that controls power to camera circuit.",
         default=0,
     )
+    always_on = config.Boolean(
+        "Always On",
+        description="Keep the camera powered continuously instead of powering it up for "
+        "each snapshot and switching it off again. 'Off After' no longer applies. The "
+        "camera is only ever power cycled when it stops answering pings, which is the "
+        "point of this mode: a camera that has locked up gets rebooted, while one that is "
+        "working is never interrupted.",
+        default=False,
+    )
     timeout = config.Integer(
         "Off After",
-        description="Number of seconds after which the camera will be powered off",
+        description="Number of seconds after which the camera will be powered off. "
+        "Ignored when 'Always On' is set.",
         default=60 * 15,
+        advanced=True,
+    )
+    watchdog_failures = config.Integer(
+        "Power Cycle After Failed Pings",
+        description="How many consecutive failed pings trigger a power cycle in 'Always "
+        "On' mode. More than one so a single dropped packet or a busy camera doesn't cut "
+        "the power.",
+        default=3,
+        minimum=1,
+        advanced=True,
+    )
+    power_cycle_secs = config.Integer(
+        "Power Cycle Off Duration",
+        description="Seconds to hold power off during a power cycle. Long enough for the "
+        "camera to actually lose power rather than brown out.",
+        default=15,
+        minimum=1,
         advanced=True,
     )
     wake_delay = config.Integer(
