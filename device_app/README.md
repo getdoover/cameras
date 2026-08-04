@@ -107,7 +107,7 @@ night-time intruder alarm, falls back to basic motion detection (which coexists 
 AcuSense cameras classify targets **on-camera as human / vehicle / animal** via intrusion (field)
 detection over ISAPI — this is the driver for **person / intruder detection**. On setup the app
 **creates the intrusion rule** if the camera doesn't have one, with a default full-frame zone detecting
-**both human and vehicle** at the configured **Detection Sensitivity**, a 1-second dwell time, and
+**both human and vehicle** at the configured **Detection Sensitivity**, a **0-second** dwell time, and
 re-alarm-on-a-static-target **on** (see below — the night alarm depends on it). It then **disables `regionEntrance`, `regionExiting` and
 `LineDetection`** (their polygons are preserved) and ignores their events: intrusion already reports what
 they would, and every rule left on is a second event — and so a second snapshot, upload and inference
@@ -265,9 +265,15 @@ results for analysis.
 **The same rule (intrusion) drives day and night**, so the zone you draw is the zone that
 detects, at any hour. Intrusion triggers on a target being *in* the region, which is what
 catches someone already in frame, someone appearing inside it, and someone crossing only
-the outer margin — none of which a boundary-crossing rule can see. Its dwell time is
-pinned to **1 second**, the firmware minimum, so a target that crosses quickly still fires;
-the stock rule shipped `5`, which silently missed anyone faster than that.
+the outer margin — none of which a boundary-crossing rule can see. Its dwell time defaults
+to **0 seconds** — report it as soon as it's classified — so a target crossing quickly still
+fires; the stock rule shipped `5`, which silently missed anyone faster than that. It's
+**per-zone and editable** in the zone editor (`threshold_secs`), so a zone that flickers can
+be given a second or two without slowing the rest down.
+
+> The app writes that default only when it **creates** the rule. On a camera that already
+> has one, the dwell is left exactly as configured — it belongs to whoever drew the zone, and
+> re-asserting a default on every app start would silently undo their setting.
 
 The catch intrusion brings is that it re-alarms while a target *stays* in the region, so a
 parked car would otherwise keep costing a snapshot, an upload and an inference run. That is
@@ -411,11 +417,12 @@ coordinate space.
     "supported": true, "max_zones": 4, "min_points": 3, "max_points": 10,
     "targets": ["person", "vehicle", "animal", "other"],
     "supports_sensitivity": true, "supports_per_zone_targets": true,
+    "supports_threshold": true, "threshold_min": 0, "threshold_max": 60,
     "supports_disable": false
   },
   "zones": [
     {"id": 1, "enabled": true, "points": [[0.1,0.1],[0.9,0.1],[0.9,0.9],[0.1,0.9]],
-     "targets": ["person","vehicle"], "sensitivity": 70}
+     "targets": ["person","vehicle"], "sensitivity": 70, "threshold_secs": 0}
   ]
 }
 ```
@@ -432,12 +439,16 @@ entry — starting up isn't somebody editing zones).
 | `targets` | Any of `person`, `vehicle`, `animal`, `other` — check `capabilities.targets` for what this camera accepts |
 | `enabled` | Only meaningful when `capabilities.supports_disable` |
 | `sensitivity` | `0`–`100`. Only when `capabilities.supports_sensitivity` |
+| `threshold_secs` | How long a target must stay in the zone before it counts. Only when `capabilities.supports_threshold`; range is `threshold_min`–`threshold_max` (`0`–`60` on Hikvision). **`0` means report it as soon as it's classified**, and is the default |
 
 **Always drive the editor off `capabilities`** rather than assuming:
 
 - `max_zones` / `min_points` / `max_points` — Hikvision genuinely rejects a 2-point or 11-point zone
 - `supports_disable: false` on Hikvision — it accepts a region `enabled` change, replies OK, and **ignores
   it**. Offer *delete*, not a toggle
+- `threshold_min` / `threshold_max` — a dwell slider can't guess this the way it can assume `0`–`100` for
+  sensitivity, and the useful end of the range is the bottom: **`0`** catches a vehicle crossing at speed,
+  while even `1`–`2` starts missing them. The camera's own default is `0`
 - `supported: false` — hide the editor entirely
 
 Out-of-range points are clamped rather than rejected, so a drag past the frame edge won't fail the write.

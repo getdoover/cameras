@@ -670,16 +670,19 @@ def test_intrusion_is_the_only_rule():
     assert "regionEntrance" not in SMART_EVENT_TYPES
     assert "regionEntrance" in UNUSED_SMART_RULES
 
-    # Dwell time is the "regardless of how fast they run in" knob. The stock rule shipped
-    # 5s, which silently misses anyone crossing the region quicker than that.
-    assert INTRUSION_DWELL_SECS == 1
+    # Dwell time is the "regardless of how fast they run in" knob, and the default is the
+    # camera's own floor: report it as soon as it's classified. The stock rule shipped 5s,
+    # enough to miss a vehicle crossing the zone entirely.
+    assert INTRUSION_DWELL_SECS == 0
     client = HikvisionClient.__new__(HikvisionClient)
     body = client._default_field_detection_body(True, ["human"], 50, 1)
-    assert "<timeThreshold>1</timeThreshold>" in body
-    # ...and the same value on the path that writes user-drawn zones, so editing a zone
-    # can't quietly change how fast a target has to move to be missed.
+    assert "<timeThreshold>0</timeThreshold>" in body
+    # A zone that doesn't specify one gets the same default...
     region = {"id": 1, "points": [(10, 10)], "targets": ["human"], "sensitivity": 50}
-    assert "<timeThreshold>1</timeThreshold>" in client._field_detection_region(region)
+    assert "<timeThreshold>0</timeThreshold>" in client._field_detection_region(region)
+    # ...and one that does gets what it asked for, since it's per-zone now.
+    region["time_threshold"] = 4
+    assert "<timeThreshold>4</timeThreshold>" in client._field_detection_region(region)
 
 
 def test_rewrite_element_leaves_absent_tags_alone():
@@ -1428,3 +1431,74 @@ def test_third_tab_is_empty_and_still_present():
     # The container is still built and still handed to the TabContainer.
     assert 'name="detection"' in source
     assert "children=[self.history, *live_views, container]" in source
+
+
+def test_zone_threshold_seconds_round_trip():
+    """Per-zone dwell time travels with the zone, like sensitivity."""
+    import asyncio
+    import types
+
+    from camera_app.clients.hikvision import INTRUSION_DWELL_SECS
+    from camera_app.engines.hikvision_acusense import HikvisionAcuSenseCamera
+    from camera_app.events import DetectionTarget, DetectionZone
+
+    caps = HikvisionAcuSenseCamera.ZONE_CAPABILITIES
+    # The frontend can't guess 0..60 the way it can assume 0..100 for sensitivity.
+    assert caps["supports_threshold"] is True
+    assert (caps["threshold_min"], caps["threshold_max"]) == (0, 60)
+
+    # --- write ---
+    written = {}
+
+    async def fake_write(regions, channel=1):
+        written["regions"] = regions
+
+    async def fake_static(enabled, channel=1):
+        return 5
+
+    cam = HikvisionAcuSenseCamera.__new__(HikvisionAcuSenseCamera)
+    cam.config = types.SimpleNamespace(sensitivity=types.SimpleNamespace(value=50))
+    cam.client = types.SimpleNamespace(
+        set_field_detection_regions=fake_write, set_static_target_alarm=fake_static
+    )
+
+    points = [(0.2, 0.2), (0.6, 0.2), (0.6, 0.6)]
+    zones = [
+        DetectionZone(id=1, points=points, targets=[DetectionTarget.person], threshold_secs=4),
+        DetectionZone(id=2, points=points, targets=[DetectionTarget.vehicle]),  # unset
+        DetectionZone(id=3, points=points, threshold_secs=900),  # beyond the camera's max
+    ]
+    asyncio.run(cam.set_detection_zones(zones))
+    regions = written["regions"]
+    assert regions[0]["time_threshold"] == 4
+    # Unset means the default, not "leave the slot alone" - the body is rebuilt regardless.
+    assert regions[1]["time_threshold"] == INTRUSION_DWELL_SECS
+    # Clamped rather than rejected, like out-of-frame coordinates.
+    assert regions[2]["time_threshold"] == 60
+    # Blanked slots get the default too, so a deleted zone doesn't leave a stale dwell.
+    assert regions[3]["time_threshold"] == INTRUSION_DWELL_SECS
+
+    # --- read back ---
+    async def fake_read(channel=1):
+        return [
+            {
+                "id": 1,
+                "enabled": True,
+                "points": [(200, 200), (600, 200), (600, 600)],
+                "targets": ["human"],
+                "sensitivity": 70,
+                "time_threshold": 4,
+            }
+        ]
+
+    cam.client = types.SimpleNamespace(get_field_detection_regions=fake_read)
+    (zone,) = asyncio.run(cam.get_detection_zones())
+    assert zone.threshold_secs == 4
+    assert zone.to_dict()["threshold_secs"] == 4
+
+    # A zero must survive the round trip rather than being dropped as falsy - it's the
+    # default and it means something ("report it immediately").
+    assert DetectionZone.from_dict({"id": 1, "threshold_secs": 0}).threshold_secs == 0
+    assert DetectionZone(id=1, points=[], threshold_secs=0).to_dict()["threshold_secs"] == 0
+    # Absent stays absent, so a camera that can't do it doesn't advertise a bogus value.
+    assert "threshold_secs" not in DetectionZone(id=1, points=[]).to_dict()

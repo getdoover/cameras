@@ -229,6 +229,12 @@ class DetectionZone:
     exactly what the user drew and never has to know about the camera underneath;
     each engine converts to its own native space (Hikvision 0..1000, Dahua 0..8191)
     and flips axes where needed.
+
+    ``threshold_secs`` is how long a target must stay inside the zone before it counts —
+    the other half of "will this catch someone walking past", alongside ``sensitivity``.
+    ``0`` means report it as soon as the camera classifies it, which is what you want on a
+    road; a second or two suppresses things that flicker in and out at the boundary. Check
+    ``capabilities.supports_threshold`` and its min/max before offering the control.
     """
 
     def __init__(
@@ -239,6 +245,7 @@ class DetectionZone:
         name: str = None,
         targets: list = None,
         sensitivity: int = None,
+        threshold_secs: int = None,
     ):
         self.id = id
         self.points = points
@@ -246,6 +253,7 @@ class DetectionZone:
         self.name = name
         self.targets = targets or []
         self.sensitivity = sensitivity
+        self.threshold_secs = threshold_secs
 
     @staticmethod
     def _clamp(value: float) -> float:
@@ -266,6 +274,7 @@ class DetectionZone:
                 pass  # unknown target from a newer frontend - ignore, don't fail
 
         sensitivity = payload.get("sensitivity")
+        threshold = payload.get("threshold_secs")
         return cls(
             id=int(payload.get("id", 1)),
             points=points,
@@ -273,6 +282,9 @@ class DetectionZone:
             name=payload.get("name"),
             targets=targets,
             sensitivity=int(sensitivity) if sensitivity is not None else None,
+            # 0 is a real value here (report immediately), so this can't collapse a
+            # supplied 0 into "unset" the way a truthiness check would.
+            threshold_secs=int(threshold) if threshold is not None else None,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -286,6 +298,8 @@ class DetectionZone:
             payload["name"] = self.name
         if self.sensitivity is not None:
             payload["sensitivity"] = self.sensitivity
+        if self.threshold_secs is not None:
+            payload["threshold_secs"] = self.threshold_secs
         return payload
 
 

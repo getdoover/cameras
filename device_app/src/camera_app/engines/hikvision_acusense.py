@@ -42,7 +42,11 @@ from pydoover.models import File
 
 from .base import CameraBase, THUMBNAIL_FILENAME
 from ..clients import HikvisionClient
-from ..clients.hikvision import INTRUSION_DWELL_SECS, NORMALIZED_SCREEN
+from ..clients.hikvision import (
+    INTRUSION_DWELL_MAX_SECS,
+    INTRUSION_DWELL_SECS,
+    NORMALIZED_SCREEN,
+)
 from ..events import (
     DetectionTarget,
     DetectionZone,
@@ -131,6 +135,12 @@ class HikvisionAcuSenseCamera(CameraBase):
         "max_points": 10,
         "targets": [t.value for t in TARGET_TO_HIK],
         "supports_sensitivity": True,
+        # Per-zone dwell time: how long a target must be in the zone before it counts.
+        # The range is the camera's own advertised one (timeThreshold min=0 max=60), and
+        # the frontend needs it — unlike sensitivity, 0..60 isn't guessable.
+        "supports_threshold": True,
+        "threshold_min": INTRUSION_DWELL_SECS,
+        "threshold_max": INTRUSION_DWELL_MAX_SECS,
         "supports_per_zone_targets": True,
         # The camera answers OK to a region <enabled> change and then ignores it, so
         # a zone can't be switched off - it has to be removed. The frontend should
@@ -205,7 +215,7 @@ class HikvisionAcuSenseCamera(CameraBase):
         sensitivity = self.config.sensitivity.value
         log.info(
             f"Configuring intrusion detection: targets={RULE_TARGETS} "
-            f"sensitivity={sensitivity} dwell={INTRUSION_DWELL_SECS}s"
+            f"sensitivity={sensitivity} (per-zone dwell left as configured)"
         )
         try:
             await self.client.set_field_detection(True, RULE_TARGETS, sensitivity)
@@ -530,6 +540,22 @@ class HikvisionAcuSenseCamera(CameraBase):
         else:
             await self.arm_night_deterrent(self.config.is_night())
 
+    @classmethod
+    def _clamp_threshold(cls, secs: int) -> int:
+        """A zone's dwell time, defaulted and held inside what the camera accepts.
+
+        Clamped rather than rejected, like zone coordinates: a frontend sending 90 on a
+        camera that stops at 60 shouldn't lose the whole write. ``None`` means the zone
+        didn't specify one, which is the default rather than "leave it alone" — there is no
+        per-slot value to preserve once the region body is rebuilt.
+        """
+        if secs is None:
+            return INTRUSION_DWELL_SECS
+        return max(
+            cls.ZONE_CAPABILITIES["threshold_min"],
+            min(cls.ZONE_CAPABILITIES["threshold_max"], int(secs)),
+        )
+
     def _warn_if_realarm_outlasts_cooldown(self, interval: int) -> None:
         """Warn when the camera re-alarms slower than the app gives up waiting.
 
@@ -763,6 +789,7 @@ class HikvisionAcuSenseCamera(CameraBase):
                         if t in HIK_TO_TARGET
                     ],
                     sensitivity=region["sensitivity"],
+                    threshold_secs=region.get("time_threshold"),
                 )
             )
         return zones
@@ -799,6 +826,7 @@ class HikvisionAcuSenseCamera(CameraBase):
                         if zone.sensitivity is not None
                         else self.config.sensitivity.value
                     ),
+                    "time_threshold": self._clamp_threshold(zone.threshold_secs),
                 }
             )
 
@@ -812,6 +840,7 @@ class HikvisionAcuSenseCamera(CameraBase):
                     "points": [],
                     "targets": list(RULE_TARGETS),
                     "sensitivity": self.config.sensitivity.value,
+                    "time_threshold": INTRUSION_DWELL_SECS,
                 }
             )
 

@@ -49,11 +49,17 @@ NORMALIZED_SCREEN = 1000
 # unlike intrusion this cannot be full-frame -- see _default_region_entrance_body.
 ENTRANCE_INSET = 250
 
-# How long a target must be inside an intrusion region before the rule fires, in
-# seconds. The lowest the firmware accepts is 1, and 1 is what we want: this is the
-# "regardless of how fast they run in" knob, and anything higher silently misses anyone
-# who crosses the region quicker than that. The stock rule shipped 5.
-INTRUSION_DWELL_SECS = 1
+# Default seconds a target must be inside an intrusion region before the rule fires. This
+# is the "regardless of how fast they run in" knob: anything above zero silently misses
+# anyone who crosses the region quicker than that, and the stock rule shipped **5**, which
+# is enough to miss a vehicle entirely. Zero is the camera's own default and the bottom of
+# its advertised range (`timeThreshold min="0" max="60" def="0"`), and means "report it as
+# soon as you've classified it".
+#
+# Only a default: it is per-zone and user-editable through the zone editor, so nothing here
+# overwrites a threshold somebody has set (see set_field_detection).
+INTRUSION_DWELL_SECS = 0
+INTRUSION_DWELL_MAX_SECS = 60
 
 # A zone whose points come this close to the frame edge leaves too little room for a
 # target to be tracked outside it, so entrance may never fire for that zone. Used to warn
@@ -634,7 +640,6 @@ class HikvisionClient:
         targets: list = None,
         sensitivity: int = 50,
         channel: int = 1,
-        dwell_secs: int = INTRUSION_DWELL_SECS,
     ) -> dict:
         """
         Create/enable intrusion (field) detection and set its target + sensitivity.
@@ -645,9 +650,10 @@ class HikvisionClient:
         default full-frame region so the feature works out of the box. ``targets`` is a
         list of Hikvision target tokens (``human``, ``vehicle``, ...).
 
-        ``dwell_secs`` is written to every region slot, so the rule can't be left with a
-        long dwell on one slot and a short one on another -- which is how a camera ends up
-        detecting nobody in one corner of the frame for no visible reason.
+        The dwell time is deliberately **not** touched on an existing rule: it is per-zone
+        and owned by whoever drew the zone (see ``set_field_detection_regions``), so
+        asserting a default here would silently undo their setting on every app start. A
+        rule this app creates from scratch gets :data:`INTRUSION_DWELL_SECS`.
         """
         try:
             raw = (await self.get_bytes(
@@ -682,7 +688,6 @@ class HikvisionClient:
                 raw,
                 count=1,
             )
-        raw = self._rewrite_element(raw, "timeThreshold", str(dwell_secs))
         return await self.put(f"/ISAPI/Smart/FieldDetection/{channel}", body=raw)
 
     @staticmethod
@@ -775,7 +780,12 @@ class HikvisionClient:
             if _strip_ns(element.tag) != "FieldDetectionRegion":
                 continue
 
-            region = {"points": [], "targets": [], "sensitivity": None}
+            region = {
+                "points": [],
+                "targets": [],
+                "sensitivity": None,
+                "time_threshold": None,
+            }
             for child in element.iter():
                 tag = _strip_ns(child.tag)
                 text = (child.text or "").strip()
@@ -785,6 +795,8 @@ class HikvisionClient:
                     region["enabled"] = text == "true"
                 elif tag == "sensitivityLevel":
                     region["sensitivity"] = int(text or 0)
+                elif tag == "timeThreshold":
+                    region["time_threshold"] = int(text or 0)
                 elif tag == "detectionTarget":
                     region["targets"] = [t for t in text.split(",") if t]
                 elif tag == "RegionCoordinates":

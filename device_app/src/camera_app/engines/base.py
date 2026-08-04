@@ -69,6 +69,9 @@ class CameraBase:
         "max_points": 0,
         "targets": [],
         "supports_sensitivity": False,
+        "supports_threshold": False,
+        "threshold_min": 0,
+        "threshold_max": 0,
         "supports_per_zone_targets": False,
         "supports_disable": False,
     }
