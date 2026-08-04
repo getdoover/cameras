@@ -90,7 +90,15 @@ a notification.
 > The camera's arming schedule runs on **the camera's own clock**, which on these models is `manual` and
 > resets to 2019 on a power cut (flat RTC), leaving it to arm at the wrong hours forever. The app
 > therefore syncs the camera's clock (and timezone) from the device at setup and re-checks it each loop,
-> correcting drift over 60s. This also matters for event clips, whose recording search is time-based.
+> correcting drift over **5 seconds** — `MAX_CLOCK_DRIFT_SECS`.
+>
+> Seconds, not minutes, because of event clips rather than the schedule. The clip search asks the camera
+> for a ~25-second window around an event, and the camera both stamps segments and answers searches on its
+> own clock — so a sub-minute offset means every search misses and the app reports "no recording" while the
+> footage sits on the card the whole time. Measured on a DS-2CD2387G3 running 44s behind its doovit: not
+> one clip was ever found. The search also **shifts the window by the measured offset** and widens it by
+> `EVENT_CLIP_SEARCH_MARGIN`, then picks the segment overlapping the event most — so residual drift between
+> clock checks can't cost a clip either.
 
 | Setting | Description | Default |
 |---------|-------------|---------|

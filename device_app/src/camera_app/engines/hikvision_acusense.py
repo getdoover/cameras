@@ -88,6 +88,21 @@ UNUSED_SMART_RULES = ("regionEntrance", "regionExiting", "LineDetection")
 # downstream, not what the camera looks for.
 RULE_TARGETS = ["human", "vehicle"]
 
+# How far the camera's clock may be out before it is rewritten.
+#
+# Seconds, not minutes, and that is the whole point: the arming schedule only cares about
+# the hour, but the event-clip search asks the camera for a ~25s window around an event and
+# the camera answers on its own clock. Measured on a DS-2CD2387G3 sitting 44s behind the
+# doovit: every single search returned "no recording" while the footage was on the card the
+# whole time, 44s from where we looked. The clock is manual (no reachable NTP), so it will
+# keep drifting and this will keep correcting it.
+MAX_CLOCK_DRIFT_SECS = 5
+
+# Extra slack each side of the event window when searching the card, on top of the clock
+# offset. Covers the residual drift under MAX_CLOCK_DRIFT_SECS, plus the camera opening its
+# segment a moment after the trigger.
+EVENT_CLIP_SEARCH_MARGIN = timedelta(seconds=30)
+
 # How often the app re-writes the camera's arming schedule and the flash/siren linkage.
 # Purely a correction for drift we didn't cause — a web-UI visit, a firmware quirk, a
 # factory reset — since both live on the camera and nothing tells us when they change.
@@ -154,6 +169,9 @@ class HikvisionAcuSenseCamera(CameraBase):
         # without waiting for the periodic re-assert, and the re-assert is cheap.
         self._schedule_windows: list = None
         self._schedule_asserted_at: datetime = None
+        # How far the camera's clock is ahead of ours, measured by sync_camera_clock.
+        # Applied to the recording search, which runs on the camera's clock.
+        self.clock_offset: timedelta = timedelta(0)
         # How event clips get captured: "sd" (camera records to its microSD, we
         # fetch over ContentMgmt), "ffmpeg" (we record the RTSP stream ourselves),
         # or None (clips off / not possible). Resolved in setup().
@@ -297,12 +315,22 @@ class HikvisionAcuSenseCamera(CameraBase):
         except Exception as e:
             log.warning(f"Failed to pulse alarm output: {e}", exc_info=e)
 
-    async def sync_camera_clock(self, max_drift_secs: int = 60) -> bool:
+    async def sync_camera_clock(self, max_drift_secs: int = MAX_CLOCK_DRIFT_SECS) -> bool:
         """Keep the camera's clock in step with ours, correcting it when it drifts.
 
-        Ours comes from the doovit, which is NTP-synced; the camera's is manual and
-        resets to 2019 on a power cut, so this is checked periodically rather than
-        only at setup. Returns whether the clock was (re)set.
+        Ours comes from the doovit, which is NTP-synced; the camera's is manual and resets
+        to 2019 on a power cut, so this is re-checked from the main loop (every second)
+        rather than only at setup. The read is cheap and the write only happens when the
+        camera is more than ``max_drift_secs`` out, so the steady state is one GET per loop
+        and no writes. Returns whether the clock was (re)set.
+
+        Checking this often also keeps :attr:`clock_offset` fresh, which is what the
+        event-clip search is shifted by.
+
+        Also records how far out the camera is (:attr:`clock_offset`), because a few
+        seconds of drift is enough to break the event-clip search even though it is
+        nowhere near enough to matter to an arming schedule -- see
+        :data:`MAX_CLOCK_DRIFT_SECS` and :meth:`_fetch_sd_video`.
         """
         now = datetime.now().astimezone()
         try:
@@ -314,8 +342,11 @@ class HikvisionAcuSenseCamera(CameraBase):
             log.warning(f"Failed to read camera clock: {e}", exc_info=e)
             return False
         else:
-            drift = abs((camera_time - now).total_seconds())
+            offset = (camera_time - now).total_seconds()
+            drift = abs(offset)
             if drift <= max_drift_secs:
+                # Not worth a write, but the residual still shifts the search window.
+                self.clock_offset = timedelta(seconds=offset)
                 return False
             log.info(
                 f"Camera clock is {drift:.0f}s out (camera={camera_time.isoformat()}, "
@@ -328,6 +359,7 @@ class HikvisionAcuSenseCamera(CameraBase):
             log.warning(f"Failed to set camera clock: {e}", exc_info=e)
             return False
 
+        self.clock_offset = timedelta(0)
         log.info(f"Camera clock set to {now.isoformat()}.")
         return True
 
@@ -619,9 +651,31 @@ class HikvisionAcuSenseCamera(CameraBase):
         What comes back is *not* an mp4 despite the name — it's Hikvision's IMKH
         container around an MPEG program stream — so it gets remuxed before upload
         (see :meth:`remux_to_mp4`).
+
+        The window is asked for in **the camera's** clock, not ours. It stamps segments and
+        answers searches on its own manual clock, so a few seconds of drift against a ~25s
+        window means every search misses — the footage is on the card, just not where we
+        looked (measured: 44s behind, and not one clip was ever found). So the offset
+        measured by :meth:`sync_camera_clock` is applied, plus a margin either side.
         """
-        matches = await self.client.search_recordings(start, end)
-        for match in matches:
+        offset = self.clock_offset
+        matches = await self.client.search_recordings(
+            start + offset - EVENT_CLIP_SEARCH_MARGIN,
+            end + offset + EVENT_CLIP_SEARCH_MARGIN,
+        )
+        if abs(offset.total_seconds()) >= 1:
+            log.info(
+                f"Searched the card shifted by {offset.total_seconds():.0f}s for the "
+                f"camera's clock."
+            )
+
+        # Widening the window can pull in a neighbouring event's segment, so prefer the one
+        # that overlaps the event itself most rather than whichever came back first.
+        for match in sorted(
+            matches,
+            key=lambda m: self._overlap_secs(m, start + offset, end + offset),
+            reverse=True,
+        ):
             uri = match.get("mediaSegmentDescriptor.playbackURI")
             if not uri:
                 continue
@@ -633,8 +687,27 @@ class HikvisionAcuSenseCamera(CameraBase):
             log.info(f"Fetched {len(data)} bytes of on-card recording; remuxing.")
             return await self.remux_to_mp4(data, "event")
 
-        log.info("Camera reported no recording for the event window.")
+        log.info(
+            f"Camera reported no recording between {start.isoformat()} and "
+            f"{end.isoformat()} (camera clock offset {offset.total_seconds():.0f}s)."
+        )
         return None
+
+    @staticmethod
+    def _overlap_secs(match: dict, start: datetime, end: datetime) -> float:
+        """How many seconds of ``match`` fall inside the event window. 0 if unknown."""
+        try:
+            seg_start = datetime.fromisoformat(
+                match["timeSpan.startTime"].replace("Z", "+00:00")
+            )
+            seg_end = datetime.fromisoformat(
+                match["timeSpan.endTime"].replace("Z", "+00:00")
+            )
+        except (KeyError, ValueError, AttributeError):
+            return 0.0
+        latest_start = max(seg_start, start)
+        earliest_end = min(seg_end, end)
+        return max(0.0, (earliest_end - latest_start).total_seconds())
 
     async def get_still_snapshot(self, rtsp_uri: str) -> File:
         """Use the ISAPI snapshot endpoint instead of ffmpeg."""

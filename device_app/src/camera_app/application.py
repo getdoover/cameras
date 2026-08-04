@@ -797,12 +797,10 @@ class CameraApplication(Application):
     def claim_motion_snapshot(self) -> bool:
         """Whether a motion snapshot may be taken now, claiming the slot if so.
 
-        The camera is asked to report a target once rather than re-alarm while it stays in
-        the zone (``set_static_target_alarm``), which is what lets one rule cover both day
-        and night. This is the backstop for that: the setting only exists on some firmware,
-        and these cameras will answer OK to a field and then ignore it — in which case a
-        vehicle parked in frame would otherwise be a snapshot, an upload and a cloud
-        inference run every few seconds.
+        The camera keeps re-reporting a target while it stays in the zone, because the night
+        alarm needs to know the intruder is still there (see ``set_static_target_alarm``).
+        This is what stops that costing a snapshot, an upload and a cloud inference run
+        every few seconds for the same parked vehicle.
 
         Only the *picture* is throttled. The alarm, the notification and the
         ``camera_event`` are not: a siren that skips the second detection because the first
@@ -846,7 +844,18 @@ class CameraApplication(Application):
             return
 
         self._last_intruder_event_at = datetime.now(tz=timezone.utc)
-        # Both are no-ops while already running; they matter if one lost its race with the
+
+        # Keep the camera's relay energised for as long as they're there. This is the one
+        # output that has to be re-driven rather than held: it's pulsed for pulse_secs, so
+        # chaining a fresh pulse each time the pulse ends keeps the siren going while
+        # preserving the property that matters -- if this app dies, the relay drops on its
+        # own within one pulse instead of sticking on. On an install with no Doovit
+        # strobe/horn pins wired this is the *only* alarm output, so leaving it out of the
+        # continuation path meant the siren ran for one pulse and stopped, however long the
+        # intruder stayed.
+        self.start_alarm_pulse()
+
+        # Both no-ops while already running; they matter if one lost its race with the
         # cooldown while the intruder was, in fact, still standing there.
         self.start_external_alarm()
         if getattr(self.engine, "event_clip_mode", None):

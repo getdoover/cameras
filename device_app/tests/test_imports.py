@@ -972,9 +972,13 @@ def test_continuation_extends_only_a_live_event():
                 event_clip_cooldown=types.SimpleNamespace(value=15)
             )
         )
-        app.engine = types.SimpleNamespace(event_clip_mode=None)
+        app.engine = types.SimpleNamespace(event_clip_mode=None, fire_alarm=None)
         app._last_intruder_event_at = last_event_at
         app._external_alarm_task = types.SimpleNamespace(done=lambda: False)
+        # An in-flight pulse, so the guard in start_alarm_pulse short-circuits rather than
+        # trying to schedule one on a stub.
+        app._alarm_pulse_task = types.SimpleNamespace(done=lambda: False)
+        app.pulses = []
         return app
 
     now = datetime.now(tz=timezone.utc)
@@ -984,6 +988,16 @@ def test_continuation_extends_only_a_live_event():
     app = make_app(now - timedelta(seconds=10))
     asyncio.run(app.on_detection_continues())
     assert (app._last_intruder_event_at - now).total_seconds() > -1
+
+    # ...and the camera's relay is re-driven. It is pulsed, not held, so on an install with
+    # no Doovit strobe/horn pins wired it is the ONLY alarm output and stops after one
+    # pulse unless each continuation chains another.
+    fired = []
+    app = make_app(now - timedelta(seconds=10))
+    app._alarm_pulse_task = None  # nothing in flight
+    app.start_alarm_pulse = lambda: fired.append(True)
+    asyncio.run(app.on_detection_continues())
+    assert fired == [True]
 
     # Already over (cooldown lapsed): the clip has been fetched and uploaded by now, so
     # reviving it would produce a second clip of an intruder we've already reported.
@@ -996,3 +1010,72 @@ def test_continuation_extends_only_a_live_event():
     app = make_app(None)
     asyncio.run(app.on_detection_continues())
     assert app._last_intruder_event_at is None
+
+
+def test_event_clip_search_uses_the_cameras_clock():
+    """The card is searched in the camera's time base, not ours.
+
+    Measured on a DS-2CD2387G3 sitting 44s behind the doovit: every event-clip search
+    returned "no recording" while the footage sat on the card the whole time, 44 seconds
+    from where the app looked. The search window is ~25s wide, so sub-minute drift is
+    enough to miss every single clip.
+    """
+    import asyncio
+    import types
+    from datetime import datetime, timedelta, timezone
+
+    from camera_app.engines.hikvision_acusense import (
+        EVENT_CLIP_SEARCH_MARGIN,
+        MAX_CLOCK_DRIFT_SECS,
+        HikvisionAcuSenseCamera,
+    )
+
+    # Hour-level tolerance is no good for a second-level search.
+    assert MAX_CLOCK_DRIFT_SECS <= 5
+
+    asked = {}
+    event_start = datetime(2026, 8, 4, 4, 35, 40, tzinfo=timezone.utc)
+    event_end = datetime(2026, 8, 4, 4, 36, 6, tzinfo=timezone.utc)
+
+    # What the camera really had on the card for that event, on its own clock: 44s earlier.
+    segment = {
+        "timeSpan.startTime": "2026-08-04T04:35:00Z",
+        "timeSpan.endTime": "2026-08-04T04:35:16Z",
+        "mediaSegmentDescriptor.playbackURI": "rtsp://cam/the-event",
+    }
+    # A neighbouring event's segment, which the widened window also pulls in.
+    other = {
+        "timeSpan.startTime": "2026-08-04T04:33:00Z",
+        "timeSpan.endTime": "2026-08-04T04:33:20Z",
+        "mediaSegmentDescriptor.playbackURI": "rtsp://cam/the-wrong-one",
+    }
+
+    cam = HikvisionAcuSenseCamera.__new__(HikvisionAcuSenseCamera)
+    cam.clock_offset = timedelta(seconds=-44)
+
+    async def search_recordings(start, end, **kwargs):
+        asked["start"], asked["end"] = start, end
+        return [other, segment]
+
+    async def download_recording(uri):
+        asked["uri"] = uri
+        return b"IMKH-bytes"
+
+    async def remux(data, name):
+        return f"{name}.mp4"
+
+    cam.client = types.SimpleNamespace(
+        search_recordings=search_recordings, download_recording=download_recording
+    )
+    cam.remux_to_mp4 = remux
+
+    assert asyncio.run(cam._fetch_sd_video(event_start, event_end)) == "event.mp4"
+    # The window is shifted onto the camera's clock and widened by the margin.
+    assert asked["start"] == event_start - timedelta(seconds=44) - EVENT_CLIP_SEARCH_MARGIN
+    assert asked["end"] == event_end - timedelta(seconds=44) + EVENT_CLIP_SEARCH_MARGIN
+    # Widening can pull in a neighbour, so the one overlapping the event most is taken -
+    # not whichever the camera happened to list first.
+    assert asked["uri"] == "rtsp://cam/the-event"
+
+    # A match with no parsable span scores zero rather than blowing up the sort.
+    assert cam._overlap_secs({}, event_start, event_end) == 0.0
