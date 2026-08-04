@@ -481,8 +481,12 @@ class HikvisionAcuSenseCamera(CameraBase):
             log.warning(f"Failed to write native arming schedule: {e}", exc_info=e)
             accepted = False
 
+        # Remembered whether or not the camera took it. Keeping this None on rejection
+        # made `changed` true on every pass, so a camera that refuses a schedule got a PUT
+        # every second, forever — a retry storm that looks like the app pegging a CPU.
+        # Rejection now retries on the same REASSERT_SECS cadence as everything else.
         self._schedule_asserted_at = now
-        self._schedule_windows = windows if accepted else None
+        self._schedule_windows = windows
 
         # Whether the *camera* can gate the deterrent for us, which is a stronger claim
         # than "the camera took a schedule". It can only do that when the schedule means

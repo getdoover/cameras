@@ -40,6 +40,12 @@ ALERT_START = b"<EventNotificationAlert"
 EVENT_IMAGE_WAIT_SECS = 3
 MAX_STREAM_BUFFER = 8 * 1024 * 1024
 
+# How long to wait before reconnecting a dropped alertStream, and how many empty reads in a
+# row mean the connection is finished rather than merely quiet. The empty-read cap is the
+# backstop that turns "stream broken" into a reconnect instead of a pegged CPU.
+RECONNECT_DELAY_SECS = 1
+MAX_EMPTY_READS = 20
+
 # Hikvision expresses smart-detection coordinates against a virtual screen of this
 # size rather than the real resolution (reported as <normalizedScreenSize>).
 NORMALIZED_SCREEN = 1000
@@ -1480,7 +1486,23 @@ class HikvisionClient:
         if not (self._username or self._password):
             return
 
+        # A loop, not recursion. Reconnecting by calling itself grew the stack by a frame
+        # per disconnect and never unwound it.
+        while True:
+            try:
+                await self._read_event_stream(url, callback)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                _LOGGER.info(f"Event stream dropped ({e}); reconnecting.")
+            else:
+                _LOGGER.info("Event stream ended; reconnecting.")
+            await asyncio.sleep(RECONNECT_DELAY_SECS)
+
+    async def _read_event_stream(self, url: str, callback) -> None:
+        """One connection's worth of alerts. Returns when the stream ends."""
         response = None
+        read: asyncio.Task | None = None
         try:
             auth = DigestAuth(self._username, self._password, self._session)
             response = await auth.request("GET", url)
@@ -1491,22 +1513,50 @@ class HikvisionClient:
             # and its frame reach the app together.
             pending: dict | None = None
             chunks = response.content.iter_chunks().__aiter__()
+            empty_reads = 0
 
             while True:
-                try:
-                    # Only ever wait a bounded time when something is pending: an alert
-                    # must not sit here because a promised picture never turned up.
-                    data, _ = await asyncio.wait_for(
-                        chunks.__anext__(),
-                        EVENT_IMAGE_WAIT_SECS if pending is not None else None,
-                    )
-                except StopAsyncIteration:
-                    break
-                except asyncio.TimeoutError:
+                # The read is a task we keep across iterations, and it is NEVER cancelled.
+                #
+                # It used to be `await asyncio.wait_for(chunks.__anext__(), timeout)`, which
+                # cancels the read on timeout — and cancelling mid-await *closes* the async
+                # generator, so every subsequent read raised StopAsyncIteration instantly.
+                # That killed the event stream silently and span this loop at 100% of a
+                # core, raising an exception per iteration, with no syscalls and nothing in
+                # the log to show for it. Waiting on the task instead leaves the read intact
+                # to be picked up on the next pass.
+                if read is None:
+                    read = asyncio.ensure_future(chunks.__anext__())
+
+                done, _ = await asyncio.wait(
+                    {read},
+                    timeout=EVENT_IMAGE_WAIT_SECS if pending is not None else None,
+                )
+                if not done:
+                    # The promised picture hasn't arrived. Release the event rather than
+                    # hold it: the alarm path needs events promptly.
                     _LOGGER.debug("Picture didn't arrive in time; forwarding the event.")
                     await self._dispatch(callback, pending)
                     pending = None
                     continue
+
+                read = None
+                try:
+                    data, _ = done.pop().result()
+                except StopAsyncIteration:
+                    return
+
+                # A stream that hands back nothing, repeatedly, is finished or broken.
+                # Bailing out to reconnect is the one thing that must not be left to a
+                # `continue`, or this becomes the hot loop it used to be.
+                if not data:
+                    empty_reads += 1
+                    if empty_reads > MAX_EMPTY_READS:
+                        raise ConnectionError(
+                            f"{MAX_EMPTY_READS} empty reads in a row from the alertStream"
+                        )
+                    continue
+                empty_reads = 0
 
                 buffer += data
                 buffer, pending = await self._drain(callback, buffer, pending)
@@ -1522,16 +1572,9 @@ class HikvisionClient:
                     if pending is not None:
                         await self._dispatch(callback, pending)
                         pending = None
-
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            _LOGGER.debug("Event stream disconnected, reconnecting...")
-            if response is not None:
-                response.close()
-            await asyncio.sleep(1)
-            return await self.stream_events(callback, heartbeat)
         finally:
+            if read is not None:
+                read.cancel()
             if response is not None:
                 response.close()
 

@@ -792,12 +792,16 @@ def test_arming_schedule_assert_and_ownership():
     asyncio.run(cam.setup_night_deterrent())
     assert written["linkage"] == [True]  # permanently armed; the schedule gates it
 
-    # Firmware that rejects the schedule always falls back to app-driven arming, and is
-    # retried next loop rather than remembered as written.
+    # Firmware that rejects the schedule falls back to app-driven arming - and is retried
+    # on the normal cadence, NOT every loop. The main loop runs every second, so retrying a
+    # rejected schedule immediately means a PUT per second forever, which looks exactly
+    # like the app pegging a CPU.
     cam, written = make_cam(None, accepted=False)
     asyncio.run(cam.assert_arming_schedule())
     assert cam.native_schedule_active is False
-    assert cam._schedule_windows is None
+    asyncio.run(cam.assert_arming_schedule())
+    assert len(written["schedules"]) == 1
+    cam._schedule_asserted_at -= timedelta(seconds=REASSERT_SECS)
     asyncio.run(cam.assert_arming_schedule())
     assert len(written["schedules"]) == 2
 
@@ -1502,3 +1506,109 @@ def test_zone_threshold_seconds_round_trip():
     assert DetectionZone(id=1, points=[], threshold_secs=0).to_dict()["threshold_secs"] == 0
     # Absent stays absent, so a camera that can't do it doesn't advertise a bogus value.
     assert "threshold_secs" not in DetectionZone(id=1, points=[]).to_dict()
+
+
+def test_stream_survives_a_missing_event_picture():
+    """A promised picture that never arrives must not break the stream or spin the CPU.
+
+    The read used to be wrapped in `asyncio.wait_for`, which cancels it on timeout - and
+    cancelling mid-await CLOSES the async generator, so every later read raised
+    StopAsyncIteration instantly. Measured on a live doovit: the event stream died silently
+    and the loop span at 100% of a core, no syscalls, nothing logged.
+    """
+    import asyncio
+    import types
+
+    from camera_app.clients import hikvision as hik
+    from camera_app.clients.hikvision import HikvisionClient
+    from camera_app.events import EVENT_IMAGE_KEY
+
+    got = []
+    reads = {"n": 0}
+
+    async def chunks():
+        # An alert promising a picture...
+        yield (b"--boundary\r\n" + _alert_xml(), False)
+        # ...which never comes; the camera just goes quiet for longer than the wait.
+        await asyncio.sleep(0.25)
+        reads["n"] += 1
+        # ...then carries on with the next event, which must still be delivered.
+        yield (b"--boundary\r\n" + _alert_xml(pictures=0), False)
+
+    class FakeResponse:
+        content = types.SimpleNamespace(iter_chunks=chunks)
+
+        def raise_for_status(self):
+            pass
+
+        def close(self):
+            pass
+
+    client = HikvisionClient.__new__(HikvisionClient)
+    client._username, client._password, client._session = "u", "p", None
+
+    async def fake_request(method, url, **kwargs):
+        return FakeResponse()
+
+    original_wait, original_auth = hik.EVENT_IMAGE_WAIT_SECS, hik.DigestAuth
+    hik.EVENT_IMAGE_WAIT_SECS = 0.05
+    hik.DigestAuth = lambda *a, **k: types.SimpleNamespace(request=fake_request)
+    try:
+        asyncio.run(client._read_event_stream("http://cam/alertStream", got.append))
+    finally:
+        hik.EVENT_IMAGE_WAIT_SECS = original_wait
+        hik.DigestAuth = original_auth
+
+    # Both events arrive: the first released frameless once the wait lapsed, the second
+    # proving the stream was still readable afterwards.
+    assert len(got) == 2, f"stream died after the timeout: {len(got)} event(s)"
+    assert EVENT_IMAGE_KEY not in got[0]
+    assert got[1]["eventType"] == "fielddetection"
+    # The pending read was resumed, not restarted - the generator was never cancelled.
+    assert reads["n"] == 1
+
+
+def test_empty_reads_reconnect_instead_of_spinning():
+    """A stream handing back nothing forever must raise, not loop at full speed."""
+    import asyncio
+    import types
+
+    import pytest
+
+    from camera_app.clients import hikvision as hik
+    from camera_app.clients.hikvision import MAX_EMPTY_READS, HikvisionClient
+
+    reads = {"n": 0}
+
+    async def chunks():
+        while True:
+            reads["n"] += 1
+            yield (b"", False)
+
+    class FakeResponse:
+        content = types.SimpleNamespace(iter_chunks=chunks)
+
+        def raise_for_status(self):
+            pass
+
+        def close(self):
+            pass
+
+    client = HikvisionClient.__new__(HikvisionClient)
+    client._username, client._password, client._session = "u", "p", None
+    original_auth = hik.DigestAuth
+    hik.DigestAuth = lambda *a, **k: types.SimpleNamespace(
+        request=lambda *a, **k: _immediate(FakeResponse())
+    )
+    try:
+        with pytest.raises(ConnectionError):
+            asyncio.run(client._read_event_stream("http://cam/alertStream", lambda a: None))
+    finally:
+        hik.DigestAuth = original_auth
+
+    # Bounded, so a broken stream costs a reconnect rather than a core.
+    assert reads["n"] <= MAX_EMPTY_READS + 2
+
+
+async def _immediate(value):
+    return value
