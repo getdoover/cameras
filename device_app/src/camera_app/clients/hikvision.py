@@ -46,6 +46,25 @@ MAX_STREAM_BUFFER = 8 * 1024 * 1024
 RECONNECT_DELAY_SECS = 1
 MAX_EMPTY_READS = 20
 
+# The alertStream is one HTTP request that has to stay open for days, so it must not
+# inherit the session's default `ClientTimeout(total=300)` — that killed it every five
+# minutes (measured: reconnects a metronomic 302s apart, the 300s cap plus
+# RECONNECT_DELAY_SECS), and every detection during the reconnect was lost. The timeout
+# is set here rather than on the session so ordinary calls keep theirs.
+#
+# `total` is meaningless for a stream with no end, so liveness is judged on reads
+# instead. The camera sends a heartbeat part roughly every 10s even when nothing is
+# happening (measured at 10.23s, DS-2CD2387G3 / V5.8.32), so a read that goes quiet for
+# this long means the connection is dead rather than merely idle — which is a *tighter*
+# check on a broken link than the 300s it replaces, not a looser one.
+EVENT_STREAM_READ_TIMEOUT_SECS = 60
+EVENT_STREAM_TIMEOUT = aiohttp.ClientTimeout(
+    total=None,
+    connect=None,
+    sock_connect=30,
+    sock_read=EVENT_STREAM_READ_TIMEOUT_SECS,
+)
+
 # Hikvision expresses smart-detection coordinates against a virtual screen of this
 # size rather than the real resolution (reported as <normalizedScreenSize>).
 NORMALIZED_SCREEN = 1000
@@ -1494,7 +1513,12 @@ class HikvisionClient:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                _LOGGER.info(f"Event stream dropped ({e}); reconnecting.")
+                # The type, not just the message: a timeout stringifies to nothing, so
+                # `dropped ()` was all the log had to say about the one failure that
+                # turned out to be systematic.
+                _LOGGER.info(
+                    f"Event stream dropped ({type(e).__name__}: {e}); reconnecting."
+                )
             else:
                 _LOGGER.info("Event stream ended; reconnecting.")
             await asyncio.sleep(RECONNECT_DELAY_SECS)
@@ -1505,7 +1529,7 @@ class HikvisionClient:
         read: asyncio.Task | None = None
         try:
             auth = DigestAuth(self._username, self._password, self._session)
-            response = await auth.request("GET", url)
+            response = await auth.request("GET", url, timeout=EVENT_STREAM_TIMEOUT)
             response.raise_for_status()
 
             buffer = b""
