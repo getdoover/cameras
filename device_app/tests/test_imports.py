@@ -114,6 +114,7 @@ def test_upload_media_sends_every_capture():
 
     app = CameraApplication.__new__(CameraApplication)
     app.app_key = "cam"
+    app.app_display_name = "Camera 1"
     app.device_agent = types.SimpleNamespace(create_message=fake_create_message)
     app.engine = types.SimpleNamespace(detect_night=fake_night)
 
@@ -129,6 +130,8 @@ def test_upload_media_sends_every_capture():
     assert sent["payload"] == {
         "reason": "schedule",
         "night": True,
+        # Anything writing a message a person reads needs a name, not an app key.
+        "camera_name": "Camera 1",
         "media": [
             {"name": "Preset1", "file": "Preset1.jpg", "thumbnail": "Preset1-thumbnail.jpg"},
             {"name": "Preset2", "file": "Preset2.jpg", "thumbnail": "Preset2-thumbnail.jpg"},
@@ -645,6 +648,7 @@ def test_upload_media_publishes_detections():
     def make_app():
         app = CameraApplication.__new__(CameraApplication)
         app.app_key = "doover_camera_1"
+        app.app_display_name = "Camera 1"
         app.engine = types.SimpleNamespace(detect_night=_none)
         app.config = types.SimpleNamespace(motion_snapshot_object_detection=True)
         app.device_agent = types.SimpleNamespace(create_message=_capture)
@@ -1383,6 +1387,7 @@ def test_event_frame_uploads_alongside_the_snapshot():
     def make_app():
         app = CameraApplication.__new__(CameraApplication)
         app.app_key = "doover_camera_1"
+        app.app_display_name = "Camera 1"
         app.engine = types.SimpleNamespace(detect_night=_none)
         app.config = types.SimpleNamespace(motion_snapshot_object_detection=True)
         app.device_agent = types.SimpleNamespace(create_message=_capture)
@@ -2157,6 +2162,21 @@ def test_zone_contains_point():
 
     # A degenerate polygon contains nothing rather than raising.
     assert DetectionZone(id=1, points=[(0.0, 0.0), (1.0, 1.0)]).contains(0.5, 0.5) is False
+
+
+def test_snapshot_payload_carries_the_cameras_display_name():
+    """The object detection app writes messages people read, and only has the app key.
+
+    Without this its notifications came out as "doover_camera_2 detected 2 people without
+    hard hat". Consumer side:
+    `object_detection/tests/test_zones.py::test_notifications_use_the_cameras_display_name`.
+    """
+    import inspect
+    from camera_app.application import CameraApplication
+
+    source = inspect.getsource(CameraApplication.upload_media)
+    assert '"camera_name"' in source
+    assert "self.app_display_name" in source
 
 
 def test_detector_zone_payload_is_what_object_detection_reads():

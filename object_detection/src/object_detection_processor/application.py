@@ -355,7 +355,11 @@ class ObjectDetectionProcessor(Application):
             return
 
         log.info(f"Updated message {message.id} on '{channel}': {detail['summary']}")
-        await self._notify(channel, violators, plates, matched_zones)
+        # The camera's display name where there is one, for text a person reads. The
+        # channel name is the fallback for an older camera app that doesn't send it.
+        await self._notify(
+            payload.get("camera_name") or channel, violators, plates, matched_zones
+        )
 
     async def _notify(self, channel, violators=None, plates=None, matched_zones=None):
         """Notify on the zone-filtered findings, letting a zone override the switch.

@@ -237,3 +237,31 @@ def test_wire_contract_matches_camera_app():
     assert len(zone.points) == 4
     # And the detectors the camera app can ask for are the ones we know about.
     assert set(zones_mod.KNOWN_DETECTORS) == {"ppe", "anpr"}
+
+
+# --- friendly camera name ---
+
+
+def test_notifications_use_the_cameras_display_name():
+    """"Camera 2 detected ...", not "doover_camera_2 detected ...".
+
+    The camera app publishes its display name with each snapshot. This is the consumer
+    side of that key, and the pairing is a wire contract like `detection_zones` -- the two
+    apps deploy separately and share no package.
+    """
+    from object_detection.application import ObjectDetectionApplication as App
+
+    msg = types.SimpleNamespace(data={"camera_name": "Front Gate"})
+    assert App._camera_name(msg, "doover_camera_2") == "Front Gate"
+
+    # An older camera app sends no name -> the app key, exactly as before.
+    assert App._camera_name(types.SimpleNamespace(data={}), "doover_camera_2") == (
+        "doover_camera_2"
+    )
+    assert App._camera_name(types.SimpleNamespace(data=None), "doover_camera_2") == (
+        "doover_camera_2"
+    )
+    # An empty name is not a name.
+    assert App._camera_name(
+        types.SimpleNamespace(data={"camera_name": ""}), "doover_camera_2"
+    ) == "doover_camera_2"

@@ -446,7 +446,9 @@ class ObjectDetectionApplication(Application):
             )
 
         await self._publish_events(app_key, violators, plates)
-        await self._notify(app_key, violators, plates, matched_zones)
+        await self._notify(
+            self._camera_name(message, app_key), violators, plates, matched_zones
+        )
 
     @staticmethod
     def _annotated_filename(filename: str) -> str:
@@ -515,6 +517,17 @@ class ObjectDetectionApplication(Application):
             await self.create_message(CAMERA_EVENT_CHANNEL, payload)
         except Exception as e:
             log.warning(f"Failed to publish {kind} event: {e}", exc_info=e)
+
+    @staticmethod
+    def _camera_name(message, app_key: str) -> str:
+        """What to call the camera in a message a person reads.
+
+        The camera app publishes its display name with each snapshot; the app key is the
+        fallback for an older camera app that doesn't. Only for human-facing text --
+        `_publish_events` keeps using the app key, because an automation matches on the
+        key and a display name can be renamed at any time.
+        """
+        return ((message.data or {}).get("camera_name") or app_key) if message else app_key
 
     async def _notify(self, app_key, violators, plates, matched_zones=None):
         """Notify, letting a matching zone override this app's own switch.

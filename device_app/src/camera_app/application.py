@@ -568,6 +568,14 @@ class CameraApplication(Application):
 
         payload = {"reason": reason, "media": media}
 
+        # The camera's friendly name, for anything that writes a message a human reads.
+        # Without it the object detection app has only the app key to go on, and its
+        # notifications came out as "doover_camera_2 detected 2 people without hard hat".
+        # Sent with the frame rather than looked up, for the same reason the zones are:
+        # it arrives with the thing it describes and needs no extra plumbing.
+        if self.app_display_name:
+            payload["camera_name"] = self.app_display_name
+
         # Marks the frame as wanted by the Object Detection app. Set explicitly rather
         # than left to that app to infer from `reason`, so which cameras get analysed
         # is decided per-camera here — the detection app can watch a camera for plates
