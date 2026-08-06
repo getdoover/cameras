@@ -120,8 +120,10 @@ class CameraApplication(Application):
         self.snapshot_running = None
         self._shutdown_at = None
 
-        # When a motion snapshot was last taken, for the capture cooldown.
-        self._last_motion_snapshot_at = None
+        # When a motion snapshot was last taken, per zone, for the capture cooldown.
+        # Keyed by (rule, slot id); `_UNZONED_COOLDOWN_KEY` holds the shared timer for
+        # detections that can't be attributed to a zone. See claim_motion_snapshot.
+        self._last_motion_snapshot_at = {}
 
         # Event-video state: recording runs for as long as the intruder keeps
         # re-triggering, and stops once the cooldown lapses with no new detection.
@@ -872,13 +874,25 @@ class CameraApplication(Application):
                 topic="ppe_event",
             )
 
-    def claim_motion_snapshot(self) -> bool:
+    # Cooldown key used when a detection can't be attributed to a zone — every camera that
+    # doesn't report regions, which is most of them. Keeps those on a single shared
+    # cooldown, exactly as before zones had identities.
+    _UNZONED_COOLDOWN_KEY = None
+
+    def claim_motion_snapshot(self, zones: list = None) -> bool:
         """Whether a motion snapshot may be taken now, claiming the slot if so.
 
         The camera keeps re-reporting a target while it stays in the zone, because the night
         alarm needs to know the intruder is still there (see ``set_static_target_alarm``).
         This is what stops that costing a snapshot, an upload and a cloud inference run
         every few seconds for the same parked vehicle.
+
+        **The cooldown is per zone.** It used to be one global timer, which was right when
+        one rule meant one set of zones, and wrong the moment a second rule could report the
+        same person: walking into an excluded area 4s after tripping an ordinary zone got a
+        notification and no picture, because the ordinary zone had already claimed the slot.
+        One zone throttling *itself* is the point; one zone throttling *another* is not,
+        least of all an ordinary zone silencing an excluded area's only image.
 
         Only the *picture* is throttled. The alarm, the notification and the
         ``camera_event`` are not: a siren that skips the second detection because the first
@@ -888,16 +902,24 @@ class CameraApplication(Application):
         if not interval:
             return True
 
+        # An excluded area leads the list (zones_for_event sorts it there), so an event
+        # matching both rules is throttled against the excluded area's own history rather
+        # than the ordinary zone's.
+        key = (
+            (zones[0].rule, zones[0].id) if zones else self._UNZONED_COOLDOWN_KEY
+        )
+
         now = datetime.now(tz=timezone.utc)
-        last = self._last_motion_snapshot_at
+        last = self._last_motion_snapshot_at.get(key)
         if last is not None and (now - last).total_seconds() < interval:
+            where = f" for {self._describe_zones(zones)}" if zones else ""
             log.info(
-                f"Skipping snapshot — last one was under {interval}s ago (the camera is "
-                f"still reporting the same target)."
+                f"Skipping snapshot{where} — last one was under {interval}s ago (the "
+                f"camera is still reporting the same target)."
             )
             return False
 
-        self._last_motion_snapshot_at = now
+        self._last_motion_snapshot_at[key] = now
         return True
 
     async def on_detection_continues(self):
@@ -1014,7 +1036,7 @@ class CameraApplication(Application):
             # resolve a capture mode we keep the single-snapshot behaviour.
             if getattr(self.engine, "event_clip_mode", None):
                 self.start_event_video()
-            elif self.claim_motion_snapshot():
+            elif self.claim_motion_snapshot(zones):
                 await self.lock_snapshot_and_run(
                     REASON_INTRUDER, event.boxes, event_frame=event.image
                 )
@@ -1051,7 +1073,7 @@ class CameraApplication(Application):
                 f"Skipping {event.type.value} snapshot — outside the motion snapshot "
                 f"window."
             )
-        elif self.claim_motion_snapshot():
+        elif self.claim_motion_snapshot(zones):
             await self.lock_snapshot_and_run(
                 event.type.value, event.boxes, event_frame=event.image
             )
@@ -1121,7 +1143,15 @@ class CameraApplication(Application):
 
     @staticmethod
     def _zone_label(zone) -> str:
-        return f"'{zone.name}'" if zone.name else f"zone {zone.id}"
+        """A zone's name for humans, falling back to something unambiguous.
+
+        The kind is part of the fallback because slot ids restart per kind — an intrusion
+        zone and an excluded area are both "zone 1", and a log line saying so is no use
+        when the whole question is which of them fired.
+        """
+        if zone.name:
+            return f"'{zone.name}'"
+        return f"{zone.kind.value} zone {zone.id}"
 
     @classmethod
     def _zone_suffix(cls, zones: list) -> str:

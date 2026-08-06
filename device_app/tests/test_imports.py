@@ -886,21 +886,25 @@ def test_claim_motion_snapshot_cooldown():
     def make_app(interval):
         app = CameraApplication.__new__(CameraApplication)
         app.config = types.SimpleNamespace(motion_snapshot_min_interval=interval)
-        app._last_motion_snapshot_at = None
+        # Per zone now, keyed by (rule, slot); the None key is the shared timer for
+        # detections that can't be attributed to a zone. See claim_motion_snapshot.
+        app._last_motion_snapshot_at = {}
         return app
+
+    key = CameraApplication._UNZONED_COOLDOWN_KEY
 
     app = make_app(15)
     assert app.claim_motion_snapshot() is True
     # The camera re-reporting the same parked car must not cost another snapshot,
     # upload and cloud inference run.
     assert app.claim_motion_snapshot() is False
-    app._last_motion_snapshot_at -= timedelta(seconds=15)
+    app._last_motion_snapshot_at[key] -= timedelta(seconds=15)
     assert app.claim_motion_snapshot() is True
 
     # 0 means "capture on every event" - no floor, and no state kept.
     app = make_app(0)
     assert all(app.claim_motion_snapshot() for _ in range(5))
-    assert app._last_motion_snapshot_at is None
+    assert app._last_motion_snapshot_at == {}
 
 
 def test_alarm_pulse_does_not_block_the_event_stream():
@@ -1856,6 +1860,66 @@ def test_ppe_and_anpr_kinds_migrate_to_detectors():
     odd = DetectionZone.from_dict({"id": 1, "points": square, "kind": "teleportation"})
     assert odd.kind is ZoneKind.intrusion
     assert odd.detectors == []
+
+
+def test_one_zone_does_not_steal_another_zones_snapshot():
+    """An excluded area must still get a picture right after an ordinary zone fired.
+
+    Observed on real hardware: walking into an excluded area 4s after tripping an
+    intrusion zone produced a notification and no snapshot, because a single global
+    cooldown had already been claimed by the intrusion zone --
+
+        10:57:50  person in zone 1  -> getting snapshot        (intrusion)
+        10:57:54  regionEntrance region(s)=[1]
+        10:57:54  person in zone 1  -> Skipping snapshot ...   (excluded area)
+
+    One zone throttling itself is the point; one zone throttling another is not.
+    """
+    import types
+    from camera_app.application import CameraApplication
+    from camera_app.events import DetectionZone, ZoneKind, RULE_FIELD_DETECTION
+    from camera_app.events import RULE_REGION_ENTRANCE
+
+    app = CameraApplication.__new__(CameraApplication)
+    app._last_motion_snapshot_at = {}
+    app.config = types.SimpleNamespace(motion_snapshot_min_interval=15)
+
+    square = [(0.2, 0.2), (0.8, 0.2), (0.8, 0.8)]
+    intrusion = DetectionZone(id=1, points=square, kind=ZoneKind.intrusion)
+    excluded = DetectionZone(id=1, points=square, kind=ZoneKind.excluded_area)
+    assert intrusion.rule == RULE_FIELD_DETECTION
+    assert excluded.rule == RULE_REGION_ENTRANCE
+
+    # The intrusion zone fires and takes its picture.
+    assert app.claim_motion_snapshot([intrusion]) is True
+    # The excluded area fires moments later and must NOT be starved by it.
+    assert app.claim_motion_snapshot([excluded]) is True
+    # But each zone still throttles *itself*, which is what the cooldown is for.
+    assert app.claim_motion_snapshot([intrusion]) is False
+    assert app.claim_motion_snapshot([excluded]) is False
+
+    # Same slot number, different kinds -> different cooldowns. Keying on the id alone
+    # would reintroduce exactly the bug above.
+    assert intrusion.id == excluded.id
+
+
+def test_unzoned_detections_share_one_cooldown_as_before():
+    """Cameras that don't report regions keep the single shared timer they always had."""
+    import types
+    from camera_app.application import CameraApplication
+
+    app = CameraApplication.__new__(CameraApplication)
+    app._last_motion_snapshot_at = {}
+    app.config = types.SimpleNamespace(motion_snapshot_min_interval=15)
+
+    assert app.claim_motion_snapshot([]) is True
+    assert app.claim_motion_snapshot([]) is False
+    assert app.claim_motion_snapshot(None) is False
+
+    # And a zero/absent interval disables throttling entirely, unchanged.
+    app.config = types.SimpleNamespace(motion_snapshot_min_interval=0)
+    assert app.claim_motion_snapshot([]) is True
+    assert app.claim_motion_snapshot([]) is True
 
 
 def test_a_disabled_rule_reports_no_zones():
