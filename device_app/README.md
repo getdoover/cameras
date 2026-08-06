@@ -418,11 +418,23 @@ coordinate space.
     "targets": ["person", "vehicle", "animal", "other"],
     "supports_sensitivity": true, "supports_per_zone_targets": true,
     "supports_threshold": true, "threshold_min": 0, "threshold_max": 60,
-    "supports_disable": false
+    "supports_disable": false, "supports_notify": true,
+    "kinds": {
+      "intrusion":     {"display_name": "Intrusion", "max_zones": 4,
+                        "supports_threshold": true, "default_notify": false},
+      "excluded_area": {"display_name": "Excluded Area", "max_zones": 4,
+                        "supports_threshold": false, "default_notify": true,
+                        "edge_warn": 100, "edge_warn_normalized": 0.1},
+      "ppe":           {"display_name": "PPE", "max_zones": null,
+                        "default_notify": false, "detected_by": "object_detection"},
+      "anpr":          {"display_name": "Number Plates", "max_zones": null,
+                        "default_notify": false, "detected_by": "object_detection"}
+    }
   },
   "zones": [
     {"id": 1, "enabled": true, "points": [[0.1,0.1],[0.9,0.1],[0.9,0.9],[0.1,0.9]],
-     "targets": ["person","vehicle"], "sensitivity": 70, "threshold_secs": 0}
+     "targets": ["person","vehicle"], "sensitivity": 70, "threshold_secs": 0,
+     "kind": "intrusion", "notify": false, "name": "Driveway"}
   ]
 }
 ```
@@ -435,14 +447,52 @@ entry — starting up isn't somebody editing zones).
 | Field | Meaning |
 |---|---|
 | `points` | `[x, y]` pairs, **normalised `0.0`–`1.0`, origin top-left, y down** — the same space as an overlay on the video element. Engines convert to native (Hikvision `0–1000`, Dahua `0–8191`) |
-| `id` | Zone/rule slot. Hikvision renumbers by position; on Dahua this must match an existing IVS rule |
+| `id` | Zone/rule slot, **numbered per kind**. Hikvision renumbers by position; on Dahua this must match an existing IVS rule |
+| `kind` | What the zone is for: `intrusion`, `excluded_area`, `ppe`, `anpr`. Defaults to `intrusion`. See below |
+| `notify` | Whether a detection in this zone raises a notification. Defaults per kind (`default_notify` in `capabilities.kinds`) |
 | `targets` | Any of `person`, `vehicle`, `animal`, `other` — check `capabilities.targets` for what this camera accepts |
 | `enabled` | Only meaningful when `capabilities.supports_disable` |
 | `sensitivity` | `0`–`100`. Only when `capabilities.supports_sensitivity` |
-| `threshold_secs` | How long a target must stay in the zone before it counts. Only when `capabilities.supports_threshold`; range is `threshold_min`–`threshold_max` (`0`–`60` on Hikvision). **`0` means report it as soon as it's classified**, and is the default |
+| `threshold_secs` | How long a target must stay in the zone before it counts. Only when the *kind* supports it; range is `threshold_min`–`threshold_max` (`0`–`60` on Hikvision). **`0` means report it as soon as it's classified**, and is the default |
+
+#### Zone kinds
+
+Each kind maps to a different detector, and two of them aren't on the camera at all.
+
+| Kind | Detected by | Notified by | Notes |
+|---|---|---|---|
+| `intrusion` | camera `fielddetection` | this app | Presence in the region. The original behaviour and the default |
+| `excluded_area` | camera `regionEntrance` | this app | Crossing **into** somewhere nobody should be. Fires once on entry rather than re-alarming while they stand there. Notifies at `Warn` and publishes an `excluded_area` camera event |
+| `ppe` | Object Detection app | Object Detection app | Filters hard-hat/high-vis findings to this polygon |
+| `anpr` | Object Detection app | Object Detection app | Filters plate reads to this polygon |
+
+The two camera kinds are written to **separate rules with separate slot budgets**, so excluded areas don't
+consume intrusion's four. `ppe`/`anpr` zones are never written to the camera — they ride along on each
+snapshot message as `detection_zones` for the Object Detection app to filter on, and are kept in the
+`detection_zones` tag because the camera has nowhere to store them.
+
+> [!WARNING]
+> **An `excluded_area` must not hug the frame edge.** Region entrance only fires for a target it tracked
+> *outside* the zone first, so a zone touching the edge leaves nowhere to be outside and never fires at
+> all. Measured on a real camera: a region at `10..990` (native) produced **zero** events where `250..750`
+> fired reliably. Warn when any point is within `edge_warn_normalized` of an edge; the app logs a warning
+> but does not move what somebody drew.
+
+> [!NOTE]
+> An excluded area overlapping an intrusion zone genuinely reports **twice** — the two rules answer
+> different questions. The app collapses that, preferring the excluded area as the more specific claim.
+
+**Notification behaviour with no zones is unchanged from before zones had kinds**: a camera with no zones
+notifies on every classified person/vehicle, exactly as it always did. Zones only ever narrow that. A newly
+drawn `intrusion` zone defaults to `notify: false`, so drawing one to get pictures doesn't sign you up for
+alerts; an `excluded_area` defaults to `notify: true`. The night intruder alarm is **not** gated on
+`notify` — it has already sounded a siren by then, and an alarm nobody is told about is worse than useless.
 
 **Always drive the editor off `capabilities`** rather than assuming:
 
+- `kinds` — which kinds this camera offers, and **per-kind** limits. `max_zones` differs per kind and
+  `excluded_area` has no dwell control at all (region entrance has no `timeThreshold`, so a dwell slider
+  there is one the camera throws away). `max_zones: null` means no camera limit — nothing has to store it
 - `max_zones` / `min_points` / `max_points` — Hikvision genuinely rejects a 2-point or 11-point zone
 - `supports_disable: false` on Hikvision — it accepts a region `enabled` change, replies OK, and **ignores
   it**. Offer *delete*, not a toggle

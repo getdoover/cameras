@@ -70,6 +70,46 @@ that knows whether a given frame was captured to be analysed, and honouring only
 `true` case would leave no way to opt one camera out. Snapshots with no flag fall
 through to the reason filter as normal.
 
+### Detection zones narrow *where* a finding counts
+
+Zones are drawn in the camera app's zone editor, not here. The camera app sends the ones
+that concern us — the `ppe` and `anpr` kinds — on each snapshot message as
+`detection_zones`, so they arrive with the frame they apply to and can't be out of step
+with it. (The other two kinds, `intrusion` and `excluded_area`, are camera rules the
+camera evaluates itself and never reach this app.)
+
+```json
+"detection_zones": [
+  {"id": 1, "kind": "ppe",  "points": [[0.0,0.0],[0.5,0.0],[0.5,1.0],[0.0,1.0]],
+   "notify": true,  "name": "Work Area"},
+  {"id": 1, "kind": "anpr", "points": [[0.5,0.0],[1.0,0.0],[1.0,1.0],[0.5,1.0]],
+   "notify": false, "name": "Entry Lane"}
+]
+```
+
+Each kind is filtered by its own zones — a PPE zone says nothing about where plates
+matter. A finding counts when its **box centre** falls inside a zone: a person is a tall
+box whose feet and head are often outside a zone drawn round a work area, so requiring
+every corner would never match, and any corner would match half the frame.
+
+The models still run over the **whole frame**, and `findings` stays unfiltered so the
+annotated image and the timeline entry show everything. Zones only narrow what gets
+*reported* — the summary, the `camera_event`s and the notifications.
+
+A matching zone's `notify` **overrides** the config switches above, in both directions: a
+zone with it on speaks up even when **Notify On Violation** is off, and a zone with it off
+stays quiet even when it's on. A zone is the more specific statement.
+
+Two deliberate fail-open rules:
+
+- **No zones of that kind** (including every camera that's never had zones drawn) means
+  *analyse the whole frame and use the config switch* — **not** "nothing qualifies".
+- **A finding with no readable box is kept**, not dropped.
+
+Both exist because a silent detector is far worse than an unfiltered one: nobody notices
+a violation that was never reported. A zone that filters everything out is logged for the
+same reason — it otherwise looks identical to a detector that has stopped working.
+
 <br/>
 
 > **One instance can watch several cameras**, and that's the preferred setup — each

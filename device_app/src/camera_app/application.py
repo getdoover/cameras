@@ -28,12 +28,15 @@ from .engines.hikvision_acusense import HikvisionAcuSenseCamera
 from .engines.hikvision_deepinview import HikvisionDeepinViewCamera
 from .events import (
     ANPREvent,
+    DETECTOR_REQUIRES_TARGET,
+    DetectionZone,
     DetectionZonesPayload,
     MotionDetectEvent,
     MotionDetectEventType,
     PPEEvent,
     SDPOfferPayload,
     TargetBox,
+    ZoneKind,
     event_image,
     CAMERA_CONTROL_CHANNEL,
     SET_ZONES_CMD,
@@ -556,6 +559,28 @@ class CameraApplication(Application):
         if boxes:
             payload["detections"] = [b.to_dict() for b in boxes]
 
+        # The zones the object detection app acts on, carried with the frame they apply to
+        # rather than fetched separately — they can't drift out of step that way, and that
+        # app needs no extra subscription to get them. Same reasoning as
+        # `object_detection` above: this app is the authority on what its own frames are
+        # for.
+        #
+        # Only sent when there are some. An absent key means "this camera has no opinion",
+        # which that app must treat as "analyse the whole frame" — not as "no zones, so
+        # find nothing". See common.zones.zones_for_detector.
+        #
+        # Never allowed to fail the upload: these zones are advisory metadata about a frame,
+        # and losing the picture over them would be a straight downgrade. Worst case the
+        # frame is analysed unfiltered, which is what happens on every camera with no zones
+        # anyway.
+        try:
+            zones = self.detector_zones()
+        except Exception as e:
+            log.warning(f"Couldn't attach detection zones to the snapshot: {e}")
+            zones = []
+        if zones:
+            payload["detection_zones"] = zones
+
         try:
             night = await self.engine.detect_night()
         except Exception as e:
@@ -920,7 +945,29 @@ class CameraApplication(Application):
             await self.on_detection_continues()
             return
 
-        log.info(f"Motion event detected, type: {event.type}.")
+        # Which zone the user drew this happened in, if we can tell. Empty means "no zone
+        # opinion" rather than "no match" — see zones_for_event.
+        zones = self.zones_for_event(event)
+        excluded = next(
+            (z for z in zones if z.kind is ZoneKind.excluded_area),
+            None,
+        )
+        # Attached to the camera_event payloads so an automation can act on the zone
+        # rather than re-deriving it. Omitted entirely when unknown, so a consumer can
+        # tell "not in a zone" from "this camera doesn't report zones".
+        zone_fields = (
+            {
+                "zone": zones[0].name or zones[0].id,
+                "zone_kind": zones[0].kind.value,
+            }
+            if zones
+            else {}
+        )
+
+        log.info(
+            f"Motion event detected, type: {event.type}"
+            f"{f' in {self._describe_zones(zones)}' if zones else ''}."
+        )
 
         # Night intruder handling — applies to the Hikvision event cameras when
         # their intruder alarm is armed and we're in the night window. Covers
@@ -941,7 +988,7 @@ class CameraApplication(Application):
             # Automations hook off this; publish before the slow media work so a
             # downstream automation isn't waiting on a snapshot/clip upload.
             await self.publish_camera_event(
-                "intruder", target=event.type.value, label=label
+                "intruder", target=event.type.value, label=label, **zone_fields
             )
 
             # Whether this is a fresh intruder, or the camera re-reporting one it already
@@ -976,8 +1023,16 @@ class CameraApplication(Application):
             self.start_alarm_pulse()
 
             if new_intruder:
+                # Deliberately NOT gated on the zone's notify flag, unlike the daytime
+                # notifications below. This path only runs when the intruder alarm is
+                # explicitly enabled *and* it's inside the night window, and it has just
+                # sounded a siren and started recording. An alarm that does all that
+                # without telling anyone is worse than useless, and a zone's notify flag is
+                # about routine detections — it is not a request to be kept in the dark
+                # about a night-time intruder. Turn the alarm itself off if that's wanted.
                 await self.send_notification(
-                    f"{self.app_display_name} detected {label} (possible intruder).",
+                    f"{self.app_display_name} detected {label} (possible intruder)"
+                    f"{self._zone_suffix(zones)}.",
                     severity=NotificationSeverity.Warn,
                     topic="motion_event_intruder",
                 )
@@ -1002,29 +1057,82 @@ class CameraApplication(Application):
             )
 
         if event.type in (MotionDetectEventType.person, MotionDetectEventType.vehicle):
-            await self.publish_camera_event(event.type.value, target=event.type.value)
+            await self.publish_camera_event(
+                event.type.value, target=event.type.value, **zone_fields
+            )
 
-        # A classified detection always notifies. It used to be gated on a pair of UI
-        # switches, which were created without values — so reading one raised
+        # Somebody entering a zone marked "excluded area" is a different claim from
+        # somebody being in frame, so it gets its own event kind for automations to hook
+        # rather than being flattened into the person/vehicle one.
+        if excluded is not None:
+            await self.publish_camera_event(
+                "excluded_area",
+                target=event.type.value,
+                zone=excluded.name or excluded.id,
+            )
+
+        # Whether a classified detection notifies is the zone's decision.
+        #
+        # Read from the stored zone record, never from a bare UI element. The gate this
+        # replaces was a pair of UI switches created without values, so reading one raised
         # `KeyError: alert_me_on_human_motion` from the middle of this handler and killed
-        # everything after it, which is a lot worse than an unwanted notification.
+        # everything after it — which is far worse than an unwanted notification, and is
+        # why it was made unconditional in the first place. A zone record always has a
+        # `notify` value (DetectionZone fills the default in), and an install with no zones
+        # falls back to notifying exactly as it did before, so neither the old crash nor a
+        # silent camera is reachable from here.
+        if not self.should_notify(zones, fallback=True):
+            log.info(
+                f"Not notifying for {event.type.value} — "
+                f"{self._describe_zones(zones)} has notifications off."
+            )
+            return
+
+        if excluded is not None:
+            # Warn, not Info: this is somewhere nobody is supposed to be, which is a
+            # different thing from a person walking through a monitored area.
+            await self.send_notification(
+                f"{self.app_display_name} detected {event.type.value} entering "
+                f"{self._zone_label(excluded)}.",
+                severity=NotificationSeverity.Warn,
+                topic="excluded_area_event",
+            )
+            return
+
         match event.type:
             case MotionDetectEventType.person:
                 await self.send_notification(
-                    f"{self.app_display_name} has detected a person.",
+                    f"{self.app_display_name} has detected a person"
+                    f"{self._zone_suffix(zones)}.",
                     severity=NotificationSeverity.Info,
                     topic="motion_event_person",
                 )
 
             case MotionDetectEventType.vehicle:
                 await self.send_notification(
-                    f"{self.app_display_name} has detected a vehicle.",
+                    f"{self.app_display_name} has detected a vehicle"
+                    f"{self._zone_suffix(zones)}.",
                     severity=NotificationSeverity.Info,
                     topic="motion_event_vehicle",
                 )
 
             case MotionDetectEventType.unknown:
                 log.warning("Unknown event detected.")
+
+    @staticmethod
+    def _zone_label(zone) -> str:
+        return f"'{zone.name}'" if zone.name else f"zone {zone.id}"
+
+    @classmethod
+    def _zone_suffix(cls, zones: list) -> str:
+        """" in <zone>" for a notification, or nothing when no zone was identified."""
+        if not zones:
+            return ""
+        return f" in {cls._zone_label(zones[0])}"
+
+    @classmethod
+    def _describe_zones(cls, zones: list) -> str:
+        return ", ".join(cls._zone_label(z) for z in zones) or "no zone"
 
     @rpc.handler("get_immediate_snapshot", channel=CAMERA_CONTROL_CHANNEL)
     async def on_snapshot_command(self, ctx, payload):
@@ -1036,13 +1144,176 @@ class CameraApplication(Application):
         await self.lock_snapshot_and_run(REASON_MANUAL)
         return {self.app_key: "success"}
 
+    def zones_for_event(self, event: MotionDetectEvent) -> list:
+        """The zone(s) a detection happened in, most specific first.
+
+        Matched on ``(rule, slot id)`` — the camera reports which of a rule's regions
+        fired, and the stored record says what that region is for.
+
+        Returns ``[]`` when the zone can't be identified, which is the common case and not
+        an error: cameras other than the Hikvision perimeter models report no region at
+        all, a ``duration`` continuation carries none, and a camera whose zones were never
+        written through this app has no records to match. **Callers must treat an empty
+        result as "no zone opinion" and fall back to the camera-wide behaviour** — never as
+        "no zone matched, so stay quiet". That distinction is the compatibility guarantee:
+        an install that has never opened the zone editor must keep behaving exactly as it
+        did before this feature existed.
+
+        Excluded areas sort first so an overlapping pair resolves to the more specific
+        statement. The camera genuinely reports both — one rule answering "is somebody in
+        frame", the other "did somebody enter the place they're banned from" — and the
+        second is the one worth acting on.
+        """
+        if not event.rule or not event.region_ids:
+            return []
+
+        stored = {}
+        for raw in self.tags.detection_zones.value or []:
+            try:
+                zone = DetectionZone.from_dict(raw)
+            except Exception:
+                continue
+            if zone.rule:
+                stored[(zone.rule, zone.id)] = zone
+
+        matched = [
+            zone
+            for region_id in event.region_ids
+            if (zone := stored.get((event.rule, region_id))) is not None
+        ]
+        matched.sort(key=lambda z: z.kind is not ZoneKind.excluded_area)
+        return matched
+
+    def should_notify(self, zones: list, fallback: bool) -> bool:
+        """Whether a detection in ``zones`` should raise a notification.
+
+        ``fallback`` is used when no zone could be identified — see
+        :meth:`zones_for_event` for why that must not mean "stay quiet".
+
+        Any one matching zone asking for a notification is enough. A person standing in
+        the overlap of a quiet zone and a loud one is still in the loud one, and the
+        failure of missing a real alert is much worse than one extra message.
+        """
+        if not zones:
+            return fallback
+        return any(z.notify for z in zones)
+
+    def merge_zone_records(self, from_camera: list) -> list:
+        """Combine what the camera holds with what only the app knows.
+
+        The camera is authoritative for the geometry of the rules it runs — a web-UI visit
+        or a factory reset can change it behind our back, which is the whole reason zones
+        are read back rather than echoed. But it has no concept of ``notify``, and no place
+        at all for the ``ppe``/``anpr`` zones, so those come from
+        ``tags.detection_zones``.
+
+        Matching is by ``(kind, slot id)``, because that pair is what the camera actually
+        addresses a region by; the frontend's ids are renumbered on write, so they are not
+        a stable key. A camera-held zone with no stored record keeps its kind's default
+        notify — that's a zone somebody drew in the camera's own web UI, and defaulting it
+        quiet is the safer of the two.
+        """
+        stored = {}
+        for raw in self.tags.detection_zones.value or []:
+            try:
+                zone = DetectionZone.from_dict(raw)
+            except Exception as e:
+                log.info(f"Ignoring an unreadable stored zone record: {e}")
+                continue
+            stored[(zone.kind, zone.id)] = zone
+
+        merged = []
+        for zone in from_camera:
+            record = stored.pop((zone.kind, zone.id), None)
+            if record is not None:
+                zone.notify = record.notify
+                # The camera doesn't store a zone's name either.
+                zone.name = zone.name or record.name
+            else:
+                # A zone on the camera that this app has no record of: drawn before this
+                # feature existed, or in the camera's own web UI.
+                #
+                # It reports as notifying, NOT as the kind's default, because notifying is
+                # what actually happens to it — with no record, zones_for_event can't
+                # identify it and should_notify falls back to the camera-wide behaviour
+                # (see the no-zones compatibility guarantee). Showing the kind default
+                # here would be a lie in the editor, and worse, saving that lie back would
+                # silently switch off notifications for every zone somebody already had.
+                zone.notify = True
+            merged.append(zone)
+
+        # Whatever's left is a zone the camera never sees. The app-only kinds belong here
+        # and are the point of the tag; a leftover camera-backed kind means the camera has
+        # lost a region we wrote (a factory reset, someone deleting it in the web UI), so
+        # it's dropped rather than reported as live — the read-back must reflect what the
+        # camera will actually act on.
+        for (kind, _slot), zone in stored.items():
+            # Every kind is a camera rule now, so anything left over means the camera has
+            # lost a region we wrote (a factory reset, someone deleting it in the web UI).
+            # Dropped rather than reported as live: the read-back must reflect what the
+            # camera will actually act on.
+            log.info(
+                f"Stored {kind.value} zone {zone.id} is no longer on the camera; "
+                f"dropping it from the zone list."
+            )
+
+        return merged
+
+    async def store_zone_records(self, zones: list) -> None:
+        """Keep the app's copy of the zones, for what the camera can't hold."""
+        await self.tags.detection_zones.set([z.to_dict() for z in zones])
+
+    def detector_zones(self, zones: list = None) -> list:
+        """The zones asking for something the object detection app finds, as plain dicts.
+
+        A zone qualifies by carrying at least one :class:`ZoneDetector`, not by being a
+        kind of its own — one ordinary zone can want a person, their hard hat and any
+        plate in the same polygon.
+
+        These ride along on each snapshot rather than being fetched: they arrive with the
+        frame they apply to, and the camera app is already the authority on what its own
+        frames are for (the ``object_detection`` key does the same thing).
+        """
+        if zones is None:
+            zones = [
+                DetectionZone.from_dict(z)
+                for z in (self.tags.detection_zones.value or [])
+            ]
+        return [z.to_dict() for z in zones if z.detectors]
+
+    @staticmethod
+    def warn_on_unreachable_detectors(zones: list) -> None:
+        """Warn about a detector that can never run, because nothing will trigger a frame.
+
+        The object detection app only sees snapshots the camera published, and the camera
+        only publishes one when it classified a target. A zone asking for PPE while not
+        watching for people produces no frames, so the model never runs and the zone
+        silently does nothing — the exact failure that is hardest to notice.
+
+        A warning rather than a correction: the UI selects the target for you, so a zone
+        arriving without it came from something deliberate, and quietly rewriting what
+        somebody wrote is worse than telling them.
+        """
+        for zone in zones:
+            for detector in zone.detectors:
+                needed = DETECTOR_REQUIRES_TARGET.get(detector)
+                if needed and needed not in [t.value for t in zone.targets]:
+                    log.warning(
+                        f"Zone '{zone.name or zone.id}' asks for {detector.value} but "
+                        f"does not detect '{needed}'. The camera only publishes a "
+                        f"snapshot when it classifies a target, so nothing will ever be "
+                        f"analysed for {detector.value} here. Add '{needed}' to the "
+                        f"zone's targets."
+                    )
+
     async def build_zone_state(self, error: str = None) -> dict:
         """Read the camera's current zones, plus what it can do with them.
 
         Always reads back off the camera rather than echoing what was asked for:
         these cameras will answer OK and then quietly ignore a field (Hikvision drops
         a region's `enabled`, for one), so an echo would show the frontend a state
-        that doesn't exist.
+        that doesn't exist. What the camera has no notion of is merged back in from the
+        app's own record — see :meth:`merge_zone_records`.
         """
         state = {"capabilities": self.engine.ZONE_CAPABILITIES, "zones": []}
         if error:
@@ -1055,7 +1326,7 @@ class CameraApplication(Application):
                 log.warning(f"Failed to read detection zones: {e}", exc_info=e)
                 state.setdefault("error", str(e))
             else:
-                state["zones"] = [z.to_dict() for z in zones]
+                state["zones"] = [z.to_dict() for z in self.merge_zone_records(zones)]
 
         return state
 
@@ -1093,8 +1364,32 @@ class CameraApplication(Application):
         except Exception as e:
             log.warning(f"Failed to set detection zones: {e}", exc_info=e)
             error = str(e)
+        else:
+            # Only on success, and only after the camera has taken them: the record is
+            # meant to describe zones that exist. Storing a rejected write would leave the
+            # app notifying for an excluded area the camera isn't watching.
+            #
+            # Slot ids are renumbered per kind to match what the engine wrote, so the
+            # record keys line up with what the camera reports back (see
+            # merge_zone_records).
+            self.warn_on_unreachable_detectors(payload.zones)
+            await self.store_zone_records(self._with_slot_ids(payload.zones))
 
         return await self.publish_detection_zones(error=error)
+
+    @staticmethod
+    def _with_slot_ids(zones: list) -> list:
+        """Renumber zones per kind, mirroring how the engine assigns camera slots.
+
+        The engine addresses regions by position within their kind, discarding whatever
+        ids the frontend sent (see ``HikvisionAcuSenseCamera._to_region``). The stored
+        record has to agree with that or the merge can't pair them up.
+        """
+        counters = {}
+        for zone in zones:
+            counters[zone.kind] = counters.get(zone.kind, 0) + 1
+            zone.id = counters[zone.kind]
+        return zones
 
     async def sync_presets(self, active_preset: str = None):
         if self.config.control_enabled.value:

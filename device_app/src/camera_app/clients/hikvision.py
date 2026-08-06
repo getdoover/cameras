@@ -19,7 +19,7 @@ import aiohttp
 import async_timeout
 
 from .dahua import DigestAuth
-from ..events import EVENT_IMAGE_KEY, TARGET_REGIONS_KEY
+from ..events import EVENT_IMAGE_KEY, TARGET_REGIONS_KEY, TRIGGERED_REGIONS_KEY
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
@@ -786,23 +786,28 @@ class HikvisionClient:
         )
         return interval
 
-    async def get_field_detection_regions(self, channel: int = 1) -> list:
-        """
-        Read the intrusion rule's regions in native (0..1000) coordinates.
+    async def _get_rule_regions(self, path: str, tag: str, channel: int) -> list:
+        """Read a smart rule's regions in native (0..1000) coordinates.
 
-        Returns one dict per region with ``id``, ``enabled``, ``points``,
-        ``targets`` and ``sensitivity``. The camera always reports its full set of
+        Shared by intrusion and region entrance: the two differ only in the ISAPI path,
+        the region element's name, and which optional fields the firmware bothers to
+        report (entrance has no ``enabled`` or ``timeThreshold`` — see
+        :meth:`_region_entrance_region`). Everything absent simply stays ``None``, so one
+        parser covers both without either having to know about the other's fields.
+
+        Returns one dict per region with ``id``, ``enabled``, ``points``, ``targets``,
+        ``sensitivity`` and ``time_threshold``. The camera always reports its full set of
         region slots, so unconfigured ones come back with no points.
         """
         try:
-            raw = await self.get_bytes(f"/ISAPI/Smart/FieldDetection/{channel}")
+            raw = await self.get_bytes(f"/ISAPI/Smart/{path}/{channel}")
             root = ET.fromstring(raw.decode(errors="ignore"))
         except (ET.ParseError, Exception):
             return []
 
         regions = []
         for element in root.iter():
-            if _strip_ns(element.tag) != "FieldDetectionRegion":
+            if _strip_ns(element.tag) != tag:
                 continue
 
             region = {
@@ -812,25 +817,64 @@ class HikvisionClient:
                 "time_threshold": None,
             }
             for child in element.iter():
-                tag = _strip_ns(child.tag)
+                child_tag = _strip_ns(child.tag)
                 text = (child.text or "").strip()
-                if tag == "id" and "id" not in region:
+                if child_tag == "id" and "id" not in region:
                     region["id"] = int(text or 0)
-                elif tag == "enabled":
+                elif child_tag == "enabled":
                     region["enabled"] = text == "true"
-                elif tag == "sensitivityLevel":
+                elif child_tag == "sensitivityLevel":
                     region["sensitivity"] = int(text or 0)
-                elif tag == "timeThreshold":
+                elif child_tag == "timeThreshold":
                     region["time_threshold"] = int(text or 0)
-                elif tag == "detectionTarget":
+                elif child_tag == "detectionTarget":
                     region["targets"] = [t for t in text.split(",") if t]
-                elif tag == "RegionCoordinates":
+                elif child_tag == "RegionCoordinates":
                     coords = _xml_to_dict(child)
                     region["points"].append(
                         (int(coords.get("positionX", 0)), int(coords.get("positionY", 0)))
                     )
             regions.append(region)
         return regions
+
+    async def get_field_detection_regions(self, channel: int = 1) -> list:
+        """Read the intrusion rule's regions in native (0..1000) coordinates."""
+        return await self._get_rule_regions(
+            "FieldDetection", "FieldDetectionRegion", channel
+        )
+
+    async def get_region_entrance_regions(self, channel: int = 1) -> list:
+        """Read the region-entrance rule's regions in native (0..1000) coordinates.
+
+        Note entrance reports no per-region ``enabled`` and no ``timeThreshold``, so those
+        come back as ``None`` rather than a value to be trusted.
+        """
+        return await self._get_rule_regions(
+            "regionEntrance", "RegionEntranceRegion", channel
+        )
+
+    async def get_rule_max_regions(self, path: str, channel: int = 1) -> int | None:
+        """How many region slots a smart rule advertises, or None if it won't say.
+
+        Asked rather than assumed because writing more regions than the rule has slots
+        gets the whole PUT rejected, and the count differs per rule and per model.
+        """
+        try:
+            raw = (
+                await self.get_bytes(f"/ISAPI/Smart/{path}/{channel}/capabilities")
+            ).decode(errors="ignore")
+        except Exception as e:
+            _LOGGER.info(f"Couldn't read {path} capabilities: {e}")
+            return None
+
+        match = re.search(r"<maxRegionNum[^>]*>(\d+)</maxRegionNum>", raw)
+        if match:
+            return int(match.group(1))
+
+        # Some firmware advertises the slots only by listing them, rather than with a
+        # count. Falling back to counting the listed blocks beats returning nothing.
+        listed = len(re.findall(r"<(?:FieldDetection|RegionEntrance)Region>", raw))
+        return listed or None
 
     @staticmethod
     def _field_detection_region(region: dict) -> str:
@@ -928,8 +972,10 @@ class HikvisionClient:
         )
         return await self.put(f"/ISAPI/Smart/regionEntrance/{channel}", body=body)
 
-    async def disable_smart_rule(self, rule: str, channel: int = 1) -> bool:
-        """Turn a smart-analytics rule off, leaving its regions untouched.
+    async def set_smart_rule_enabled(
+        self, rule: str, enabled: bool, channel: int = 1
+    ) -> bool:
+        """Turn a smart-analytics rule on or off, leaving its regions untouched.
 
         GET-modify-PUT of the rule-level ``<enabled>`` only, so somebody's drawn
         polygons survive being switched off and come back if it's re-enabled. Only the
@@ -940,26 +986,65 @@ class HikvisionClient:
         ``regionExiting`` / ``LineDetection`` / ``FieldDetection`` are not uniform.
         Returns whether the camera accepted it.
         """
+        want = "true" if enabled else "false"
         try:
             raw = (
                 await self.get_bytes(f"/ISAPI/Smart/{rule}/{channel}")
             ).decode(errors="ignore")
         except Exception as e:
-            _LOGGER.info(f"Couldn't read {rule} to disable it: {e}")
+            _LOGGER.info(f"Couldn't read {rule} to set enabled={want}: {e}")
             return False
 
-        if "<enabled>false</enabled>" in raw.replace(" ", "")[:400]:
-            return True  # already off; don't spend a PUT on it
+        # The rule-level flag is the first one; the region-level ones that follow are
+        # reported but ignored on write. Checking only the head of the document keeps this
+        # from matching a region's flag and concluding there's nothing to do.
+        if f"<enabled>{want}</enabled>" in raw.replace(" ", "")[:400]:
+            return True  # already in the state we want; don't spend a PUT on it
 
         body = re.sub(
-            r"<enabled>.*?</enabled>", "<enabled>false</enabled>", raw, count=1
+            r"<enabled>.*?</enabled>", f"<enabled>{want}</enabled>", raw, count=1
         )
         try:
             await self.put(f"/ISAPI/Smart/{rule}/{channel}", body=body)
         except Exception as e:
-            _LOGGER.warning(f"Failed to disable {rule}: {e}")
+            _LOGGER.warning(f"Failed to set {rule} enabled={want}: {e}")
             return False
         return True
+
+    async def disable_smart_rule(self, rule: str, channel: int = 1) -> bool:
+        """Turn a smart-analytics rule off. See :meth:`set_smart_rule_enabled`."""
+        return await self.set_smart_rule_enabled(rule, False, channel)
+
+    async def get_smart_rule_enabled(
+        self, rule: str, channel: int = 1
+    ) -> bool | None:
+        """Whether a smart rule is switched on, or None if it can't be determined.
+
+        Only the rule-level flag, which is the first ``<enabled>`` in the document; the
+        ones after it belong to regions, which this firmware reports but ignores.
+
+        None rather than False on failure, because the two mean very different things to a
+        caller deciding whether a rule's regions are live: a rule we couldn't read is not a
+        rule we know to be off.
+        """
+        try:
+            raw = (
+                await self.get_bytes(f"/ISAPI/Smart/{rule}/{channel}")
+            ).decode(errors="ignore")
+        except Exception as e:
+            _LOGGER.info(f"Couldn't read whether {rule} is enabled: {e}")
+            return None
+
+        match = re.search(r"<enabled>(.*?)</enabled>", raw)
+        if not match:
+            return None
+        return match.group(1).strip().lower() == "true"
+
+    async def set_region_entrance_enabled(self, enabled: bool, channel: int = 1) -> bool:
+        """Turn the region-entrance rule on or off (the excluded-area rule)."""
+        return await self.set_smart_rule_enabled(
+            "regionEntrance", enabled, channel
+        )
 
     async def get_line_detection(self, channel: int = 1) -> dict:
         """Get the line-crossing detection config."""
@@ -1421,6 +1506,30 @@ class HikvisionClient:
         return regions
 
     @staticmethod
+    def _triggered_regions(root: ET.Element) -> list:
+        """Which rule regions this alert fired for, in the order reported.
+
+        Read off the tree for the same reason as :meth:`_target_regions`:
+        :func:`_xml_to_dict` collapses repeated siblings onto one dotted key, so on an
+        alert naming two regions only the last id would survive the flattening — and
+        which zones fired is exactly the thing there can be several of.
+
+        Unlike the boxes this needs no parent map, because a ``<regionID>`` identifies
+        itself; it does not have to be related back to a sibling.
+        """
+        regions = []
+        for element in root.iter():
+            if _strip_ns(element.tag) != "regionID":
+                continue
+            try:
+                region_id = int((element.text or "").strip())
+            except ValueError:
+                continue
+            if region_id not in regions:
+                regions.append(region_id)
+        return regions
+
+    @staticmethod
     def _rect_target(element: ET.Element, parents: dict, depth: int = 2) -> str:
         """The classification belonging to a rect (``human``, ``vehicle``, ...).
 
@@ -1702,6 +1811,12 @@ class HikvisionClient:
         regions = self._target_regions(root)
         if regions:
             event[TARGET_REGIONS_KEY] = regions
+
+        # Likewise the ids of the regions that fired, which is how the app tells which
+        # zone the user drew was entered.
+        triggered = self._triggered_regions(root)
+        if triggered:
+            event[TRIGGERED_REGIONS_KEY] = triggered
         return event
 
     @staticmethod

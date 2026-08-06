@@ -22,10 +22,100 @@ TARGET_REGIONS_KEY = "TargetRegions"
 # didn't send one.
 EVENT_IMAGE_KEY = "EventImage"
 
+# Where a vendor client stashes the ids of the rule regions an alert fired for — the link
+# between "something happened" and *which zone the user drew*, without which every
+# detection has to be treated identically.
+#
+# A list because one alert can name several: two people entering two zones at the same
+# moment is one alert with two `<DetectionRegionEntry>` blocks. Absent on cameras and
+# rules that don't report regions at all.
+TRIGGERED_REGIONS_KEY = "TriggeredRegions"
+
 
 def event_image(alert: dict) -> bytes | None:
     """The camera's own frame of an event, if it sent one with the alert."""
     return (alert or {}).get(EVENT_IMAGE_KEY)
+
+
+def region_ids_from_alert(alert: dict) -> list:
+    """Which rule regions an alert fired for, as ints, in the order reported."""
+    return list((alert or {}).get(TRIGGERED_REGIONS_KEY) or [])
+
+
+class ZoneKind(Enum):
+    """How a zone triggers — which camera rule owns it.
+
+    Only two, because that is the only axis the *camera* has: presence in the region, or
+    crossing into it. What a zone looks *for* is a separate question, answered by
+    ``targets`` (things the camera classifies) and :class:`ZoneDetector` (things the object
+    detection app finds in the resulting snapshot).
+
+    Keeping those apart is what lets one zone want a person, their hard hat and any plate
+    in the same polygon. An earlier design made PPE and ANPR kinds of their own, which
+    forced a separate zone per question and made "person but not PPE" unexpressible.
+    """
+
+    # Presence in the region. The default, shown to users as "Regular".
+    intrusion = "intrusion"
+    # Somewhere nobody should be, so crossing *into* it is the event.
+    excluded_area = "excluded_area"
+
+
+class ZoneDetector(Enum):
+    """Extra things to look for in a zone that the camera itself cannot detect.
+
+    An AcuSense can classify a person or a vehicle, but it can't tell whether the person
+    is wearing a hard hat or read the vehicle's plate. Those come from the object
+    detection app running its models over the snapshot the zone produced, so a detector
+    is carried to that app in the snapshot payload and used as a spatial filter.
+
+    Each one depends on the camera classifying something first, because that is what
+    causes a snapshot to exist at all — see :data:`DETECTOR_REQUIRES_TARGET`.
+    """
+
+    ppe = "ppe"
+    anpr = "anpr"
+
+
+# The camera target each detector needs the zone to be watching for.
+#
+# Not a style rule — a hard dependency. The object detection app only ever sees frames the
+# camera published, and the camera only publishes one when it classified something. A zone
+# asking for PPE while ignoring people produces no snapshots, so the PPE model never runs
+# and the zone silently does nothing. The UI selects the target automatically; the app
+# warns if something else writes a zone without it.
+DETECTOR_REQUIRES_TARGET = {
+    ZoneDetector.ppe: "person",
+    ZoneDetector.anpr: "vehicle",
+}
+
+
+# Which camera rule each on-camera kind is written to, and reported by. These are ISAPI
+# names, so the casing is the firmware's, not ours — `regionEntrance` is camelCase where
+# `FieldDetection` is PascalCase and the camera is strict about it (see
+# HikvisionClient.disable_smart_rule). The event's `eventType` uses lowercase
+# `fielddetection`, which is why matching goes through ZONE_RULE_EVENT_TYPES rather than
+# comparing to these directly.
+RULE_FIELD_DETECTION = "FieldDetection"
+RULE_REGION_ENTRANCE = "regionEntrance"
+
+KIND_TO_RULE = {
+    ZoneKind.intrusion: RULE_FIELD_DETECTION,
+    ZoneKind.excluded_area: RULE_REGION_ENTRANCE,
+}
+
+# `eventType` as it appears on the alertStream -> the rule that produced it. The camera
+# lowercases `fielddetection` in events while the ISAPI path is `FieldDetection`, so this
+# mapping exists to stop that inconsistency leaking into every comparison.
+ZONE_RULE_EVENT_TYPES = {
+    "fielddetection": RULE_FIELD_DETECTION,
+    "regionentrance": RULE_REGION_ENTRANCE,
+}
+
+
+def rule_for_event_type(event_type: str) -> str | None:
+    """Which rule an alert's ``eventType`` belongs to, or None if it isn't a zone rule."""
+    return ZONE_RULE_EVENT_TYPES.get((event_type or "").strip().lower())
 
 
 class MotionDetectEventType(Enum):
@@ -52,10 +142,22 @@ class MotionDetectEvent:
         type_: MotionDetectEventType,
         data: dict,
         continuation: bool = False,
+        rule: str = None,
+        region_ids: list = None,
     ):
         self.type = type_
         self.data = data
         self.continuation = continuation
+        # Which camera rule reported this, and which of its regions the target was in —
+        # together these identify the zone the user drew, so the app can honour that
+        # zone's own settings instead of treating every detection alike.
+        #
+        # Both are optional and often absent: only the Hikvision perimeter rules report a
+        # region, and a `duration` continuation carries none at all. A consumer that
+        # can't identify a zone must fall back to the camera-wide behaviour rather than
+        # drop the event — see CameraApplication.zones_for_event.
+        self.rule = rule
+        self.region_ids = region_ids or region_ids_from_alert(data)
         # Where the camera saw the target(s), when it says. Empty on cameras (or
         # firmware) that don't report a rect, so callers must treat it as optional.
         self.boxes = TargetBox.list_from_alert(data)
@@ -235,6 +337,12 @@ class DetectionZone:
     ``0`` means report it as soon as the camera classifies it, which is what you want on a
     road; a second or two suppresses things that flicker in and out at the boundary. Check
     ``capabilities.supports_threshold`` and its min/max before offering the control.
+    Region entrance has no dwell time at all, so it is ignored for ``excluded_area``.
+
+    ``kind`` says what the zone is for (see :class:`ZoneKind`) and so which rule — or
+    which *app* — acts on it. ``notify`` is per-zone on purpose: the point of drawing a
+    zone is usually to be told about that one thing, and to stop being told about
+    everything else.
     """
 
     def __init__(
@@ -246,6 +354,9 @@ class DetectionZone:
         targets: list = None,
         sensitivity: int = None,
         threshold_secs: int = None,
+        kind: "ZoneKind" = ZoneKind.intrusion,
+        notify: bool = None,
+        detectors: list = None,
     ):
         self.id = id
         self.points = points
@@ -254,6 +365,24 @@ class DetectionZone:
         self.targets = targets or []
         self.sensitivity = sensitivity
         self.threshold_secs = threshold_secs
+        self.kind = kind
+        # Extra things to look for here that the camera can't (see ZoneDetector). Empty on
+        # most zones; a zone can carry both.
+        self.detectors = detectors or []
+        # An excluded area is by definition somewhere nobody should be, so it defaults
+        # loud. The others default quiet: a camera that notified on every person it
+        # classified is the noise this feature exists to remove, and someone who draws a
+        # zone to get pictures shouldn't be signed up to alerts as a side effect.
+        self.notify = self.default_notify(kind) if notify is None else bool(notify)
+
+    @staticmethod
+    def default_notify(kind: "ZoneKind") -> bool:
+        return kind is ZoneKind.excluded_area
+
+    @property
+    def rule(self) -> str | None:
+        """The camera rule this zone is written to, or None if the camera never sees it."""
+        return KIND_TO_RULE.get(self.kind)
 
     @staticmethod
     def _clamp(value: float) -> float:
@@ -275,6 +404,35 @@ class DetectionZone:
 
         sensitivity = payload.get("sensitivity")
         threshold = payload.get("threshold_secs")
+
+        detectors = []
+        for d in payload.get("detectors", []):
+            try:
+                detectors.append(ZoneDetector(d))
+            except ValueError:
+                pass  # unknown detector from a newer frontend - ignore, don't fail
+
+        raw_kind = payload.get("kind") or ZoneKind.intrusion.value
+        try:
+            kind = ZoneKind(raw_kind)
+        except ValueError:
+            # PPE and plates used to be kinds of their own before they became detectors.
+            # A stored record or an older frontend can still say so, and it means "an
+            # ordinary zone that also looks for this" — so migrate rather than discard,
+            # or upgrading would turn somebody's PPE zone into a plain one and silently
+            # stop the model running over it.
+            try:
+                migrated = ZoneDetector(raw_kind)
+            except ValueError:
+                # Genuinely unknown, e.g. a newer frontend. Fall back rather than reject
+                # the write: `intrusion` keeps the zone detecting, where dropping it would
+                # silently lose a region the user drew.
+                kind = ZoneKind.intrusion
+            else:
+                kind = ZoneKind.intrusion
+                if migrated not in detectors:
+                    detectors.append(migrated)
+
         return cls(
             id=int(payload.get("id", 1)),
             points=points,
@@ -285,6 +443,11 @@ class DetectionZone:
             # 0 is a real value here (report immediately), so this can't collapse a
             # supplied 0 into "unset" the way a truthiness check would.
             threshold_secs=int(threshold) if threshold is not None else None,
+            kind=kind,
+            detectors=detectors,
+            # Absent means "use the default for this kind", not False — an older
+            # frontend that doesn't send the field must not silence every excluded area.
+            notify=payload.get("notify"),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -293,6 +456,14 @@ class DetectionZone:
             "enabled": self.enabled,
             "points": [[round(x, 4), round(y, 4)] for x, y in self.points],
             "targets": [t.value for t in self.targets],
+            # Always emitted, unlike the optional fields below: the frontend needs them to
+            # render the zone at all, and `notify` has no "unset" state once a zone exists.
+            "kind": self.kind.value,
+            "notify": self.notify,
+            # Always emitted, even when empty: the object detection app reads this to
+            # decide whether the zone concerns it, and an absent key would be
+            # indistinguishable from an older app that never sent one.
+            "detectors": [d.value for d in self.detectors],
         }
         if self.name is not None:
             payload["name"] = self.name
@@ -301,6 +472,30 @@ class DetectionZone:
         if self.threshold_secs is not None:
             payload["threshold_secs"] = self.threshold_secs
         return payload
+
+    def contains(self, x: float, y: float) -> bool:
+        """Whether a normalised point falls inside this zone's polygon.
+
+        Ray casting, so it handles the concave polygons the editor allows. Used to decide
+        whether a detection the *app* made (a hard hat, a plate) happened inside a zone —
+        the camera-backed kinds never need this, since the camera reports the region.
+
+        Points exactly on an edge are not guaranteed either way, which is inherent to the
+        method and fine here: a target box centre landing precisely on a boundary is not a
+        distinction worth defining, and both answers are defensible.
+        """
+        points = self.points
+        if len(points) < 3:
+            return False
+
+        inside = False
+        j = len(points) - 1
+        for i, (xi, yi) in enumerate(points):
+            xj, yj = points[j]
+            if (yi > y) != (yj > y) and x < (xj - xi) * (y - yi) / (yj - yi) + xi:
+                inside = not inside
+            j = i
+        return inside
 
 
 class DetectionZonesPayload:

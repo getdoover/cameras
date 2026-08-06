@@ -12,5 +12,7 @@ class CameraTags(Tags):
     # Timestamp of the most recent PPE (hard-hat) violation, DeepinView only.
     last_ppe_violation = Tag("number", 0)
 
+    detection_zones = Tag("array[object]", [])
+
     # async def setup(self):
     #     self.add_tag(f"camera_power_{self.config.power.pin.value}", Tag("number", 0))

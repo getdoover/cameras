@@ -195,7 +195,7 @@ def test_set_zones_blanks_unused_slots():
     import asyncio
     import types
     from camera_app.engines.hikvision_acusense import HikvisionAcuSenseCamera
-    from camera_app.events import DetectionZone, DetectionTarget
+    from camera_app.events import DetectionZone, DetectionTarget, ZoneKind
 
     cam = HikvisionAcuSenseCamera.__new__(HikvisionAcuSenseCamera)
     cam.config = types.SimpleNamespace(sensitivity=types.SimpleNamespace(value=50))
@@ -205,13 +205,22 @@ def test_set_zones_blanks_unused_slots():
     async def fake_write(regions, channel=1):
         written["regions"] = regions
 
+    async def fake_entrance_write(regions, channel=1):
+        written["entrance"] = regions
+
     async def fake_static_alarm(enabled, channel=1):
         written["static_alarm"] = enabled
         return True
 
+    async def fake_disable(rule, channel=1):
+        written.setdefault("disabled", []).append(rule)
+        return True
+
     cam.client = types.SimpleNamespace(
         set_field_detection_regions=fake_write,
+        set_region_entrance_regions=fake_entrance_write,
         set_static_target_alarm=fake_static_alarm,
+        disable_smart_rule=fake_disable,
     )
 
     zone = DetectionZone(
@@ -224,7 +233,7 @@ def test_set_zones_blanks_unused_slots():
 
     regions = written["regions"]
     # Every slot is written, not just the one we set.
-    assert len(regions) == HikvisionAcuSenseCamera.ZONE_CAPABILITIES["max_zones"]
+    assert len(regions) == cam.max_zones_for(ZoneKind.intrusion)
     assert [r["id"] for r in regions] == [1, 2, 3, 4]
     # The real zone keeps its points; the rest are blanked to clear them.
     assert len(regions[0]["points"]) == 3
@@ -235,6 +244,13 @@ def test_set_zones_blanks_unused_slots():
     # static-target re-alarm switch has to be re-asserted -- or editing a zone quietly costs
     # the night alarm the only signal it has that an intruder is still present.
     assert written["static_alarm"] is True
+
+    # The entrance rule is written too, with every slot blank, and then switched off. A
+    # zone list with no excluded areas has to actively clear that rule: leaving its old
+    # polygons behind would silently resurrect them the moment any excluded area was added
+    # back, and leaving the rule enabled would double every intrusion event.
+    assert all(r["points"] == [] for r in written["entrance"])
+    assert "regionEntrance" in written["disabled"]
 
 
 def test_zone_capabilities_advertised():
@@ -657,18 +673,31 @@ def test_upload_media_publishes_detections():
     assert "detections" not in published[-1]
 
 
-def test_intrusion_is_the_only_rule():
-    """One rule, day and night: entrance/exit/line are off, and their events ignored."""
+def test_entrance_is_used_only_for_excluded_areas():
+    """Intrusion is the general rule; entrance exists solely for excluded areas.
+
+    This replaces an earlier `test_intrusion_is_the_only_rule`, which asserted that
+    regionEntrance was disabled outright. That is deliberately no longer true — entrance is
+    now the excluded-area rule. What has *not* changed is the reasoning behind the old
+    assertion: a second rule firing for the same person is a duplicate event, snapshot and
+    inference run, so entrance must never be written as a mirror of the intrusion zones.
+    Exit and line crossing stay off for exactly that reason.
+    """
     from camera_app.clients.hikvision import INTRUSION_DWELL_SECS, HikvisionClient
     from camera_app.engines.hikvision_acusense import (
         SMART_EVENT_TYPES,
         UNUSED_SMART_RULES,
     )
 
-    assert SMART_EVENT_TYPES == {"fielddetection"}
-    # Accepting an event type we never enable is a latent duplicate per target.
-    assert "regionEntrance" not in SMART_EVENT_TYPES
-    assert "regionEntrance" in UNUSED_SMART_RULES
+    assert SMART_EVENT_TYPES == {"fielddetection", "regionentrance"}
+    # Accepting an event type we never enable is a latent duplicate per target, so the
+    # rules we don't drive stay both disabled and ignored.
+    assert "regionexiting" not in SMART_EVENT_TYPES
+    assert "linedetection" not in SMART_EVENT_TYPES
+    assert set(UNUSED_SMART_RULES) == {"regionExiting", "LineDetection"}
+    # Entrance is driven per-zone now, so re-adding it here would fight that write on
+    # every main loop.
+    assert "regionEntrance" not in UNUSED_SMART_RULES
 
     # Dwell time is the "regardless of how fast they run in" knob, and the default is the
     # camera's own floor: report it as soon as it's classified. The stock rule shipped 5s,
@@ -1444,7 +1473,7 @@ def test_zone_threshold_seconds_round_trip():
 
     from camera_app.clients.hikvision import INTRUSION_DWELL_SECS
     from camera_app.engines.hikvision_acusense import HikvisionAcuSenseCamera
-    from camera_app.events import DetectionTarget, DetectionZone
+    from camera_app.events import DetectionTarget, DetectionZone, ZoneKind
 
     caps = HikvisionAcuSenseCamera.ZONE_CAPABILITIES
     # The frontend can't guess 0..60 the way it can assume 0..100 for sensitivity.
@@ -1460,10 +1489,19 @@ def test_zone_threshold_seconds_round_trip():
     async def fake_static(enabled, channel=1):
         return 5
 
+    async def fake_entrance(regions, channel=1):
+        written["entrance"] = regions
+
+    async def fake_disable(rule, channel=1):
+        return True
+
     cam = HikvisionAcuSenseCamera.__new__(HikvisionAcuSenseCamera)
     cam.config = types.SimpleNamespace(sensitivity=types.SimpleNamespace(value=50))
     cam.client = types.SimpleNamespace(
-        set_field_detection_regions=fake_write, set_static_target_alarm=fake_static
+        set_field_detection_regions=fake_write,
+        set_static_target_alarm=fake_static,
+        set_region_entrance_regions=fake_entrance,
+        disable_smart_rule=fake_disable,
     )
 
     points = [(0.2, 0.2), (0.6, 0.2), (0.6, 0.6)]
@@ -1495,10 +1533,19 @@ def test_zone_threshold_seconds_round_trip():
             }
         ]
 
-    cam.client = types.SimpleNamespace(get_field_detection_regions=fake_read)
+    async def fake_read_entrance(channel=1):
+        return []
+
+    cam.client = types.SimpleNamespace(
+        get_field_detection_regions=fake_read,
+        get_region_entrance_regions=fake_read_entrance,
+    )
     (zone,) = asyncio.run(cam.get_detection_zones())
     assert zone.threshold_secs == 4
     assert zone.to_dict()["threshold_secs"] == 4
+    # A region read off the intrusion rule is an intrusion zone by definition - the kind
+    # comes from which rule held it, not from anything the camera says.
+    assert zone.kind is ZoneKind.intrusion
 
     # A zero must survive the round trip rather than being dropped as falsy - it's the
     # default and it means something ("report it immediately").
@@ -1608,6 +1655,428 @@ def test_empty_reads_reconnect_instead_of_spinning():
 
     # Bounded, so a broken stream costs a reconnect rather than a core.
     assert reads["n"] <= MAX_EMPTY_READS + 2
+
+
+# --- per-zone kinds and notification routing ---
+
+
+def _zone_app(records):
+    """A CameraApplication stub with `records` as its stored zone list."""
+    import types
+
+    from camera_app.application import CameraApplication
+
+    app = CameraApplication.__new__(CameraApplication)
+    app.tags = types.SimpleNamespace(
+        detection_zones=types.SimpleNamespace(value=records)
+    )
+    return app
+
+
+def test_zone_kind_round_trip_and_unknown_kind_falls_back():
+    from camera_app.events import DetectionZone, ZoneKind
+
+    square = [[0.2, 0.2], [0.8, 0.2], [0.8, 0.8], [0.2, 0.8]]
+
+    for kind in ZoneKind:
+        zone = DetectionZone.from_dict({"id": 1, "points": square, "kind": kind.value})
+        again = DetectionZone.from_dict(zone.to_dict())
+        assert again.kind is kind
+        assert again.notify == zone.notify
+
+    # An unknown kind from a newer frontend must not lose the region the user drew, and
+    # must not be invented into a meaning we can't support.
+    odd = DetectionZone.from_dict({"id": 1, "points": square, "kind": "teleportation"})
+    assert odd.kind is ZoneKind.intrusion
+    assert len(odd.points) == 4
+
+
+def test_zone_notify_defaults_by_kind():
+    """An excluded area defaults loud; everything else defaults quiet."""
+    from camera_app.events import DetectionZone, ZoneKind
+
+    assert DetectionZone.from_dict({"kind": "excluded_area"}).notify is True
+    assert DetectionZone.from_dict({"kind": "intrusion"}).notify is False
+    assert DetectionZone.from_dict({"kind": "ppe"}).notify is False
+
+    # An explicit value always wins over the default, in both directions.
+    assert DetectionZone.from_dict({"kind": "excluded_area", "notify": False}).notify is False
+    assert DetectionZone.from_dict({"kind": "intrusion", "notify": True}).notify is True
+
+    # A frontend that doesn't send the field at all must not silence excluded areas --
+    # absent means "use the default", which is why this can't be a plain bool(...).
+    assert "notify" not in {"kind": "excluded_area"}
+    assert DetectionZone.from_dict({"kind": "excluded_area"}).notify is True
+
+
+def test_no_zones_configured_notifies_exactly_as_before():
+    """The compatibility guarantee: an install with no zones behaves as it always did.
+
+    Every camera in the fleet is in this state on deploy. If an unidentifiable detection
+    resolved to "no zone matched, so stay quiet", every one of them would go silent.
+    """
+    from camera_app.events import MotionDetectEvent, MotionDetectEventType
+
+    app = _zone_app([])
+    event = MotionDetectEvent(MotionDetectEventType.person, {})
+
+    assert app.zones_for_event(event) == []
+    assert app.should_notify([], fallback=True) is True
+
+
+def test_notification_is_routed_by_the_zone_that_fired():
+    from camera_app.events import (
+        MotionDetectEvent,
+        MotionDetectEventType,
+        RULE_FIELD_DETECTION,
+        RULE_REGION_ENTRANCE,
+        TRIGGERED_REGIONS_KEY,
+        ZoneKind,
+    )
+
+    square = [[0.2, 0.2], [0.8, 0.2], [0.8, 0.8], [0.2, 0.8]]
+    app = _zone_app(
+        [
+            {"id": 1, "points": square, "kind": "intrusion", "notify": False,
+             "name": "Driveway"},
+            {"id": 2, "points": square, "kind": "intrusion", "notify": True,
+             "name": "Back Gate"},
+            {"id": 1, "points": square, "kind": "excluded_area", "name": "Substation"},
+        ]
+    )
+
+    def event_in(rule, *region_ids):
+        return MotionDetectEvent(
+            MotionDetectEventType.person,
+            {TRIGGERED_REGIONS_KEY: list(region_ids)},
+            rule=rule,
+        )
+
+    # The quiet intrusion zone stays quiet; the loud one doesn't.
+    quiet = app.zones_for_event(event_in(RULE_FIELD_DETECTION, 1))
+    assert [z.name for z in quiet] == ["Driveway"]
+    assert app.should_notify(quiet, fallback=True) is False
+
+    loud = app.zones_for_event(event_in(RULE_FIELD_DETECTION, 2))
+    assert app.should_notify(loud, fallback=True) is True
+
+    # Region ids are per-rule, so slot 1 of entrance is a different zone from slot 1 of
+    # intrusion. Keying on the id alone would confuse the two.
+    entrance = app.zones_for_event(event_in(RULE_REGION_ENTRANCE, 1))
+    assert [z.name for z in entrance] == ["Substation"]
+    assert entrance[0].kind is ZoneKind.excluded_area
+    assert app.should_notify(entrance, fallback=False) is True
+
+    # A zone id the records don't know is not a match, so it falls back rather than
+    # silently resolving to some other zone.
+    assert app.zones_for_event(event_in(RULE_FIELD_DETECTION, 4)) == []
+
+    # One loud zone among several is enough: someone in the overlap of a quiet and a loud
+    # zone is still in the loud one.
+    both = app.zones_for_event(event_in(RULE_FIELD_DETECTION, 1, 2))
+    assert app.should_notify(both, fallback=False) is True
+
+
+def test_excluded_area_wins_over_an_overlapping_intrusion_zone():
+    """Two rules genuinely report the same person; the more specific claim wins.
+
+    This is the duplicate the engine docstring warns about. It's allowed now because the
+    two rules answer different questions, but the app has to collapse it or an intruder
+    walking into an excluded area gets reported twice.
+    """
+    from camera_app.events import (
+        MotionDetectEvent,
+        MotionDetectEventType,
+        RULE_REGION_ENTRANCE,
+        TRIGGERED_REGIONS_KEY,
+        ZoneKind,
+    )
+
+    square = [[0.2, 0.2], [0.8, 0.2], [0.8, 0.8], [0.2, 0.8]]
+    app = _zone_app(
+        [
+            {"id": 1, "points": square, "kind": "excluded_area", "name": "Keep Out"},
+            {"id": 2, "points": square, "kind": "intrusion", "name": "Yard"},
+        ]
+    )
+    # Entrance reporting two of its regions; only one is a real entrance zone.
+    event = MotionDetectEvent(
+        MotionDetectEventType.person,
+        {TRIGGERED_REGIONS_KEY: [2, 1]},
+        rule=RULE_REGION_ENTRANCE,
+    )
+    zones = app.zones_for_event(event)
+    # Sorted so the excluded area leads, whatever order the camera reported them in.
+    assert zones[0].kind is ZoneKind.excluded_area
+
+
+def test_one_zone_can_carry_several_detectors():
+    """PPE and plates are things to look for in a zone, not kinds of zone.
+
+    They were kinds once, which forced a separate polygon per question and made "watch for
+    people here but don't check their hard hats" unexpressible.
+    """
+    from camera_app.events import DetectionZone, ZoneDetector, ZoneKind
+
+    square = [[0.2, 0.2], [0.8, 0.2], [0.8, 0.8], [0.2, 0.8]]
+    zone = DetectionZone.from_dict(
+        {
+            "id": 1,
+            "points": square,
+            "kind": "intrusion",
+            "targets": ["person", "vehicle"],
+            "detectors": ["ppe", "anpr"],
+        }
+    )
+    assert zone.kind is ZoneKind.intrusion
+    assert zone.detectors == [ZoneDetector.ppe, ZoneDetector.anpr]
+    # And an excluded area can want them too — the two axes are independent.
+    both = DetectionZone.from_dict(
+        {"id": 1, "points": square, "kind": "excluded_area", "detectors": ["ppe"]}
+    )
+    assert both.kind is ZoneKind.excluded_area
+    assert both.detectors == [ZoneDetector.ppe]
+
+
+def test_ppe_and_anpr_kinds_migrate_to_detectors():
+    """A zone stored when PPE/plates were kinds must keep working.
+
+    Dropping the unknown kind would turn a PPE zone into a plain one and silently stop the
+    model ever running over it.
+    """
+    from camera_app.events import DetectionZone, ZoneDetector, ZoneKind
+
+    square = [[0.2, 0.2], [0.8, 0.2], [0.8, 0.8], [0.2, 0.8]]
+    for old_kind, expected in (("ppe", ZoneDetector.ppe), ("anpr", ZoneDetector.anpr)):
+        z = DetectionZone.from_dict({"id": 1, "points": square, "kind": old_kind})
+        assert z.kind is ZoneKind.intrusion
+        assert z.detectors == [expected]
+
+    # A genuinely unknown kind still falls back without inventing a detector.
+    odd = DetectionZone.from_dict({"id": 1, "points": square, "kind": "teleportation"})
+    assert odd.kind is ZoneKind.intrusion
+    assert odd.detectors == []
+
+
+def test_a_disabled_rule_reports_no_zones():
+    """Polygons left on a switched-off rule are leftovers, not zones.
+
+    Seen on a real camera: the entrance rule was disabled but still held the old 250..750
+    default polygon from when zones were fanned out to both rules. Reporting it would show
+    an excluded area that detects nothing — and saving from that state would count one
+    excluded zone and re-enable the rule, arming a zone nobody drew.
+    """
+    import asyncio
+    import types
+    from camera_app.engines.hikvision_acusense import HikvisionAcuSenseCamera
+    from camera_app.events import ZoneKind
+
+    region = {
+        "id": 1,
+        "enabled": True,
+        "points": [(250, 250), (750, 250), (750, 750), (250, 750)],
+        "targets": ["human"],
+        "sensitivity": 50,
+        "time_threshold": 0,
+    }
+
+    def build(enabled_by_rule):
+        cam = HikvisionAcuSenseCamera.__new__(HikvisionAcuSenseCamera)
+
+        async def field(channel=1):
+            return [region]
+
+        async def entrance(channel=1):
+            return [region]
+
+        async def is_enabled(rule, channel=1):
+            return enabled_by_rule[rule]
+
+        cam.client = types.SimpleNamespace(
+            get_field_detection_regions=field,
+            get_region_entrance_regions=entrance,
+            get_smart_rule_enabled=is_enabled,
+        )
+        return cam
+
+    # Entrance off: only the intrusion zone is real.
+    cam = build({"FieldDetection": True, "regionEntrance": False})
+    kinds = [z.kind for z in asyncio.run(cam.get_detection_zones())]
+    assert kinds == [ZoneKind.intrusion]
+
+    # Both on: both are real.
+    cam = build({"FieldDetection": True, "regionEntrance": True})
+    kinds = sorted(z.kind.value for z in asyncio.run(cam.get_detection_zones()))
+    assert kinds == ["excluded_area", "intrusion"]
+
+    # Unknown fails OPEN — a rule we couldn't read is not a rule we know to be off, and
+    # hiding a zone somebody drew is the worse mistake.
+    cam = build({"FieldDetection": None, "regionEntrance": None})
+    assert len(asyncio.run(cam.get_detection_zones())) == 2
+
+
+def test_a_zone_drawn_before_this_feature_still_reports_as_notifying():
+    """Upgrading must not silently silence zones somebody already had.
+
+    A camera upgraded from an older app has regions on it and no stored records. Those
+    zones DO notify — zones_for_event can't identify them, so should_notify falls back to
+    the camera-wide behaviour. The editor has to say so, because whatever it shows is what
+    gets written back on the next save: showing them as quiet would turn a display bug
+    into every one of those zones going silent for real.
+    """
+    from camera_app.events import DetectionZone, MotionDetectEvent
+    from camera_app.events import MotionDetectEventType, RULE_FIELD_DETECTION
+    from camera_app.events import TRIGGERED_REGIONS_KEY, ZoneKind
+
+    app = _zone_app([])  # upgraded install: regions on the camera, no records yet
+    from_camera = [
+        DetectionZone(
+            id=1,
+            points=[(0.2, 0.2), (0.8, 0.2), (0.8, 0.8)],
+            kind=ZoneKind.intrusion,
+        )
+    ]
+    (merged,) = app.merge_zone_records(from_camera)
+    assert merged.notify is True, "an existing zone must not display as quiet"
+
+    # ...and that display matches what the app actually does with a detection in it.
+    event = MotionDetectEvent(
+        MotionDetectEventType.person,
+        {TRIGGERED_REGIONS_KEY: [1]},
+        rule=RULE_FIELD_DETECTION,
+    )
+    assert app.zones_for_event(event) == []
+    assert app.should_notify([], fallback=True) is True
+
+    # A zone the app *did* write keeps whatever was chosen for it, quiet included.
+    recorded = _zone_app(
+        [{"id": 1, "points": [[0.2, 0.2], [0.8, 0.2], [0.8, 0.8]],
+          "kind": "intrusion", "notify": False}]
+    )
+    (merged,) = recorded.merge_zone_records(
+        [DetectionZone(id=1, points=[(0.2, 0.2), (0.8, 0.2), (0.8, 0.8)],
+                       kind=ZoneKind.intrusion)]
+    )
+    assert merged.notify is False
+
+
+def test_a_camera_backed_zone_the_camera_forgot_is_dropped():
+    """A stored zone the camera no longer holds must not be reported as live.
+
+    A factory reset or someone deleting the region in the camera's web UI leaves the app's
+    record ahead of reality. Reporting it would claim an excluded area is being watched
+    when nothing is watching it.
+    """
+    square = [[0.2, 0.2], [0.8, 0.2], [0.8, 0.8], [0.2, 0.8]]
+    app = _zone_app(
+        [{"id": 1, "points": square, "kind": "excluded_area", "name": "Gone"}]
+    )
+    merged = app.merge_zone_records([])  # camera reports nothing
+    assert merged == []
+
+
+def test_zone_contains_point():
+    from camera_app.events import DetectionZone
+
+    # Concave (an L), so a bounding-box test would get the notch wrong.
+    zone = DetectionZone(
+        id=1,
+        points=[(0.0, 0.0), (1.0, 0.0), (1.0, 0.4), (0.4, 0.4), (0.4, 1.0), (0.0, 1.0)],
+    )
+    assert zone.contains(0.1, 0.1) is True
+    assert zone.contains(0.2, 0.8) is True  # in the vertical arm
+    assert zone.contains(0.8, 0.2) is True  # in the horizontal arm
+    assert zone.contains(0.8, 0.8) is False  # the notch a bbox test would swallow
+
+    # A degenerate polygon contains nothing rather than raising.
+    assert DetectionZone(id=1, points=[(0.0, 0.0), (1.0, 1.0)]).contains(0.5, 0.5) is False
+
+
+def test_detector_zone_payload_is_what_object_detection_reads():
+    """The zone dict sent to the object detection app carries the fields it reads.
+
+    The two apps deploy separately and share no package, so this pairing is a wire contract
+    and nothing but a test on each side stops one of them renaming a field and silently
+    disabling the whole filter. The mirror lives in
+    `object_detection/tests/test_zones.py::test_wire_contract_matches_camera_app`, and
+    holds `common.zones.Zone.from_dict` to these same keys.
+    """
+    from camera_app.events import DetectionZone
+
+    square = [[0.2, 0.2], [0.8, 0.2], [0.8, 0.8], [0.2, 0.8]]
+    zone = DetectionZone.from_dict(
+        {
+            "id": 1,
+            "points": square,
+            "kind": "intrusion",
+            "detectors": ["ppe"],
+            "notify": True,
+            "name": "Work Area",
+        }
+    )
+    payload = zone.to_dict()
+
+    # Exactly the keys common.zones.Zone.from_dict looks for.
+    for key in ("detectors", "points", "notify", "name", "id"):
+        assert key in payload, f"object detection reads '{key}' and it is missing"
+    assert payload["detectors"] == ["ppe"]
+    assert payload["points"] == square
+    assert payload["notify"] is True
+
+    # A zone with no detectors still emits the key, so "no detectors" is distinguishable
+    # from an older app that never sent one.
+    assert DetectionZone.from_dict({"id": 1, "points": square}).to_dict()["detectors"] == []
+
+
+def test_only_zones_with_detectors_are_forwarded_with_a_snapshot():
+    """The snapshot payload carries the zones that ask for something, and nothing else.
+
+    Sending zones with no detectors would be noise: the camera has already evaluated those
+    itself, and the object detection app has no business re-deciding them.
+    """
+    square = [[0.2, 0.2], [0.8, 0.2], [0.8, 0.8], [0.2, 0.8]]
+    app = _zone_app(
+        [
+            {"id": 1, "points": square, "kind": "intrusion"},
+            {"id": 2, "points": square, "kind": "intrusion",
+             "detectors": ["ppe"], "name": "Work Area"},
+            {"id": 1, "points": square, "kind": "excluded_area",
+             "detectors": ["ppe", "anpr"], "name": "Yard"},
+        ]
+    )
+    forwarded = app.detector_zones()
+    assert {z["name"] for z in forwarded} == {"Work Area", "Yard"}
+    # An excluded area can carry detectors too — kind and detectors are independent.
+    yard = next(z for z in forwarded if z["name"] == "Yard")
+    assert yard["kind"] == "excluded_area"
+    assert sorted(yard["detectors"]) == ["anpr", "ppe"]
+
+    # A camera with no such zones sends none at all, so the key is absent rather than
+    # empty -- which is what tells the other app "no opinion" not "nothing qualifies".
+    assert _zone_app([]).detector_zones() == []
+
+
+def test_a_detector_with_no_matching_target_is_warned_about(caplog):
+    """A PPE zone that ignores people never produces a frame for the model to run on."""
+    import logging
+    from camera_app.application import CameraApplication
+    from camera_app.events import DetectionZone
+
+    square = [(0.2, 0.2), (0.8, 0.2), (0.8, 0.8)]
+    bad = DetectionZone.from_dict(
+        {"id": 1, "points": square, "detectors": ["ppe"], "targets": ["vehicle"]}
+    )
+    good = DetectionZone.from_dict(
+        {"id": 2, "points": square, "detectors": ["ppe"], "targets": ["person"]}
+    )
+    with caplog.at_level(logging.WARNING):
+        CameraApplication.warn_on_unreachable_detectors([bad])
+    assert "does not detect 'person'" in caplog.text
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        CameraApplication.warn_on_unreachable_detectors([good])
+    assert caplog.text == ""
 
 
 async def _immediate(value):

@@ -26,6 +26,7 @@ import logging
 from datetime import datetime, timezone
 
 from common import annotate as annotate_mod
+from common import zones as zones_mod
 from common.detectors import anpr as anpr_mod
 from common.detectors import ppe as ppe_mod
 from pydoover.models import File, MessageCreateEvent, NotificationSeverity
@@ -163,11 +164,17 @@ class ObjectDetectionProcessor(Application):
             log.info(f"No analysable image on '{channel}' message {message.id}.")
             return
 
+        # The camera app sends the zones that concern us with the frame itself. Absent
+        # means "analyse the whole frame", which is every camera that has never had zones
+        # drawn on it.
+        zones = payload.get("detection_zones")
+
         # One frame per message in practice; a PTZ camera contributing several presets
         # is analysed in order and the findings merged under their view names.
         findings, files, media, summaries = {}, [], [], []
+        violators, plates, matched_zones = [], [], []
         for name, attachment in targets:
-            result = await self._analyse(attachment, ppe, anpr, name)
+            result = await self._analyse(attachment, ppe, anpr, name, zones)
             if result is None:
                 continue
             findings[name] = result["findings"]
@@ -175,15 +182,27 @@ class ObjectDetectionProcessor(Application):
             files.extend(result["files"])
             if result["media"]:
                 media.append(result["media"])
+            violators.extend(result["violators"])
+            plates.extend(result["plates"])
+            matched_zones.extend(result["zones"])
 
         if not findings:
             return
 
         await self._publish(
-            channel, message, payload, findings, files, media, summaries
+            channel,
+            message,
+            payload,
+            findings,
+            files,
+            media,
+            summaries,
+            violators,
+            plates,
+            matched_zones,
         )
 
-    async def _analyse(self, attachment, ppe, anpr, name):
+    async def _analyse(self, attachment, ppe, anpr, name, zones=None):
         try:
             data = await self.api.fetch_message_attachment(attachment)
         except Exception as e:
@@ -252,17 +271,57 @@ class ObjectDetectionProcessor(Application):
             except Exception as e:
                 log.warning(f"Couldn't annotate the image: {e}", exc_info=e)
 
-        violators = list(ppe_result.violators) if ppe_result else []
-        plates = anpr_result.read_plates if anpr_result else []
+        # Zones narrow what gets *reported*, not what the models saw: `view` above stays
+        # unfiltered so the annotated frame and the timeline entry still show everything.
+        # Kept identical to the device variant on purpose — the whole reason the filter
+        # lives in `common` is that these two must not drift.
+        height, width = image.shape[:2]
+        violator_pairs, dropped_ppe = zones_mod.filter_by_zones(
+            list(ppe_result.violators) if ppe_result else [],
+            zones_mod.zones_for_detector(zones, zones_mod.DETECTOR_PPE),
+            lambda p: getattr(p.detection, "box", None),
+            width,
+            height,
+        )
+        plate_pairs, dropped_plates = zones_mod.filter_by_zones(
+            anpr_result.read_plates if anpr_result else [],
+            zones_mod.zones_for_detector(zones, zones_mod.DETECTOR_ANPR),
+            lambda p: getattr(p.detection, "box", None),
+            width,
+            height,
+        )
+        if dropped_ppe or dropped_plates:
+            # Logged because a zone filtering everything out is indistinguishable from a
+            # detector that has quietly stopped working.
+            log.info(
+                f"Zones excluded {len(dropped_ppe)} PPE violation(s) and "
+                f"{len(dropped_plates)} plate read(s) on '{name}'."
+            )
+
+        violators = [v for v, _z in violator_pairs]
+        plates = [p for p, _z in plate_pairs]
         return {
             "findings": view,
             "files": files,
             "media": media_entry,
             "summary": self._summarise(violators, plates),
+            "violators": violators,
+            "plates": plates,
+            "zones": [z for _i, z in (*violator_pairs, *plate_pairs)],
         }
 
     async def _publish(
-        self, channel, message, payload, findings, files, media, summaries
+        self,
+        channel,
+        message,
+        payload,
+        findings,
+        files,
+        media,
+        summaries,
+        violators=None,
+        plates=None,
+        matched_zones=None,
     ):
         """Merge the findings into the original message and attach the annotation.
 
@@ -296,37 +355,50 @@ class ObjectDetectionProcessor(Application):
             return
 
         log.info(f"Updated message {message.id} on '{channel}': {detail['summary']}")
-        await self._notify(channel, findings)
+        await self._notify(channel, violators, plates, matched_zones)
 
-    async def _notify(self, channel, findings):
-        violations = [
-            v
-            for view in findings.values()
-            for v in view.get("ppe", {}).get("violations", [])
-        ]
-        plates = [
-            p["plate"]
-            for view in findings.values()
-            for p in view.get("anpr", {}).get("plates", [])
-            if p.get("plate")
-        ]
+    async def _notify(self, channel, violators=None, plates=None, matched_zones=None):
+        """Notify on the zone-filtered findings, letting a zone override the switch.
 
-        if violations and self.config.ppe.notify_on_violation.value:
-            missing = sorted({m for v in violations for m in v.get("missing", [])})
+        Takes the filtered objects rather than re-reading them out of ``findings``:
+        ``findings`` is deliberately unfiltered (it backs the annotated frame), so deriving
+        the notification from it would notify about violations the zones excluded.
+        """
+        violators = violators or []
+        plates = plates or []
+        matched_zones = matched_zones or []
+
+        if violators and zones_mod.should_notify(
+            matched_zones, self.config.ppe.notify_on_violation.value
+        ):
+            missing = sorted({m for v in violators for m in v.missing})
             pretty = " and ".join(m.replace("_", " ") for m in missing)
-            who = "someone" if len(violations) == 1 else f"{len(violations)} people"
+            who = "someone" if len(violators) == 1 else f"{len(violators)} people"
             await self.send_notification(
-                f"{channel} detected {who} without {pretty}.",
+                f"{channel} detected {who} without {pretty}"
+                f"{self._zone_suffix(matched_zones)}.",
                 severity=NotificationSeverity.Warn,
                 topic="ppe_event",
             )
 
-        if plates and self.config.anpr.notify_on_plate.value:
+        read = [p.text for p in plates if p.text]
+        if read and zones_mod.should_notify(
+            matched_zones, self.config.anpr.notify_on_plate.value
+        ):
             await self.send_notification(
-                f"{channel} read plate(s) {', '.join(plates)}.",
+                f"{channel} read plate(s) {', '.join(read)}"
+                f"{self._zone_suffix(matched_zones)}.",
                 severity=NotificationSeverity.Info,
                 topic="anpr_event",
             )
+
+    @staticmethod
+    def _zone_suffix(matched_zones) -> str:
+        """" in <zone>" when exactly one zone is responsible, else nothing."""
+        named = {z.label for z in matched_zones if z is not None}
+        if len(named) != 1:
+            return ""
+        return f" in {named.pop()}"
 
     @staticmethod
     def _merged_media(payload: dict, new_entries: list) -> list:

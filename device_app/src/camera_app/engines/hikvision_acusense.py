@@ -5,17 +5,32 @@ targets on-camera as human / vehicle / animal via line-crossing and intrusion
 (field) detection. Unlike the ANPR "/P" models, these expose real perimeter
 analytics, so this is the driver for person/intruder detection.
 
-**Intrusion (``fielddetection``) is the only rule, day and night.** Presence in the
-region is the trigger, so it catches a target that is already in frame, one that appears
-inside the region, and one that crosses only the outer margin -- none of which region
-entrance can see, because entrance needs the target tracked *outside* the region first.
-The reason entrance used to own the day was intrusion's re-alarm on a static target,
-which turned one parked car into a stream of snapshots. That re-alarm is kept — it is the
-only signal that an intruder is *still there*, which the night alarm is built on — and the
-duplicate cost is handled in the app instead, where the picture can be throttled without
-throttling the alarm (see ``CameraApplication.claim_motion_snapshot``). One rule also means
-**one** set of zones: the two rules had separate defaults that nothing reconciled, so what
-a user drew and what the camera detected by day could silently differ.
+**Intrusion (``fielddetection``) is the general-purpose rule, day and night.** Presence in
+the region is the trigger, so it catches a target that is already in frame, one that
+appears inside the region, and one that crosses only the outer margin -- none of which
+region entrance can see, because entrance needs the target tracked *outside* the region
+first. The reason entrance used to own the day was intrusion's re-alarm on a static
+target, which turned one parked car into a stream of snapshots. That re-alarm is kept — it
+is the only signal that an intruder is *still there*, which the night alarm is built on —
+and the duplicate cost is handled in the app instead, where the picture can be throttled
+without throttling the alarm (see ``CameraApplication.claim_motion_snapshot``).
+
+**Region entrance is back, for excluded areas only.** It was previously disabled
+outright, on the reasoning that a second rule means a second event for the same person
+walking through. That reasoning still holds and is still the default: entrance is written
+*only* for zones the user explicitly marked ``excluded_area``, never as a duplicate of an
+intrusion zone. What changed is that "somebody entered the area they're not allowed in" is
+a different question from "somebody is in frame", and entrance answers it better — it
+fires once on crossing in rather than re-alarming while they stand there.
+
+The duplicate the old comment warned about is therefore now *possible* but deliberate:
+an excluded area overlapping an intrusion zone genuinely reports twice for one person,
+once per question. The app collapses that (see ``CameraApplication.zones_for_event``),
+preferring the excluded-area zone, because it is the more specific statement.
+
+Zones carry which rule they belong to (``ZoneKind``), so the two rules can no longer
+drift the way they did when the same polygons were fanned out to both with separate
+hardcoded defaults and nothing reconciling them.
 
 Events arrive over the ISAPI alertStream. AcuSense smart events carry the
 classification per-event inside ``<DetectionRegionList><DetectionRegionEntry>``:
@@ -43,30 +58,40 @@ from pydoover.models import File
 from .base import CameraBase, THUMBNAIL_FILENAME
 from ..clients import HikvisionClient
 from ..clients.hikvision import (
+    ENTRANCE_EDGE_WARN,
     INTRUSION_DWELL_MAX_SECS,
     INTRUSION_DWELL_SECS,
     NORMALIZED_SCREEN,
 )
 from ..events import (
+    DETECTOR_REQUIRES_TARGET,
     DetectionTarget,
     DetectionZone,
     MotionDetectEvent,
     MotionDetectEventType,
+    RULE_FIELD_DETECTION,
+    RULE_REGION_ENTRANCE,
+    ZONE_RULE_EVENT_TYPES,
+    ZoneDetector,
+    ZoneKind,
+    rule_for_event_type,
 )
 
 
 log = logging.getLogger(__name__)
 
-# The only smart event this engine acts on — intrusion, the one rule it configures.
+# The smart events this engine acts on: intrusion, plus region entrance for excluded
+# areas. Both are rules it configures itself.
 #
-# `regionEntrance`, `regionExiting` and `linedetection` are excluded on purpose rather
-# than by oversight. The camera can run them alongside intrusion, and each one that fires
-# is another snapshot, upload and inference run for the same person walking through.
-# Accepting an event type we never enable is a latent duplicate waiting for someone to
-# tick a box in the camera's web UI — so the engine disables them and ignores them.
-SMART_EVENT_TYPES = {
-    "fielddetection",
-}
+# `regionExiting` and `linedetection` stay out on purpose rather than by oversight. The
+# camera can run them alongside these, and each one that fires is another snapshot, upload
+# and inference run for the same person walking through. Accepting an event type we never
+# enable is a latent duplicate waiting for someone to tick a box in the camera's web UI —
+# so the engine disables them and ignores them.
+#
+# Keys are lowercased `eventType` values; see `events.ZONE_RULE_EVENT_TYPES` for why the
+# casing can't just be compared directly to the ISAPI path names.
+SMART_EVENT_TYPES = set(ZONE_RULE_EVENT_TYPES)
 
 # How the camera says "that target is still there".
 #
@@ -85,12 +110,22 @@ DURATION_EVENT_TYPE = "duration"
 # Smart rules this engine turns off, because intrusion covers what they'd report and
 # every one left on is a duplicate event per target. Names are ISAPI path segments and
 # the casing is not uniform -- see `disable_smart_rule`.
-UNUSED_SMART_RULES = ("regionEntrance", "regionExiting", "LineDetection")
+#
+# `regionEntrance` is NOT in here any more: it is now the excluded-area rule, enabled or
+# disabled according to whether any excluded-area zones exist (see
+# `_write_excluded_zones`). Putting it back here would fight that write every main loop.
+UNUSED_SMART_RULES = ("regionExiting", "LineDetection")
 
 # The on-camera intrusion rule always classifies both, regardless of the app's
 # Object Detection setting — that setting shapes which events raise notifications
 # downstream, not what the camera looks for.
 RULE_TARGETS = ["human", "vehicle"]
+
+# How many regionEntrance slots to assume when the camera won't tell us. The real number
+# is read from its own capabilities at setup (`_read_entrance_max_zones`); this is only the
+# floor to fall back on, chosen to match FieldDetection's four rather than guessed high —
+# writing more regions than the rule has slots gets the whole PUT rejected.
+DEFAULT_ENTRANCE_MAX_ZONES = 4
 
 # How far the camera's clock may be out before it is rewritten.
 #
@@ -146,6 +181,57 @@ class HikvisionAcuSenseCamera(CameraBase):
         # a zone can't be switched off - it has to be removed. The frontend should
         # offer delete rather than a toggle.
         "supports_disable": False,
+        # Every zone carries a notify flag, so the frontend should offer the control.
+        "supports_notify": True,
+        # What each kind of zone can do here, because they are genuinely not
+        # interchangeable and a frontend offering the wrong control gets silently
+        # ignored by the camera.
+        # What a zone can additionally be asked to look for, beyond what the camera
+        # classifies. Not zone kinds: a single zone can want any combination of these
+        # alongside its person/vehicle targets. Each needs a camera target to be watching
+        # for, or no snapshot is ever produced for the model to run over.
+        "detectors": [
+            {
+                "value": ZoneDetector.ppe.value,
+                "display_name": "PPE",
+                "requires_target": DETECTOR_REQUIRES_TARGET[ZoneDetector.ppe],
+                "detected_by": "object_detection",
+            },
+            {
+                "value": ZoneDetector.anpr.value,
+                "display_name": "Number Plates",
+                "requires_target": DETECTOR_REQUIRES_TARGET[ZoneDetector.anpr],
+                "detected_by": "object_detection",
+            },
+        ],
+        "kinds": {
+            ZoneKind.intrusion.value: {
+                # "Regular", not "Intrusion": it's the ordinary zone almost everyone
+                # wants, and the camera's own jargon only makes that harder to pick.
+                "display_name": "Regular",
+                "max_zones": 4,
+                "supports_threshold": True,
+                "default_notify": DetectionZone.default_notify(ZoneKind.intrusion),
+            },
+            ZoneKind.excluded_area.value: {
+                "display_name": "Excluded Area",
+                # Filled in from the camera's own regionEntrance capabilities during
+                # setup; this is only the fallback if that read fails. It is a separate
+                # budget from intrusion's - a different rule with its own slots.
+                "max_zones": DEFAULT_ENTRANCE_MAX_ZONES,
+                # regionEntrance has no <timeThreshold> at all, so a dwell control here
+                # would be a slider the camera throws away.
+                "supports_threshold": False,
+                "default_notify": DetectionZone.default_notify(ZoneKind.excluded_area),
+                # Entrance needs the target tracked OUTSIDE the region before it crosses
+                # in, so a zone hugging the frame edge never fires. Measured, not
+                # theorised: 10..990 produced zero events where 250..750 fired reliably
+                # (see HikvisionClient._default_region_entrance_body). The frontend should
+                # warn when any point is within this many normalized units of the edge.
+                "edge_warn": ENTRANCE_EDGE_WARN,
+                "edge_warn_normalized": round(ENTRANCE_EDGE_WARN / NORMALIZED_SCREEN, 4),
+            },
+        },
     }
 
     def __init__(
@@ -232,6 +318,10 @@ class HikvisionAcuSenseCamera(CameraBase):
 
         await self.disable_unused_rules()
 
+        # How many excluded areas this model can hold. Read once, here, because it's a
+        # fixed property of the camera and the zone editor needs it before anyone draws.
+        await self._read_entrance_max_zones()
+
         # Resolve this before arming: the deterrent only adds the `record` linkage
         # when we're actually going to read recordings back off the camera.
         self.event_clip_mode = await self._resolve_event_clip_mode()
@@ -295,7 +385,7 @@ class HikvisionAcuSenseCamera(CameraBase):
                 )
             return
 
-        if event_type not in SMART_EVENT_TYPES or event_state != "active":
+        if event_type.lower() not in SMART_EVENT_TYPES or event_state != "active":
             return
 
         target = self._extract_target(event)
@@ -308,12 +398,18 @@ class HikvisionAcuSenseCamera(CameraBase):
                 # animal / others / unclassified — still real motion in the zone.
                 event_type_enum = MotionDetectEventType.motion
 
-        log.info(f"AcuSense {event_type} target={target or 'unknown'}")
-        self._last_target = event_type_enum
-        await self._invoke(
-            self.on_motion_event_callback,
-            MotionDetectEvent(event_type_enum, event),
+        # Which rule fired, so the app can find the zone the user drew. Paired with the
+        # region ids the alert carries, this is what makes a detection attributable to one
+        # zone rather than to the camera as a whole.
+        rule = rule_for_event_type(event_type)
+        motion = MotionDetectEvent(event_type_enum, event, rule=rule)
+
+        log.info(
+            f"AcuSense {event_type} target={target or 'unknown'} "
+            f"region(s)={motion.region_ids or 'unreported'}"
         )
+        self._last_target = event_type_enum
+        await self._invoke(self.on_motion_event_callback, motion)
 
     async def fire_alarm(self):
         """Pulse the external siren/strobe relay (called by the app at night)."""
@@ -775,91 +871,271 @@ class HikvisionAcuSenseCamera(CameraBase):
         """
         return 1.0 - y
 
-    async def get_detection_zones(self) -> list:
-        cfg = await self.client.get_field_detection_regions()
-        zones = []
-        for region in cfg:
-            points = [self._from_native(x, y) for x, y in region["points"]]
-            if not points:
-                continue  # an unconfigured slot - the camera keeps 4 of them
-            zones.append(
-                DetectionZone(
-                    id=region["id"],
-                    points=points,
-                    enabled=region["enabled"],
-                    targets=[
-                        HIK_TO_TARGET[t]
-                        for t in region["targets"]
-                        if t in HIK_TO_TARGET
-                    ],
-                    sensitivity=region["sensitivity"],
-                    threshold_secs=region.get("time_threshold"),
-                )
+    def max_zones_for(self, kind: ZoneKind) -> int | None:
+        """How many zones of ``kind`` this camera can hold.
+
+        None means "no camera limit" — the app-only kinds, which no rule has to store.
+        """
+        return self.ZONE_CAPABILITIES["kinds"][kind.value]["max_zones"]
+
+    async def _read_entrance_max_zones(self) -> None:
+        """Ask the camera how many entrance slots it really has.
+
+        Only worth doing once, at setup: it's a fixed property of the model. Left at
+        :data:`DEFAULT_ENTRANCE_MAX_ZONES` if the camera won't say, which is a guess but a
+        conservative one — guessing high would get every zone write rejected outright,
+        guessing low only limits how many excluded areas can be drawn.
+        """
+        found = await self.client.get_rule_max_regions(RULE_REGION_ENTRANCE)
+        if not found:
+            return
+        current = self.max_zones_for(ZoneKind.excluded_area)
+        if found != current:
+            log.info(
+                f"Camera advertises {found} region-entrance slot(s) (assumed {current})."
             )
+        # Per-instance, so one model's answer can't leak onto another camera's class.
+        self.ZONE_CAPABILITIES = {
+            **self.ZONE_CAPABILITIES,
+            "kinds": {
+                **self.ZONE_CAPABILITIES["kinds"],
+                ZoneKind.excluded_area.value: {
+                    **self.ZONE_CAPABILITIES["kinds"][ZoneKind.excluded_area.value],
+                    "max_zones": found,
+                },
+            },
+        }
+
+    async def get_detection_zones(self) -> list:
+        """Every zone this camera holds, read back from the rules that store them.
+
+        Only the camera-backed kinds appear here. The ``ppe``/``anpr`` zones live nowhere
+        on the camera, so they can't be recovered from it — the app layer merges those in
+        from its own record (see ``CameraApplication.merge_zone_records``).
+        """
+        zones = []
+        for kind, rule, reader in (
+            (
+                ZoneKind.intrusion,
+                RULE_FIELD_DETECTION,
+                self.client.get_field_detection_regions,
+            ),
+            (
+                ZoneKind.excluded_area,
+                RULE_REGION_ENTRANCE,
+                self.client.get_region_entrance_regions,
+            ),
+        ):
+            # A disabled rule's polygons are not zones. They are leftovers — the camera
+            # keeps a region's points when the rule is switched off, so an entrance rule
+            # that was written and later disabled still reports its old polygon.
+            #
+            # Reporting one would be worse than cosmetic: the editor would show an
+            # excluded area that detects nothing, and saving from that state would see one
+            # excluded zone and re-enable the rule, arming a zone nobody drew.
+            #
+            # Only skips on a definite False. Unknown (None) reports the regions, because a
+            # rule we couldn't read is not a rule we know to be off, and hiding a real
+            # zone is the worse mistake.
+            try:
+                if await self.client.get_smart_rule_enabled(rule) is False:
+                    log.debug(f"{rule} is disabled; its regions are not live zones.")
+                    continue
+            except Exception as e:
+                log.info(f"Couldn't check whether {rule} is enabled: {e}")
+
+            try:
+                cfg = await reader()
+            except Exception as e:
+                log.warning(f"Couldn't read {kind.value} zones: {e}", exc_info=e)
+                continue
+
+            for region in cfg:
+                points = [self._from_native(x, y) for x, y in region["points"]]
+                if not points:
+                    continue  # an unconfigured slot - the camera keeps all of them
+                zones.append(
+                    DetectionZone(
+                        id=region["id"],
+                        points=points,
+                        # Entrance reports no per-region enabled; a region the camera
+                        # holds a polygon for is live either way.
+                        enabled=region.get("enabled", True),
+                        targets=[
+                            HIK_TO_TARGET[t]
+                            for t in region["targets"]
+                            if t in HIK_TO_TARGET
+                        ],
+                        sensitivity=region["sensitivity"],
+                        threshold_secs=region.get("time_threshold"),
+                        kind=kind,
+                        # Notify isn't a camera concept, so the read-back can't know it.
+                        # The app layer overlays the real value from its own record; this
+                        # is what a zone the app has never seen written would default to.
+                        notify=None,
+                    )
+                )
         return zones
 
-    async def set_detection_zones(self, zones: list) -> None:
-        max_zones = self.ZONE_CAPABILITIES["max_zones"]
-        if len(zones) > max_zones:
-            raise ValueError(f"This camera supports at most {max_zones} zones")
+    def _validate_points(self, zone) -> None:
+        if not (
+            self.ZONE_CAPABILITIES["min_points"]
+            <= len(zone.points)
+            <= self.ZONE_CAPABILITIES["max_points"]
+        ):
+            raise ValueError(
+                f"Zone {zone.id} needs between "
+                f"{self.ZONE_CAPABILITIES['min_points']} and "
+                f"{self.ZONE_CAPABILITIES['max_points']} points, got "
+                f"{len(zone.points)}"
+            )
 
-        regions = []
-        for index, zone in enumerate(zones, start=1):
-            if not (
-                self.ZONE_CAPABILITIES["min_points"]
-                <= len(zone.points)
-                <= self.ZONE_CAPABILITIES["max_points"]
+    def _to_region(self, index: int, zone) -> dict:
+        """One zone as a native region body, addressed by slot.
+
+        ``time_threshold`` is always included even for entrance, which has no such field:
+        the entrance body builder simply doesn't emit it (see
+        ``HikvisionClient._region_entrance_region``), so one region shape serves both
+        rules and the caller doesn't have to branch.
+        """
+        targets = [TARGET_TO_HIK[t] for t in zone.targets if t in TARGET_TO_HIK]
+        return {
+            # The camera addresses regions by slot, so renumber rather than
+            # trusting whatever ids the frontend sent.
+            "id": index,
+            "points": [self._to_native(x, y) for x, y in zone.points],
+            "targets": targets or list(RULE_TARGETS),
+            "sensitivity": (
+                zone.sensitivity
+                if zone.sensitivity is not None
+                else self.config.sensitivity.value
+            ),
+            "time_threshold": self._clamp_threshold(zone.threshold_secs),
+        }
+
+    def _blank_region(self, index: int) -> dict:
+        return {
+            "id": index,
+            "points": [],
+            "targets": list(RULE_TARGETS),
+            "sensitivity": self.config.sensitivity.value,
+            "time_threshold": INTRUSION_DWELL_SECS,
+        }
+
+    def _regions_for(self, zones: list, max_zones: int) -> list:
+        """Zone list -> the full set of region slots to write, blanks included.
+
+        The camera keeps every region slot it has, so one simply left out of the body
+        holds on to its old polygon — which meant zones could be edited but never
+        deleted. Every unused slot is explicitly blanked so dropping a zone removes it.
+        """
+        regions = [self._to_region(i, z) for i, z in enumerate(zones, start=1)]
+        regions.extend(
+            self._blank_region(i) for i in range(len(regions) + 1, max_zones + 1)
+        )
+        return regions
+
+    def _warn_on_edge_zones(self, zones: list) -> None:
+        """Warn about an excluded area drawn too close to the frame edge.
+
+        Entrance only fires for a target it tracked *outside* the region first, so a zone
+        hugging the edge leaves nowhere to be outside and never fires at all. Measured on
+        a real camera: a region at 10..990 produced zero events where 250..750 fired
+        reliably.
+
+        A warning, not a rejection — the user may have drawn it deliberately against a
+        wall or a gate where nothing can approach from that side, and silently moving
+        somebody's polygon would be worse than a log line.
+        """
+        limit = ENTRANCE_EDGE_WARN / NORMALIZED_SCREEN
+        for zone in zones:
+            if any(
+                min(x, y) <= limit or max(x, y) >= 1.0 - limit for x, y in zone.points
             ):
-                raise ValueError(
-                    f"Zone {zone.id} needs between "
-                    f"{self.ZONE_CAPABILITIES['min_points']} and "
-                    f"{self.ZONE_CAPABILITIES['max_points']} points, got "
-                    f"{len(zone.points)}"
+                log.warning(
+                    f"Excluded area '{zone.name or zone.id}' comes within "
+                    f"{limit:.0%} of the frame edge. Region entrance needs to see a "
+                    f"target outside the zone before it crosses in, so a zone this close "
+                    f"to the edge may never fire. Pull it in from the edge if it doesn't "
+                    f"trigger."
                 )
 
-            targets = [TARGET_TO_HIK[t] for t in zone.targets if t in TARGET_TO_HIK]
-            regions.append(
-                {
-                    # The camera addresses regions by slot, so renumber rather than
-                    # trusting whatever ids the frontend sent.
-                    "id": index,
-                    "points": [self._to_native(x, y) for x, y in zone.points],
-                    "targets": targets or list(RULE_TARGETS),
-                    "sensitivity": (
-                        zone.sensitivity
-                        if zone.sensitivity is not None
-                        else self.config.sensitivity.value
-                    ),
-                    "time_threshold": self._clamp_threshold(zone.threshold_secs),
-                }
-            )
+    async def set_detection_zones(self, zones: list) -> None:
+        """Write each zone to whichever rule owns its kind.
 
-        # The camera keeps every region slot it has, so one we simply leave out of
-        # the body holds on to its old polygon — zones could be edited but never
-        # deleted. Blank the slots we aren't using so dropping a zone removes it.
-        for index in range(len(regions) + 1, max_zones + 1):
-            regions.append(
-                {
-                    "id": index,
-                    "points": [],
-                    "targets": list(RULE_TARGETS),
-                    "sensitivity": self.config.sensitivity.value,
-                    "time_threshold": INTRUSION_DWELL_SECS,
-                }
-            )
+        Both camera rules are always written, including when a kind has no zones — that
+        write is what blanks the slots of zones that were deleted. The app-only kinds
+        (``ppe``/``anpr``) are validated and returned untouched for the app layer to store;
+        nothing is sent to the camera for them.
+        """
+        by_kind = {}
+        for zone in zones:
+            by_kind.setdefault(zone.kind, []).append(zone)
 
-        # One rule, so one write and nothing to keep in sync. This used to fan the same
-        # regions out to intrusion *and* region entrance, which was the best available fix
-        # for a worse problem: the two rules had separate hardcoded defaults, so until
-        # somebody opened the zone editor the camera detected by day over a region nobody
-        # had chosen, and the read-back (intrusion only) couldn't show it.
-        log.info(f"Writing {len(zones)} detection zone(s) to the camera.")
-        await self.client.set_field_detection_regions(regions)
+        for kind, kind_zones in by_kind.items():
+            limit = self.max_zones_for(kind)
+            if limit is not None and len(kind_zones) > limit:
+                raise ValueError(
+                    f"This camera supports at most {limit} "
+                    f"{kind.value.replace('_', ' ')} zone(s), got {len(kind_zones)}"
+                )
+            for zone in kind_zones:
+                self._validate_points(zone)
+
+        intrusion = by_kind.get(ZoneKind.intrusion, [])
+        excluded = by_kind.get(ZoneKind.excluded_area, [])
+        self._warn_on_edge_zones(excluded)
+
+        log.info(
+            f"Writing zones to the camera: {len(intrusion)} intrusion, "
+            f"{len(excluded)} excluded area. "
+            f"({len(zones) - len(intrusion) - len(excluded)} app-only zone(s) are not "
+            f"written to the camera.)"
+        )
+
+        await self.client.set_field_detection_regions(
+            self._regions_for(intrusion, self.max_zones_for(ZoneKind.intrusion))
+        )
+        await self._write_excluded_zones(excluded)
 
         # The region write rebuilds the rule body, which drops any rule-level field it
         # doesn't know about — including the static-target re-alarm switch. Re-assert it, or
         # editing a zone quietly costs the night alarm its "intruder still present" signal.
         await self.client.set_static_target_alarm(True)
+
+    async def _write_excluded_zones(self, excluded: list) -> None:
+        """Write the excluded-area zones, and turn the entrance rule on or off to match.
+
+        The rule is enabled only while there is at least one excluded area, because that
+        is the whole justification for having a second rule running: with none, entrance
+        would fire alongside intrusion for the same person and cost a duplicate event,
+        snapshot and inference run — which is exactly why it used to be disabled outright.
+
+        Slots are blanked before the rule is switched off rather than instead of it. Just
+        disabling would leave the polygons on the camera, so re-adding any excluded area
+        later would silently bring the old ones back with it.
+        """
+        max_zones = self.max_zones_for(ZoneKind.excluded_area)
+        await self.client.set_region_entrance_regions(
+            self._regions_for(excluded, max_zones)
+        )
+
+        if excluded:
+            try:
+                await self.client.set_region_entrance_enabled(True)
+            except Exception as e:
+                log.warning(
+                    f"Wrote {len(excluded)} excluded area(s) but couldn't enable the "
+                    f"region-entrance rule: {e}. They will not fire until it is on.",
+                    exc_info=e,
+                )
+            return
+
+        if not await self.client.disable_smart_rule(RULE_REGION_ENTRANCE):
+            log.info(
+                "No excluded areas left, but couldn't confirm region entrance is "
+                "disabled. Its slots are blank so it has nothing to fire on."
+            )
 
     async def get_thumbnail(self) -> File:
         """Grab the camera's sub-stream picture rather than scaling one ourselves.
