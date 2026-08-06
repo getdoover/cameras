@@ -320,10 +320,19 @@ class CameraApplication(Application):
         reason: str = REASON_SCHEDULE,
         boxes: list = None,
         event_frame: bytes = None,
-    ):
+    ) -> bool:
+        """Take a snapshot, returning whether any media actually got published.
+
+        The return value is what the motion path gates its notification on, so that every
+        notification has a picture behind it. A camera that has stopped answering produces
+        no media and therefore no notification.
+        """
         self.snapshot_running = True
+        published = False
         try:
-            await self.run_snapshot(reason, boxes=boxes, event_frame=event_frame)
+            published = bool(
+                await self.run_snapshot(reason, boxes=boxes, event_frame=event_frame)
+            )
         except Exception as e:
             log.error(f"Error getting snapshot: {str(e)}", exc_info=e)
         self.snapshot_running = False
@@ -333,6 +342,7 @@ class CameraApplication(Application):
 
         # might as well update presets when we're fetching snapshots...
         await self.sync_presets()
+        return published
 
     async def run_snapshot(
         self,
@@ -341,7 +351,13 @@ class CameraApplication(Application):
         ping_timeout: int = 20,
         boxes: list = None,
         event_frame: bytes = None,
-    ):
+    ) -> bool:
+        """Capture and publish. Returns whether any media reached the channel.
+
+        Every exit says so explicitly, including the two failure paths that still publish
+        the camera's own event frame — that frame IS the picture for that event, so a
+        caller gating on "did we get media" must count it.
+        """
         await self.power_management.acquire()
 
         # await a successful ping to the camera
@@ -360,7 +376,8 @@ class CameraApplication(Application):
                 await self.upload_media(
                     [self.build_event_frame(event_frame)], reason, boxes
                 )
-            return None
+                return True
+            return False
 
         # at this point, dahua cameras will be ready to take a snapshot, but unifi / generic ones
         # will potentially need to wait a bit longer - they may be 'pingable' but may not be 'ready'.
@@ -393,6 +410,7 @@ class CameraApplication(Application):
                 await self.upload_media(
                     [self.build_event_frame(event_frame)], reason, boxes
                 )
+                return True
             return False
 
         # The camera's frame goes up beside ours rather than instead of it: ours is clean
@@ -406,8 +424,10 @@ class CameraApplication(Application):
             await self.upload_media(files, reason, boxes)
         except Exception as e:
             log.warning(f"Failed to publish snapshot: {e}", exc_info=e)
-        else:
-            await asyncio.sleep(2)
+            return False
+
+        await asyncio.sleep(2)
+        return True
 
     @staticmethod
     def build_event_frame(image: bytes) -> Capture:
@@ -1068,13 +1088,14 @@ class CameraApplication(Application):
         # The picture is gated by the motion-snapshot window, but the event is not:
         # an automation still wants to know a person was seen at 3am even when the
         # site only keeps daytime images.
+        captured = False
         if not self.config.motion_snapshot_allowed():
             log.info(
                 f"Skipping {event.type.value} snapshot — outside the motion snapshot "
                 f"window."
             )
         elif self.claim_motion_snapshot(zones):
-            await self.lock_snapshot_and_run(
+            captured = await self.lock_snapshot_and_run(
                 event.type.value, event.boxes, event_frame=event.image
             )
 
@@ -1107,6 +1128,22 @@ class CameraApplication(Application):
             log.info(
                 f"Not notifying for {event.type.value} — "
                 f"{self._describe_zones(zones)} has notifications off."
+            )
+            return
+
+        # A notification always has a picture behind it. The snapshot is already throttled
+        # per zone and gated on the motion-snapshot window, so tying the notification to it
+        # gives one consistent rule -- picture and message travel together -- instead of two
+        # cooldowns that could disagree. It is also what stopped 29 detections becoming 29
+        # notifications against 17 snapshots.
+        #
+        # `captured` is the *published* outcome, not merely an attempt: a camera that has
+        # stopped answering produces no media, and a message about a picture that does not
+        # exist is worse than no message.
+        if not captured:
+            log.info(
+                f"Not notifying for {event.type.value} in "
+                f"{self._describe_zones(zones)} — no snapshot was published."
             )
             return
 

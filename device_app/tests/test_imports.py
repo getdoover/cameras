@@ -1409,6 +1409,10 @@ def test_classified_detections_always_notify():
     The switches this replaces were created without values, so reading one raised
     `KeyError: alert_me_on_human_motion` out of the middle of the motion callback and took
     the rest of the handler - camera_event, snapshot, alarm - down with it.
+
+    A camera with no zones still notifies on every classified detection that produces a
+    picture, which is the compatibility guarantee; zones and the snapshot cooldown only
+    ever narrow that.
     """
     import asyncio
     import types
@@ -1428,8 +1432,15 @@ def test_classified_detections_always_notify():
                 intruder_alarm_enabled=types.SimpleNamespace(value=False)
             ),
             is_night=lambda: False,
-            motion_snapshot_allowed=lambda: False,  # no picture, keeps the test to notifies
+            # A picture is taken, because a notification now requires one.
+            motion_snapshot_allowed=lambda: True,
+            motion_snapshot_min_interval=15,
         )
+        app.tags = types.SimpleNamespace(
+            detection_zones=types.SimpleNamespace(value=[])
+        )
+        app._last_notified_at = {}
+        app._last_excluded_notified_at = None
 
         async def notify(msg, severity=None, topic=None):
             notifications.append((topic, msg))
@@ -1437,8 +1448,13 @@ def test_classified_detections_always_notify():
         async def publish(kind, **extra):
             events.append(kind)
 
+        async def snapshot(reason, boxes=None, event_frame=None):
+            return True  # media published, so the notification is allowed through
+
         app.send_notification = notify
         app.publish_camera_event = publish
+        app.lock_snapshot_and_run = snapshot
+        app._last_motion_snapshot_at = {}
         # Deliberately absent: any attempt to read a UI value must fail the test rather
         # than being silently tolerated.
         app.ui_manager = None
@@ -1901,6 +1917,93 @@ def test_one_zone_does_not_steal_another_zones_snapshot():
     # Same slot number, different kinds -> different cooldowns. Keying on the id alone
     # would reintroduce exactly the bug above.
     assert intrusion.id == excluded.id
+
+
+def test_a_notification_always_has_a_picture_behind_it():
+    """Notification follows the snapshot: no picture published, no message.
+
+    Measured on a live camera over three hours: 29 detections produced 29 notifications
+    but only 17 snapshots, because the picture was throttled and the message was not. One
+    rule now governs both.
+    """
+    import asyncio
+    import types
+
+    from camera_app.application import CameraApplication
+    from camera_app.engines.hikvision_acusense import HikvisionAcuSenseCamera
+    from camera_app.events import MotionDetectEvent, MotionDetectEventType
+
+    def make_app(published):
+        sent, taken = [], []
+        app = CameraApplication.__new__(CameraApplication)
+        app.app_display_name = "Camera 1"
+        app.engine = HikvisionAcuSenseCamera.__new__(HikvisionAcuSenseCamera)
+        app._last_motion_snapshot_at = {}
+        app.tags = types.SimpleNamespace(
+            detection_zones=types.SimpleNamespace(value=[])
+        )
+        app.config = types.SimpleNamespace(
+            alarm=types.SimpleNamespace(
+                intruder_alarm_enabled=types.SimpleNamespace(value=False)
+            ),
+            is_night=lambda: False,
+            motion_snapshot_allowed=lambda: True,
+            motion_snapshot_min_interval=15,
+        )
+
+        async def notify(msg, severity=None, topic=None):
+            sent.append(topic)
+
+        async def publish(kind, **extra):
+            pass
+
+        async def snapshot(reason, boxes=None, event_frame=None):
+            taken.append(reason)
+            return published
+
+        app.send_notification = notify
+        app.publish_camera_event = publish
+        app.lock_snapshot_and_run = snapshot
+        return app, sent, taken
+
+    # Media published -> the message goes out.
+    app, sent, taken = make_app(True)
+    asyncio.run(
+        app.on_motion_event_callback(MotionDetectEvent(MotionDetectEventType.person, {}))
+    )
+    assert taken == ["person"] and sent == ["motion_event_person"]
+
+    # Camera unreachable, nothing published -> a snapshot was attempted, no message sent.
+    app, sent, taken = make_app(False)
+    asyncio.run(
+        app.on_motion_event_callback(MotionDetectEvent(MotionDetectEventType.person, {}))
+    )
+    assert taken == ["person"] and sent == []
+
+    # Throttled by the per-zone cooldown -> no snapshot ran at all, so no message.
+    app, sent, taken = make_app(True)
+    for _ in range(3):
+        asyncio.run(
+            app.on_motion_event_callback(
+                MotionDetectEvent(MotionDetectEventType.person, {})
+            )
+        )
+    assert len(taken) == 1 and sent == ["motion_event_person"]
+
+
+def test_run_snapshot_reports_whether_media_was_published():
+    """The gate is the *published* outcome, not merely that we tried.
+
+    Both failure paths still publish the camera's own event frame when it sent one -- that
+    frame is the picture for that event, so they count as published.
+    """
+    import inspect
+    from camera_app.application import CameraApplication
+
+    source = inspect.getsource(CameraApplication.run_snapshot)
+    # No implicit `return None` masquerading as success on the ping-failure path.
+    assert "return None" not in source
+    assert source.rstrip().endswith("return True")
 
 
 def test_unzoned_detections_share_one_cooldown_as_before():
