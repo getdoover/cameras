@@ -510,13 +510,19 @@ class DetectionZonesPayload:
 
 
 class SDPOfferPayload:
-    def __init__(self, stream_name: str, value: str):
+    def __init__(self, stream_name: str, value: str, request_id: str | None = None):
         self.stream_name = stream_name
         self.value = value
+        # Names the caller so its answer can be addressed to it alone — see
+        # CameraApplication.accept_sdp. Optional: older clients don't send one
+        # and get only the shared `sdp` slot, as they always did.
+        self.request_id = request_id
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]):
-        return cls(payload["stream_name"], payload["value"])
+        return cls(
+            payload["stream_name"], payload["value"], payload.get("request_id")
+        )
 
 
 class FixedZoomEvent:

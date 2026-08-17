@@ -49,6 +49,12 @@ log = logging.getLogger()
 GET_NOW_CMD_NAME = "camera_snapshots"
 LAST_SNAPSHOT_CMD_NAME = "last_cam_snapshot"
 UI_CONNECT_POWERON_TIMEOUT_SEC = 60 * 15  # 15min
+
+# How many recent SDP answers to keep addressed on the camera channel. A wall of
+# eight tiles re-offers whenever a link blinks, and each offer adds one; a caller
+# reads its own within seconds or has given up, so this only has to outlive a
+# burst, not a session.
+SDP_ANSWER_HISTORY = 16
 # How far before an intruder event to search the camera's SD card, to cover the
 # camera's pre-record buffer.
 EVENT_CLIP_LOOKBACK_SEC = 10
@@ -101,8 +107,14 @@ class CameraApplication(Application):
     tags_cls = CameraTags
     ui_cls = CameraUI
 
+    #: request_id -> base64 SDP answer, newest last. Insertion-ordered so the
+    #: oldest can be dropped once it exceeds SDP_ANSWER_HISTORY. Bound in
+    #: setup(), not here — a mutable class attribute would be shared.
+    _sdp_answers: dict[str, str]
+
     async def setup(self):
         self.engine = None
+        self._sdp_answers = {}
 
         self.power_management = CameraPowerManagement(self)
 
@@ -256,30 +268,62 @@ class CameraApplication(Application):
         "accept_sdp", parser=SDPOfferPayload.from_dict, channel=CAMERA_CONTROL_CHANNEL
     )
     async def accept_sdp(self, ctx, payload: SDPOfferPayload):
-        """Answer one client's WebRTC offer, on that client's own request message.
+        """Answer one client's WebRTC offer, addressed to that client alone.
 
-        The answer is returned, which pydoover patches onto the request message
-        as its RPC response. That matters because **an SDP answer belongs to
-        exactly one offer**: it carries that peer connection's ice-ufrag,
-        password and DTLS fingerprint. This used to be published only to the
-        camera's channel aggregate — one shared slot — so with two viewers on
-        the same camera (a wall tile and the detail overlay of the same pump is
-        the everyday case) each client saw whichever answer landed last. Feeding
-        a browser an answer minted for someone else's offer doesn't error: it
-        sets cleanly and then ICE never completes, so the tile sits on
-        CONNECTING forever with nothing in the log to say why.
+        **An SDP answer belongs to exactly one offer**: it carries that peer
+        connection's ice-ufrag, password and DTLS fingerprint. This used to be
+        published only to the camera's channel aggregate — one shared slot — so
+        with two viewers on the same camera (a wall tile and the detail overlay
+        of the same pump is the everyday case) each client saw whichever answer
+        landed last. Feeding a browser an answer minted for someone else's offer
+        doesn't error: it sets cleanly and then ICE never completes, so the tile
+        sits on CONNECTING forever with nothing in the log to say why.
 
-        The aggregate is still written for clients that predate this — the
-        Doover site's live view among them — but it is now the fallback, not
-        the channel.
+        The answer is therefore delivered three ways, all addressed to the one
+        caller — which of them arrives depends on what is serving the client:
+
+        * **Returned**, which pydoover patches onto the request message as the
+          RPC response. Direct, but it only arrives for clients whose transport
+          carries message updates back — a browser served by a Doovit's own
+          device agent never sees it, and waits forever.
+        * **As a `sdp_answer` message** on the control channel, carrying the
+          same `request_id`. Message creates relay between agents promptly,
+          which makes this the one that works for a browser served by a
+          Doovit's own device agent.
+        * **Under `answers[request_id]`** on this camera's channel aggregate.
+          Reliable on the cloud path; a Doovit serving a peer's channel answers
+          it from a cache that lags, so it is a backstop rather than the
+          channel. Bounded to the most recent few, since each offer adds one.
+
+        The bare `sdp` key is still written for clients that know only that —
+        the Doover site's live view among them — and it keeps all of the
+        crossing-over that this exists to avoid.
         """
         await self.setup_rtsp_server()
         await self.power_management.acquire()
         answer = await self.accept_sdp_offer(
-            self.app_key, payload.stream_name, payload.value
+            self.app_key, payload.stream_name, payload.value, payload.request_id
         )
+
+        # Post the answer back as its own message on the channel the offer came
+        # in on. This is the delivery that actually works panel-side: message
+        # *creates* relay between agents in about a second, whereas the RPC
+        # response is a message *update* — which the dda drops with "message not
+        # found" when the create never landed in the cloud — and the channel
+        # aggregate a Doovit serves for a peer lags far behind, handing out
+        # answers from previous sessions while the current one times out.
+        if payload.request_id:
+            await self.create_message(
+                CAMERA_CONTROL_CHANNEL,
+                {
+                    "type": "sdp_answer",
+                    "request_id": payload.request_id,
+                    "sdp": answer,
+                },
+            )
+
         log.info("Finished accepting SDP offer and published.")
-        return {"sdp": answer}
+        return {"sdp": answer, "request_id": payload.request_id}
 
     async def main_loop(self):
         # The camera's clock is manual and resets to 2019 on a power cut, taking its
@@ -521,7 +565,9 @@ class CameraApplication(Application):
         ) as resp:
             assert resp.status == 200
 
-    async def accept_sdp_offer(self, camera_name, stream_name, offer: str):
+    async def accept_sdp_offer(
+        self, camera_name, stream_name, offer: str, request_id: str | None = None
+    ):
         base = self.config.rtsp_server.address.value
         auth = aiohttp.BasicAuth("demo", "demo")
 
@@ -553,11 +599,22 @@ class CameraApplication(Application):
             answer = await resp.text()
             # answer is the base64-encoded SDP answer.
             #
-            # Legacy path: one slot shared by every viewer of this camera, so a
-            # second client racing this one overwrites it. Kept for clients that
-            # only know how to read the aggregate; new ones use the return value.
+            # `sdp` is the legacy slot: one per camera, shared by every viewer,
+            # so a second client racing this one overwrites it. Kept for clients
+            # that know only that key. `answers[request_id]` is the addressed
+            # one — see accept_sdp.
+            update = {"sdp": answer}
+            if request_id:
+                self._sdp_answers[request_id] = answer
+                # Bounded, because every offer adds an entry and a wall of eight
+                # tiles re-offers whenever a link blinks. Oldest out first; a
+                # caller reads its own answer within seconds or has given up.
+                while len(self._sdp_answers) > SDP_ANSWER_HISTORY:
+                    self._sdp_answers.pop(next(iter(self._sdp_answers)))
+                update["answers"] = dict(self._sdp_answers)
+
             await self.device_agent.update_channel_aggregate(
-                camera_name, {"sdp": answer}, max_age_secs=-1
+                camera_name, update, max_age_secs=-1
             )
             return answer
 
