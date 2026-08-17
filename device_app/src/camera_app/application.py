@@ -5,6 +5,7 @@ from urllib.parse import quote
 
 import aiohttp
 from pydoover import rpc, ui
+from pydoover.rpc import RPCError
 from pydoover.docker import Application
 from pydoover.models import (
     AggregateUpdateEvent,
@@ -255,10 +256,30 @@ class CameraApplication(Application):
         "accept_sdp", parser=SDPOfferPayload.from_dict, channel=CAMERA_CONTROL_CHANNEL
     )
     async def accept_sdp(self, ctx, payload: SDPOfferPayload):
+        """Answer one client's WebRTC offer, on that client's own request message.
+
+        The answer is returned, which pydoover patches onto the request message
+        as its RPC response. That matters because **an SDP answer belongs to
+        exactly one offer**: it carries that peer connection's ice-ufrag,
+        password and DTLS fingerprint. This used to be published only to the
+        camera's channel aggregate — one shared slot — so with two viewers on
+        the same camera (a wall tile and the detail overlay of the same pump is
+        the everyday case) each client saw whichever answer landed last. Feeding
+        a browser an answer minted for someone else's offer doesn't error: it
+        sets cleanly and then ICE never completes, so the tile sits on
+        CONNECTING forever with nothing in the log to say why.
+
+        The aggregate is still written for clients that predate this — the
+        Doover site's live view among them — but it is now the fallback, not
+        the channel.
+        """
         await self.setup_rtsp_server()
         await self.power_management.acquire()
-        await self.accept_sdp_offer(self.app_key, payload.stream_name, payload.value)
+        answer = await self.accept_sdp_offer(
+            self.app_key, payload.stream_name, payload.value
+        )
         log.info("Finished accepting SDP offer and published.")
+        return {"sdp": answer}
 
     async def main_loop(self):
         # The camera's clock is manual and resets to 2019 on a power cut, taking its
@@ -513,7 +534,7 @@ class CameraApplication(Application):
         if offer:
             body["data"] = offer
 
-        # get SDP and update camera channel with data
+        # get SDP, hand it back to the caller, and mirror it to the channel
         async with aiohttp.request(
             "POST",
             f"{base}/stream/{quote(stream_name)}/channel/0/webrtc?uuid={quote(stream_name)}&channel=0",
@@ -524,12 +545,21 @@ class CameraApplication(Application):
             if resp.status != 200:
                 data = await resp.json()
                 log.info(f"SDP Failed: {data['payload']}")
-            else:
-                answer = await resp.text()
-                # answer is the base64-encoded SDP answer
-                await self.device_agent.update_channel_aggregate(
-                    camera_name, {"sdp": answer}, max_age_secs=-1
-                )
+                # Raised, not swallowed: a caller waiting on the aggregate for an
+                # answer that was never minted waits forever, and the failure is
+                # visible only in this log. As an RPC error it reaches the client.
+                raise RPCError("SDP_FAILED", str(data.get("payload", "")))
+
+            answer = await resp.text()
+            # answer is the base64-encoded SDP answer.
+            #
+            # Legacy path: one slot shared by every viewer of this camera, so a
+            # second client racing this one overwrites it. Kept for clients that
+            # only know how to read the aggregate; new ones use the return value.
+            await self.device_agent.update_channel_aggregate(
+                camera_name, {"sdp": answer}, max_age_secs=-1
+            )
+            return answer
 
     async def upload_media(self, captures: list, reason: str, boxes: list = None):
         """Publish captures, each with its thumbnail, plus a payload describing them.
