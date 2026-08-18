@@ -45,19 +45,23 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # --- ffmpeg-fetch: download a static ffmpeg binary (full variant only) --------
 # The binary is fully static, so it runs unchanged on the musl-based alpine
 # image (and at ~49MB is smaller than alpine's native `apk add ffmpeg`, ~103MB).
+# These are johnvansickle.com builds, re-hosted in our own public S3 bucket:
+# upstream has had extended outages that broke this build outright, and the
+# version is pinned in the key so a build is always reproducible.
 FROM base AS ffmpeg-fetch
 ARG TARGETARCH
-RUN apk add --no-cache xz
+ARG FFMPEG_VERSION=7.0.2
+ARG FFMPEG_BASE_URL=https://doover-public.s3.ap-southeast-2.amazonaws.com/ffmpeg
 RUN set -eux; \
     case "$TARGETARCH" in \
-        arm64) FF_ARCH=arm64 ;; \
-        amd64) FF_ARCH=amd64 ;; \
-        arm)   FF_ARCH=armhf ;; \
+        arm64) FF_ARCH=arm64; FF_SHA256=6bb182d0d75d23028db82e9e4f723ca69b853d055698486e6984ddb2c06fb8ce ;; \
+        amd64) FF_ARCH=amd64; FF_SHA256=e7e7fb30477f717e6f55f9180a70386c62677ef8a4d4d1a5d948f4098aa3eb99 ;; \
         *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
     esac; \
-    curl -fsSL "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-${FF_ARCH}-static.tar.xz" -o /tmp/ffmpeg.tar.xz; \
     mkdir -p /opt/ffmpeg; \
-    tar -xJf /tmp/ffmpeg.tar.xz -C /opt/ffmpeg --strip-components=1
+    curl -fsSL "${FFMPEG_BASE_URL}/ffmpeg-${FFMPEG_VERSION}-${FF_ARCH}-static" -o /opt/ffmpeg/ffmpeg; \
+    echo "${FF_SHA256}  /opt/ffmpeg/ffmpeg" | sha256sum -c -; \
+    chmod +x /opt/ffmpeg/ffmpeg
 
 
 # --- runtime: common runtime layer shared by both variants -------------------
