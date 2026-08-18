@@ -49,12 +49,6 @@ log = logging.getLogger()
 GET_NOW_CMD_NAME = "camera_snapshots"
 LAST_SNAPSHOT_CMD_NAME = "last_cam_snapshot"
 UI_CONNECT_POWERON_TIMEOUT_SEC = 60 * 15  # 15min
-
-# How many recent SDP answers to keep addressed on the camera channel. A wall of
-# eight tiles re-offers whenever a link blinks, and each offer adds one; a caller
-# reads its own within seconds or has given up, so this only has to outlive a
-# burst, not a session.
-SDP_ANSWER_HISTORY = 16
 # How far before an intruder event to search the camera's SD card, to cover the
 # camera's pre-record buffer.
 EVENT_CLIP_LOOKBACK_SEC = 10
@@ -107,14 +101,8 @@ class CameraApplication(Application):
     tags_cls = CameraTags
     ui_cls = CameraUI
 
-    #: request_id -> base64 SDP answer, newest last. Insertion-ordered so the
-    #: oldest can be dropped once it exceeds SDP_ANSWER_HISTORY. Bound in
-    #: setup(), not here — a mutable class attribute would be shared.
-    _sdp_answers: dict[str, str]
-
     async def setup(self):
         self.engine = None
-        self._sdp_answers = {}
 
         self.power_management = CameraPowerManagement(self)
 
@@ -279,30 +267,20 @@ class CameraApplication(Application):
         doesn't error: it sets cleanly and then ICE never completes, so the tile
         sits on CONNECTING forever with nothing in the log to say why.
 
-        The answer is therefore delivered three ways, all addressed to the one
-        caller — which of them arrives depends on what is serving the client:
+        The answer goes back as an **`sdp_answer` message** on the control
+        channel, carrying the `request_id` its offer supplied. A message is the
+        right shape for it: it is a discrete event addressed to one caller,
+        message creates relay promptly between agents on every transport, and a
+        request id nobody else knows cannot be crossed.
 
-        * **Returned**, which pydoover patches onto the request message as the
-          RPC response. Direct, but it only arrives for clients whose transport
-          carries message updates back — a browser served by a Doovit's own
-          device agent never sees it, and waits forever.
-        * **As a `sdp_answer` message** on the control channel, carrying the
-          same `request_id`. Message creates relay between agents promptly,
-          which makes this the one that works for a browser served by a
-          Doovit's own device agent.
-        * **Under `answers[request_id]`** on this camera's channel aggregate.
-          Reliable on the cloud path; a Doovit serving a peer's channel answers
-          it from a cache that lags, so it is a backstop rather than the
-          channel. Bounded to the most recent few, since each offer adds one.
-
-        The bare `sdp` key is still written for clients that know only that —
-        the Doover site's live view among them — and it keeps all of the
-        crossing-over that this exists to avoid.
+        The bare `sdp` key on this camera's aggregate is still written for
+        clients that know no other way to read it, and it keeps every bit of the
+        crossing-over described above.
         """
         await self.setup_rtsp_server()
         await self.power_management.acquire()
         answer = await self.accept_sdp_offer(
-            self.app_key, payload.stream_name, payload.value, payload.request_id
+            self.app_key, payload.stream_name, payload.value
         )
 
         # Post the answer back as its own message on the channel the offer came
@@ -565,9 +543,7 @@ class CameraApplication(Application):
         ) as resp:
             assert resp.status == 200
 
-    async def accept_sdp_offer(
-        self, camera_name, stream_name, offer: str, request_id: str | None = None
-    ):
+    async def accept_sdp_offer(self, camera_name, stream_name, offer: str):
         base = self.config.rtsp_server.address.value
         auth = aiohttp.BasicAuth("demo", "demo")
 
@@ -599,22 +575,12 @@ class CameraApplication(Application):
             answer = await resp.text()
             # answer is the base64-encoded SDP answer.
             #
-            # `sdp` is the legacy slot: one per camera, shared by every viewer,
-            # so a second client racing this one overwrites it. Kept for clients
-            # that know only that key. `answers[request_id]` is the addressed
-            # one — see accept_sdp.
-            update = {"sdp": answer}
-            if request_id:
-                self._sdp_answers[request_id] = answer
-                # Bounded, because every offer adds an entry and a wall of eight
-                # tiles re-offers whenever a link blinks. Oldest out first; a
-                # caller reads its own answer within seconds or has given up.
-                while len(self._sdp_answers) > SDP_ANSWER_HISTORY:
-                    self._sdp_answers.pop(next(iter(self._sdp_answers)))
-                update["answers"] = dict(self._sdp_answers)
-
+            # One slot per camera, shared by every viewer, so a second client
+            # racing this one overwrites it — which is why the answer a caller
+            # acts on comes back as a message instead (see accept_sdp). Kept
+            # only for clients that know no other way to read it.
             await self.device_agent.update_channel_aggregate(
-                camera_name, update, max_age_secs=-1
+                camera_name, {"sdp": answer}, max_age_secs=-1
             )
             return answer
 
