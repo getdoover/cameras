@@ -208,7 +208,7 @@ class CameraBase:
         fp = self.get_output_filepath(str(uuid.uuid4()), "jpg")
         cmd = (
             f"ffmpeg -y {RTSP_INPUT_OPTS} "
-            f"-i {self.config.rtsp_uri} -frames:v 1 "
+            f"-i {self.config.live_rtsp_uri} -frames:v 1 "
             f"-vf 'scale={THUMBNAIL_WIDTH}:-1' {fp}"
         )
         try:

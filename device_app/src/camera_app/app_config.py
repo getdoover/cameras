@@ -45,6 +45,11 @@ class CameraConnectionConfig(config.Object):
         default="live",
         advanced=True,
     )
+    rtsp_substream_channel = config.String(
+        "RTSP Sub-stream Channel",
+        default=None,
+        advanced=True,
+    )
     control_port = config.Integer(
         "Control Port",
         description="Port of control page on camera",
@@ -467,11 +472,31 @@ class CameraConfig(config.Schema):
     alarm = CameraAlarmConfig("Intruder Alarm Config")
     motion_snapshot = CameraMotionSnapshotConfig("Motion Snapshot Config")
 
+    def _rtsp_uri_for(self, channel: str) -> str:
+        if self.connection.username.value or self.connection.password.value:
+            return f"rtsp://{self.connection.username.value}:{self.connection.password.value}@{self.connection.address.value}:{self.connection.rtsp_port.value}/{channel}"
+        return f"rtsp://{self.connection.address.value}:{self.connection.rtsp_port.value}/{channel}"
+
     @property
     def rtsp_uri(self) -> str:
-        if self.connection.username.value or self.connection.password.value:
-            return f"rtsp://{self.connection.username.value}:{self.connection.password.value}@{self.connection.address.value}:{self.connection.rtsp_port.value}/{self.connection.rtsp_channel.value}"
-        return f"rtsp://{self.connection.address.value}:{self.connection.rtsp_port.value}/{self.connection.rtsp_channel.value}"
+        return self._rtsp_uri_for(self.connection.rtsp_channel.value)
+
+    @property
+    def live_rtsp_uri(self) -> str:
+        """The stream for live view and thumbnails — the sub-stream where there is one.
+
+        Neither consumer wants full resolution: live view is watched in a browser pane
+        and thumbnails are scaled to THUMBNAIL_WIDTH regardless, so decoding 1080p for
+        either is work the Doovit does and then throws away. Snapshots are the one thing
+        that keeps the main stream, because those get stored and zoomed into later.
+
+        Falls back to the main channel, so a camera with no sub-stream (or one nobody
+        has configured yet) behaves exactly as it did before.
+        """
+        channel = self.connection.rtsp_substream_channel.value
+        if not channel:
+            return self.rtsp_uri
+        return self._rtsp_uri_for(channel)
 
     @property
     def thermal_rtsp_uri(self):

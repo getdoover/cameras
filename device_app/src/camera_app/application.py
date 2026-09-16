@@ -517,7 +517,7 @@ class CameraApplication(Application):
         async with aiohttp.request("GET", f"{base}/streams", auth=auth) as resp:
             data = await resp.json()
 
-        await self.setup_rtsp_stream(self.app_key, self.config.rtsp_uri, data)
+        await self.setup_rtsp_stream(self.app_key, self.config.live_rtsp_uri, data)
         if self.config.thermal_rtsp_uri:
             await self.setup_rtsp_stream(
                 f"{self.app_key}_thermal", self.config.thermal_rtsp_uri, data
