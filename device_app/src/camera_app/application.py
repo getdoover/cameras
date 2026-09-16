@@ -49,6 +49,7 @@ log = logging.getLogger()
 GET_NOW_CMD_NAME = "camera_snapshots"
 LAST_SNAPSHOT_CMD_NAME = "last_cam_snapshot"
 UI_CONNECT_POWERON_TIMEOUT_SEC = 60 * 15  # 15min
+STUCK_SNAPSHOT_THRESHOLD = timedelta(minutes=10)
 # How far before an intruder event to search the camera's SD card, to cover the
 # camera's pre-record buffer.
 EVENT_CLIP_LOOKBACK_SEC = 10
@@ -119,6 +120,7 @@ class CameraApplication(Application):
         # self.ui_manager.set_display_name(self.app_display_name)
 
         self.snapshot_running = None
+        self._snapshot_started_at = None
         self._shutdown_at = None
 
         # When a motion snapshot was last taken, per zone, for the capture cooldown.
@@ -347,7 +349,7 @@ class CameraApplication(Application):
         if self.config.snapshot.enabled.value is False:
             return False
 
-        if self.snapshot_running:
+        if self.snapshot_running and not self.snapshot_is_stuck():
             return False
 
         if (
@@ -357,6 +359,20 @@ class CameraApplication(Application):
             return True
 
         return False
+
+    def snapshot_is_stuck(self) -> bool:
+        if not self.snapshot_running or self._snapshot_started_at is None:
+            return False
+
+        stuck_for = datetime.now(tz=timezone.utc) - self._snapshot_started_at
+        if stuck_for < STUCK_SNAPSHOT_THRESHOLD:
+            return False
+
+        log.warning(
+            f"Snapshot has been running for {stuck_for} and is not coming back — "
+            f"releasing the lock so snapshots can resume."
+        )
+        return True
 
     async def lock_snapshot_and_run(
         self,
@@ -371,6 +387,7 @@ class CameraApplication(Application):
         no media and therefore no notification.
         """
         self.snapshot_running = True
+        self._snapshot_started_at = datetime.now(tz=timezone.utc)
         published = False
         try:
             published = bool(
@@ -378,10 +395,11 @@ class CameraApplication(Application):
             )
         except Exception as e:
             log.error(f"Error getting snapshot: {str(e)}", exc_info=e)
-        self.snapshot_running = False
-
-        now = datetime.now()
-        await self.tags.last_cam_snapshot.set(now.timestamp())
+        finally:
+            self.snapshot_running = False
+            self._snapshot_started_at = None
+            now = datetime.now()
+            await self.tags.last_cam_snapshot.set(now.timestamp())
 
         # might as well update presets when we're fetching snapshots...
         await self.sync_presets()

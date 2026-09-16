@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import os
 import re
 import shutil
 import signal
@@ -19,6 +20,15 @@ MAX_MESSAGE_SIZE = 125_000
 THUMBNAIL_FILENAME = "thumbnail.jpg"
 THUMBNAIL_SUFFIX = "-thumbnail"
 THUMBNAIL_WIDTH = 640
+
+RTSP_SOCKET_TIMEOUT_SECS = 15
+FFMPEG_TIMEOUT_SECS = 60
+FFMPEG_VIDEO_OVERHEAD_SECS = 120
+
+RTSP_INPUT_OPTS = (
+    "-rtsp_transport tcp -analyzeduration 10M -probesize 10M "
+    f"-timeout {RTSP_SOCKET_TIMEOUT_SECS * 1_000_000}"
+)
 
 
 class Capture:
@@ -92,7 +102,6 @@ class CameraBase:
         raise NotImplementedError(
             f"{type(self).__name__} does not support detection zones"
         )
-
 
     async def setup(self):
         pass
@@ -198,7 +207,7 @@ class CameraBase:
 
         fp = self.get_output_filepath(str(uuid.uuid4()), "jpg")
         cmd = (
-            f"ffmpeg -y -rtsp_transport tcp -analyzeduration 10M -probesize 10M "
+            f"ffmpeg -y {RTSP_INPUT_OPTS} "
             f"-i {self.config.rtsp_uri} -frames:v 1 "
             f"-vf 'scale={THUMBNAIL_WIDTH}:-1' {fp}"
         )
@@ -224,7 +233,7 @@ class CameraBase:
 
     async def get_still_snapshot(self, rtsp_uri: str) -> File:
         fp = self.get_output_filepath(str(uuid.uuid4()), "jpg")
-        cmd = f"ffmpeg -y -rtsp_transport tcp -analyzeduration 10M -probesize 10M -i {rtsp_uri} -vf 'scale={self.config.snapshot.scale.value.value}' -frames:v 1 {fp}"
+        cmd = f"ffmpeg -y {RTSP_INPUT_OPTS} -i {rtsp_uri} -vf 'scale={self.config.snapshot.scale.value.value}' -frames:v 1 {fp}"
         try:
             await self.run_ffmpeg_cmd(cmd)
             return self._read_snapshot(fp, "snapshot.jpg", "image/jpeg")
@@ -243,16 +252,16 @@ class CameraBase:
         if self.config.snapshot.native_h264.value:
             # Stream-copy avoids decode/re-encode CPU cost; filters can't be applied to a copied stream.
             cmd = (
-                f"ffmpeg -y -rtsp_transport tcp -analyzeduration 10M -probesize 10M -i {rtsp_uri} "
+                f"ffmpeg -y {RTSP_INPUT_OPTS} -i {rtsp_uri} "
                 f"-t {secs} -c:v copy -c:a aac {fp}"
             )
         else:
             cmd = (
-                f"ffmpeg -y -rtsp_transport tcp -analyzeduration 10M -probesize 10M -i {rtsp_uri} -vf 'fps={self.config.snapshot.fps.value},scale={self.config.snapshot.scale.value.value},"
+                f"ffmpeg -y {RTSP_INPUT_OPTS} -i {rtsp_uri} -vf 'fps={self.config.snapshot.fps.value},scale={self.config.snapshot.scale.value.value},"
                 f"format=yuv420p,pad=ceil(iw/2)*2:ceil(ih/2)*2' -t {secs} -c:v libx264 -c:a aac {fp}"
             )
         try:
-            await self.run_ffmpeg_cmd(cmd)
+            await self.run_ffmpeg_cmd(cmd, timeout=secs + FFMPEG_VIDEO_OVERHEAD_SECS)
             return self._read_snapshot(fp, "snapshot.mp4", "video/mp4")
         finally:
             fp.unlink(missing_ok=True)
@@ -282,12 +291,8 @@ class CameraBase:
                 f"scale={self.config.snapshot.scale.value.value},format=yuv420p,"
                 f"pad=ceil(iw/2)*2:ceil(ih/2)*2' -c:v libx264 -c:a aac"
             )
-        cmd = (
-            f"ffmpeg -y -rtsp_transport tcp -analyzeduration 10M -probesize 10M "
-            f"-i {rtsp_uri} -t {max_secs} {encode} {fp}"
-        )
-        log.info(f"running cmd: {cmd}")
-        proc = await asyncio.create_subprocess_shell(cmd)
+        cmd = f"ffmpeg -y {RTSP_INPUT_OPTS} -i {rtsp_uri} -t {max_secs} {encode} {fp}"
+        proc = await self.spawn_ffmpeg(cmd)
 
         try:
             try:
@@ -295,14 +300,20 @@ class CameraBase:
             except asyncio.TimeoutError:
                 log.info(f"Event video hit the {max_secs}s cap.")
 
-            if proc.returncode is None:
-                proc.send_signal(signal.SIGINT)
-            await proc.wait()
+            try:
+                await asyncio.wait_for(
+                    self.signal_ffmpeg(proc, signal.SIGINT),
+                    timeout=FFMPEG_VIDEO_OVERHEAD_SECS,
+                )
+            except asyncio.TimeoutError:
+                log.warning(
+                    f"Event video ffmpeg ignored SIGINT for "
+                    f"{FFMPEG_VIDEO_OVERHEAD_SECS}s; killing it."
+                )
+                raise RuntimeError("ffmpeg did not shut down after SIGINT")
             return self._read_snapshot(fp, "event.mp4", "video/mp4")
         finally:
-            if proc.returncode is None:
-                proc.kill()
-                await proc.wait()
+            await self.signal_ffmpeg(proc, signal.SIGKILL)
             fp.unlink(missing_ok=True)
 
     async def remux_to_mp4(self, data: bytes, name: str) -> File:
@@ -333,12 +344,28 @@ class CameraBase:
             src.unlink(missing_ok=True)
             dst.unlink(missing_ok=True)
 
-    async def run_ffmpeg_cmd(self, cmd):
+    @staticmethod
+    async def signal_ffmpeg(proc, sig: int) -> None:
+        if proc.returncode is not None:
+            return
+        try:
+            os.killpg(os.getpgid(proc.pid), sig)
+        except (ProcessLookupError, PermissionError):
+            proc.send_signal(sig)
+        await proc.wait()
+
+    async def run_ffmpeg_cmd(self, cmd, timeout: int = FFMPEG_TIMEOUT_SECS):
         ensure_ffmpeg()
         self.ensure_output_dir()
         log.info(f"running cmd: {cmd}")
-        proc = await asyncio.create_subprocess_shell(cmd)
-        await proc.communicate()
+        proc = await asyncio.create_subprocess_shell(cmd, start_new_session=True)
+        try:
+            await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            log.warning(f"ffmpeg still running after {timeout}s, killing it: {cmd}")
+            raise RuntimeError(f"ffmpeg timed out after {timeout}s")
+        finally:
+            await self.signal_ffmpeg(proc, signal.SIGKILL)
 
     async def ping(self, timeout: int):
         hostname = self.config.connection.address.value
