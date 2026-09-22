@@ -3,7 +3,7 @@
 <img src="https://doover.com/wp-content/uploads/Doover-Logo-Landscape-Navy-padded-small.png" alt="Doover Logo" style="max-width: 300px;">
 
 **On-device hard-hat / high-vis compliance checking and number-plate recognition for
-camera snapshots.**
+camera snapshots**
 
 <br/>
 
