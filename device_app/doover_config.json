@@ -138,6 +138,19 @@
                             "x-position": 5,
                             "x-advanced": true
                         },
+                        "rtsp_substream_channel": {
+                            "title": "RTSP Sub-stream Channel",
+                            "x-name": "rtsp_substream_channel",
+                            "x-hidden": false,
+                            "type": [
+                                "string",
+                                "null"
+                            ],
+                            "x-required": false,
+                            "default": null,
+                            "x-position": 6,
+                            "x-advanced": true
+                        },
                         "control_port": {
                             "title": "Control Port",
                             "x-name": "control_port",
@@ -149,7 +162,36 @@
                             "x-required": false,
                             "description": "Port of control page on camera",
                             "default": 80,
-                            "x-position": 6,
+                            "x-position": 7,
+                            "x-advanced": true
+                        },
+                        "nvr_channel": {
+                            "title": "NVR Channel",
+                            "x-name": "nvr_channel",
+                            "x-hidden": false,
+                            "type": [
+                                "integer",
+                                "null"
+                            ],
+                            "x-required": false,
+                            "description": "Channel of this camera on the NVR it is connected through. Leave at 1 for a camera connected directly. Hikvision AcuSense only.",
+                            "default": 1,
+                            "x-position": 8,
+                            "x-advanced": true,
+                            "minimum": 1
+                        },
+                        "configure_camera": {
+                            "title": "Configure Camera",
+                            "x-name": "configure_camera",
+                            "x-hidden": false,
+                            "type": [
+                                "boolean",
+                                "null"
+                            ],
+                            "x-required": false,
+                            "description": "Let the app write detection, schedule, alarm and clock settings to the camera. Turn off to only read events, streams and snapshots from it. Hikvision AcuSense only.",
+                            "default": true,
+                            "x-position": 9,
                             "x-advanced": true
                         }
                     },

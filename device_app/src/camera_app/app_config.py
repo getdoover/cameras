@@ -56,6 +56,22 @@ class CameraConnectionConfig(config.Object):
         default=80,
         advanced=True,
     )
+    nvr_channel = config.Integer(
+        "NVR Channel",
+        description="Channel of this camera on the NVR it is connected through. Leave "
+        "at 1 for a camera connected directly. Hikvision AcuSense only.",
+        default=1,
+        minimum=1,
+        advanced=True,
+    )
+    configure_camera = config.Boolean(
+        "Configure Camera",
+        description="Let the app write detection, schedule, alarm and clock settings to "
+        "the camera. Turn off to only read events, streams and snapshots from it. "
+        "Hikvision AcuSense only.",
+        default=True,
+        advanced=True,
+    )
 
 
 class CameraPowerConfig(config.Object):

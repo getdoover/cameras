@@ -273,6 +273,15 @@ class HikvisionAcuSenseCamera(CameraBase):
         # or None (clips off / not possible). Resolved in setup().
         self.event_clip_mode: str = None
 
+    @property
+    def channel(self) -> int:
+        return self.config.connection.nvr_channel.value
+
+    @property
+    def configure_camera(self) -> bool:
+        # The writes all target channel 1, so never make them for another NVR channel.
+        return self.config.connection.configure_camera.value and self.channel == 1
+
     async def setup(self):
         self._session = aiohttp.ClientSession()
         self.client = HikvisionClient(
@@ -298,25 +307,28 @@ class HikvisionAcuSenseCamera(CameraBase):
         # schedule and makes recording searches return nothing.
         await self.sync_camera_clock()
 
-        sensitivity = self.config.sensitivity.value
-        log.info(
-            f"Configuring intrusion detection: targets={RULE_TARGETS} "
-            f"sensitivity={sensitivity} (per-zone dwell left as configured)"
-        )
-        try:
-            await self.client.set_field_detection(True, RULE_TARGETS, sensitivity)
-        except Exception as e:
-            log.warning(f"Failed to configure intrusion detection: {e}", exc_info=e)
+        if self.configure_camera:
+            sensitivity = self.config.sensitivity.value
+            log.info(
+                f"Configuring intrusion detection: targets={RULE_TARGETS} "
+                f"sensitivity={sensitivity} (per-zone dwell left as configured)"
+            )
+            try:
+                await self.client.set_field_detection(True, RULE_TARGETS, sensitivity)
+            except Exception as e:
+                log.warning(f"Failed to configure intrusion detection: {e}", exc_info=e)
 
-        # Keep re-alarming while a target stays in the region, and assert it rather than
-        # trusting the camera's default. It is the only way the app can tell an intruder is
-        # still present, so the night alarm holding the strobe/horn/recording for the length
-        # of an event depends on it -- as does the camera's own light/buzzer, which follows
-        # the event. Duplicate daytime snapshots are the app's problem, not the camera's.
-        interval = await self.client.set_static_target_alarm(True)
-        self._warn_if_realarm_outlasts_cooldown(interval)
+            # Keep re-alarming while a target stays in the region, and assert it rather than
+            # trusting the camera's default. It is the only way the app can tell an intruder is
+            # still present, so the night alarm holding the strobe/horn/recording for the length
+            # of an event depends on it -- as does the camera's own light/buzzer, which follows
+            # the event. Duplicate daytime snapshots are the app's problem, not the camera's.
+            interval = await self.client.set_static_target_alarm(True)
+            self._warn_if_realarm_outlasts_cooldown(interval)
 
-        await self.disable_unused_rules()
+            await self.disable_unused_rules()
+        else:
+            log.info("Configure Camera is off: leaving the camera's settings as they are.")
 
         # How many excluded areas this model can hold. Read once, here, because it's a
         # fixed property of the camera and the zone editor needs it before anyone draws.
@@ -326,18 +338,19 @@ class HikvisionAcuSenseCamera(CameraBase):
         # when we're actually going to read recordings back off the camera.
         self.event_clip_mode = await self._resolve_event_clip_mode()
 
-        # Before the deterrent: it branches on whether the camera can gate the linkage
-        # itself, which is what this decides. Written even with the alarm disabled — the
-        # schedule controls when the camera detects at all, not just when it flashes.
-        await self.assert_arming_schedule()
+        if self.configure_camera:
+            # Before the deterrent: it branches on whether the camera can gate the linkage
+            # itself, which is what this decides. Written even with the alarm disabled — the
+            # schedule controls when the camera detects at all, not just when it flashes.
+            await self.assert_arming_schedule()
 
-        if self.config.alarm.intruder_alarm_enabled.value:
-            await self.setup_night_deterrent()
-        else:
-            # Still has to run: it links `center`, without which the camera never
-            # puts detections on the alertStream and we see nothing. Passing False
-            # leaves the deterrent off, which is what's wanted here.
-            await self.client.set_smart_alarm_linkage(False)
+            if self.config.alarm.intruder_alarm_enabled.value:
+                await self.setup_night_deterrent()
+            else:
+                # Still has to run: it links `center`, without which the camera never
+                # puts detections on the alertStream and we see nothing. Passing False
+                # leaves the deterrent off, which is what's wanted here.
+                await self.client.set_smart_alarm_linkage(False)
 
         self.stream_events_task = asyncio.create_task(
             self.client.stream_events(self.on_cam_event)
@@ -368,6 +381,11 @@ class HikvisionAcuSenseCamera(CameraBase):
         return ""
 
     async def on_cam_event(self, event: dict):
+        # An NVR puts every camera's events on the one alertStream.
+        channel = event.get("channelID") or event.get("dynChannelID")
+        if channel and channel != str(self.channel):
+            return
+
         event_type = event.get("eventType", "")
         event_state = event.get("eventState", "")
 
@@ -450,7 +468,7 @@ class HikvisionAcuSenseCamera(CameraBase):
         else:
             offset = (camera_time - now).total_seconds()
             drift = abs(offset)
-            if drift <= max_drift_secs:
+            if drift <= max_drift_secs or not self.configure_camera:
                 # Not worth a write, but the residual still shifts the search window.
                 self.clock_offset = timedelta(seconds=offset)
                 return False
@@ -459,6 +477,8 @@ class HikvisionAcuSenseCamera(CameraBase):
                 f"app={now.isoformat()}); correcting."
             )
 
+        if not self.configure_camera:
+            return False
         try:
             await self.client.set_time(now)
         except Exception as e:
@@ -561,6 +581,8 @@ class HikvisionAcuSenseCamera(CameraBase):
         deterrent setting — it decides when the camera detects at all, so a site that only
         wants daytime snapshots needs it just as much as one that wants a siren.
         """
+        if not self.configure_camera:
+            return
         windows = self._arming_windows()
         now = datetime.now(tz=timezone.utc)
         stale = (
@@ -702,7 +724,7 @@ class HikvisionAcuSenseCamera(CameraBase):
         visit, a firmware quirk or a factory-reset can silently change it, and drift in
         this direction is a siren going off in daylight rather than a missed log line.
         """
-        if self.native_schedule_active:
+        if not self.configure_camera or self.native_schedule_active:
             return
 
         now = datetime.now(tz=timezone.utc)
@@ -837,7 +859,7 @@ class HikvisionAcuSenseCamera(CameraBase):
 
     async def get_still_snapshot(self, rtsp_uri: str) -> File:
         """Use the ISAPI snapshot endpoint instead of ffmpeg."""
-        snap = await self.client.get_snapshot(channel=1)
+        snap = await self.client.get_snapshot(channel=self.channel)
         return File(
             filename="snapshot.jpg",
             data=snap,
@@ -886,7 +908,9 @@ class HikvisionAcuSenseCamera(CameraBase):
         conservative one — guessing high would get every zone write rejected outright,
         guessing low only limits how many excluded areas can be drawn.
         """
-        found = await self.client.get_rule_max_regions(RULE_REGION_ENTRANCE)
+        found = await self.client.get_rule_max_regions(
+            RULE_REGION_ENTRANCE, channel=self.channel
+        )
         if not found:
             return
         current = self.max_zones_for(ZoneKind.excluded_area)
@@ -938,14 +962,14 @@ class HikvisionAcuSenseCamera(CameraBase):
             # rule we couldn't read is not a rule we know to be off, and hiding a real
             # zone is the worse mistake.
             try:
-                if await self.client.get_smart_rule_enabled(rule) is False:
+                if await self.client.get_smart_rule_enabled(rule, self.channel) is False:
                     log.debug(f"{rule} is disabled; its regions are not live zones.")
                     continue
             except Exception as e:
                 log.info(f"Couldn't check whether {rule} is enabled: {e}")
 
             try:
-                cfg = await reader()
+                cfg = await reader(self.channel)
             except Exception as e:
                 log.warning(f"Couldn't read {kind.value} zones: {e}", exc_info=e)
                 continue
@@ -1068,6 +1092,9 @@ class HikvisionAcuSenseCamera(CameraBase):
         (``ppe``/``anpr``) are validated and returned untouched for the app layer to store;
         nothing is sent to the camera for them.
         """
+        if not self.configure_camera:
+            raise RuntimeError("Configure Camera is off, so zones can't be written.")
+
         by_kind = {}
         for zone in zones:
             by_kind.setdefault(zone.kind, []).append(zone)
@@ -1145,7 +1172,7 @@ class HikvisionAcuSenseCamera(CameraBase):
         work on the slim image.
         """
         try:
-            snap = await self.client.get_snapshot(channel=1, subtype=1)
+            snap = await self.client.get_snapshot(channel=self.channel, subtype=1)
         except Exception as e:
             log.info(f"Couldn't fetch sub-stream thumbnail: {e}")
             return None
@@ -1166,7 +1193,7 @@ class HikvisionAcuSenseCamera(CameraBase):
         thumbnail instead.
         """
         try:
-            cfg = await self.client.get_ir_cut_filter()
+            cfg = await self.client.get_ir_cut_filter(self.channel)
         except Exception as e:
             log.info(f"Couldn't read the camera's day/night state: {e}")
             return None

@@ -3,6 +3,15 @@ Basic tests for an application.
 
 This ensures all modules are importable and that the config is valid.
 """
+import types
+
+
+def _connection(channel=1, configure=True):
+    return types.SimpleNamespace(
+        nvr_channel=types.SimpleNamespace(value=channel),
+        configure_camera=types.SimpleNamespace(value=configure),
+    )
+
 
 def test_import_app():
     from camera_app.application import CameraApplication
@@ -201,7 +210,9 @@ def test_set_zones_blanks_unused_slots():
     from camera_app.events import DetectionZone, DetectionTarget, ZoneKind
 
     cam = HikvisionAcuSenseCamera.__new__(HikvisionAcuSenseCamera)
-    cam.config = types.SimpleNamespace(sensitivity=types.SimpleNamespace(value=50))
+    cam.config = types.SimpleNamespace(
+        sensitivity=types.SimpleNamespace(value=50), connection=_connection()
+    )
 
     written = {}
 
@@ -774,6 +785,7 @@ def test_arming_schedule_assert_and_ownership():
             ),
             motion_snapshot_window=day_window,
             is_night=lambda: False,
+            connection=_connection(),
         )
         cam.event_clip_mode = None
         cam._deterrent_armed = None
@@ -984,6 +996,7 @@ def test_duration_alert_keeps_the_alarm_alive():
     def route(alert, last_target=MotionDetectEventType.person):
         seen = []
         cam = HikvisionAcuSenseCamera.__new__(HikvisionAcuSenseCamera)
+        cam.config = types.SimpleNamespace(connection=_connection())
         cam._last_target = last_target
         cam.on_motion_event_callback = seen.append
         asyncio.run(cam.on_cam_event(alert))
@@ -1521,7 +1534,9 @@ def test_zone_threshold_seconds_round_trip():
         return True
 
     cam = HikvisionAcuSenseCamera.__new__(HikvisionAcuSenseCamera)
-    cam.config = types.SimpleNamespace(sensitivity=types.SimpleNamespace(value=50))
+    cam.config = types.SimpleNamespace(
+        sensitivity=types.SimpleNamespace(value=50), connection=_connection()
+    )
     cam.client = types.SimpleNamespace(
         set_field_detection_regions=fake_write,
         set_static_target_alarm=fake_static,
@@ -2054,6 +2069,7 @@ def test_a_disabled_rule_reports_no_zones():
 
     def build(enabled_by_rule):
         cam = HikvisionAcuSenseCamera.__new__(HikvisionAcuSenseCamera)
+        cam.config = types.SimpleNamespace(connection=_connection())
 
         async def field(channel=1):
             return [region]
@@ -2268,3 +2284,28 @@ def test_a_detector_with_no_matching_target_is_warned_about(caplog):
 
 async def _immediate(value):
     return value
+
+
+def test_nvr_channel_filters_events_and_read_only_skips_writes():
+    import asyncio
+    import pytest
+    from camera_app.engines.hikvision_acusense import HikvisionAcuSenseCamera
+
+    cam = HikvisionAcuSenseCamera.__new__(HikvisionAcuSenseCamera)
+    cam.config = types.SimpleNamespace(connection=_connection(channel=2, configure=True))
+    cam._last_target = None
+    seen = []
+    cam.on_motion_event_callback = seen.append
+    alert = {"eventType": "fielddetection", "eventState": "active"}
+    asyncio.run(cam.on_cam_event({**alert, "channelID": "1"}))
+    assert seen == []
+    asyncio.run(cam.on_cam_event({**alert, "channelID": "2"}))
+    assert len(seen) == 1
+
+    # Writes all target channel 1, so another channel is read-only whatever the config.
+    assert cam.configure_camera is False
+    cam.client = None  # any write would blow up
+    asyncio.run(cam.assert_arming_schedule())
+    asyncio.run(cam.arm_night_deterrent(True))
+    with pytest.raises(RuntimeError):
+        asyncio.run(cam.set_detection_zones([]))
