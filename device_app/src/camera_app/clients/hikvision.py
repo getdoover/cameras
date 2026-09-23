@@ -160,7 +160,7 @@ class HikvisionClient:
         the only way to ask for a smaller picture.
         """
         stream_id = channel * 100 + subtype + 1
-        return await self.get_bytes(f"/ISAPI/Streaming/Channels/{stream_id}/picture")
+        return await self.get_bytes(f"/ISAPI/Streaming/channels/{stream_id}/picture")
 
     async def get_status(self) -> bool:
         """Check if the camera is reachable."""
