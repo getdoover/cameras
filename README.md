@@ -1,5 +1,11 @@
 # cameras
 
+The object detection app (PPE, number plates and general object detection over camera
+snapshots) lives in its own public repo:
+[getdoover/camera-object-detection](https://github.com/getdoover/camera-object-detection).
+It pairs with the camera app here through the snapshot message format only — see that
+repo's README for the contract.
+
 # RTSP-to-WebRTC Webserver
 
 This runs on a low power EC2 instance with a simple [docker compose script](rtsp-to-web/docker-compose.yml).

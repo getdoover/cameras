@@ -2185,7 +2185,8 @@ def test_snapshot_payload_carries_the_cameras_display_name():
 
     Without this its notifications came out as "doover_camera_2 detected 2 people without
     hard hat". Consumer side:
-    `object_detection/tests/test_zones.py::test_notifications_use_the_cameras_display_name`.
+    `tests/test_zones.py::test_notifications_use_the_cameras_display_name` in
+    getdoover/camera-object-detection.
     """
     import inspect
     from camera_app.application import CameraApplication
@@ -2200,8 +2201,8 @@ def test_detector_zone_payload_is_what_object_detection_reads():
 
     The two apps deploy separately and share no package, so this pairing is a wire contract
     and nothing but a test on each side stops one of them renaming a field and silently
-    disabling the whole filter. The mirror lives in
-    `object_detection/tests/test_zones.py::test_wire_contract_matches_camera_app`, and
+    disabling the whole filter. The mirror lives in getdoover/camera-object-detection,
+    `tests/test_zones.py::test_wire_contract_matches_camera_app`, and
     holds `common.zones.Zone.from_dict` to these same keys.
     """
     from camera_app.events import DetectionZone
