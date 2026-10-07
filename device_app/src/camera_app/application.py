@@ -732,8 +732,8 @@ class CameraApplication(Application):
         """Capture the whole intruder event as one video and upload it.
 
         Recording runs until the event goes quiet (or hits the max-length cap), then
-        uploads a single file — rather than chopping the event into fixed-length
-        clips. How it's captured is the engine's business (SD card vs ffmpeg).
+        uploads the clip with a thumbnail of its first frame. How it's captured
+        is the engine's business (SD card vs ffmpeg).
         """
         # The camera pre-records a few seconds before the trigger, so its recording of
         # the event starts before we do — look back far enough to catch that.
@@ -746,18 +746,9 @@ class CameraApplication(Application):
 
         try:
             await self.power_management.acquire()
-            recorder = asyncio.create_task(
-                self.engine.record_event_video(
-                    started_at, stop, self.config.alarm.event_clip_max_secs.value
-                )
+            video = await self.engine.record_event_video(
+                started_at, stop, self.config.alarm.event_clip_max_secs.value
             )
-            # Grab the preview while the recording runs, so it catches the intruder
-            # at the trigger rather than an empty scene once they've left.
-            try:
-                thumbnail = await self.engine.get_thumbnail()
-            except Exception as e:
-                log.warning(f"Failed to get event thumbnail: {e}", exc_info=e)
-            video = await recorder
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -769,6 +760,11 @@ class CameraApplication(Application):
 
         if not video:
             return
+
+        try:
+            thumbnail = await self.engine.get_video_thumbnail(video)
+        except Exception as e:
+            log.warning(f"Failed to get event thumbnail: {e}", exc_info=e)
 
         log.info(f"Uploading event video ({video.size} bytes).")
         video.filename = "event.mp4"

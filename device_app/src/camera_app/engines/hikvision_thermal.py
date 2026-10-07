@@ -69,10 +69,13 @@ class HikVisionThermal(CameraBase):
 
         captures = [await self.build_capture("visible", visible)]
         if thermal is not None:
-            # No thumbnail: get_thumbnail() samples the visible stream, which would
-            # be a preview of a different image entirely.
+            # Video previews use the thermal clip itself. Still previews sample
+            # the visible stream, so they would show the wrong channel here.
             captures.append(
-                await self.build_capture("thermal", thermal, with_thumbnail=False)
+                await self.build_capture(
+                    "thermal", thermal,
+                    with_thumbnail=Mode(self.config.snapshot.mode.value) is Mode.video,
+                )
             )
 
         log.info(f"Sending {len(captures)} snapshots...")
