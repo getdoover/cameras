@@ -1,6 +1,9 @@
 import asyncio
+import os
 import shutil
 import subprocess
+import sys
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -234,3 +237,67 @@ async def test_invalid_video_does_not_upload_empty_thumbnail(camera, video):
     capture = await camera.build_capture("snapshot", video)
     assert capture.files() == [video]
     assert list(base.OUTPUT_FILE_DIR.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_thermal_stills_keep_only_the_visible_live_thumbnail(camera):
+    camera.config.snapshot.mode.value = Mode.image.value
+    camera.config.snapshot.mode_as_filetype = "jpg"
+    visible, thermal, thumbnail = [
+        File(filename="image.jpg", data=data, size=len(data), content_type="image/jpeg")
+        for data in (b"visible", b"thermal", b"preview")
+    ]
+    camera.get_still_snapshot = AsyncMock(side_effect=[visible, thermal])
+    camera.get_thumbnail = AsyncMock(return_value=thumbnail)
+    camera.get_video_thumbnail = AsyncMock(side_effect=AssertionError("not a video"))
+
+    captures = await HikVisionThermal.get_snapshot(camera)
+
+    assert captures[0].files() == [visible, thumbnail]
+    assert captures[1].files() == [thermal]
+    assert thumbnail.filename == "visible-thumbnail.jpg"
+    camera.get_thumbnail.assert_awaited_once()
+    camera.get_video_thumbnail.assert_not_awaited()
+
+
+def test_crash_leftovers_are_removed_by_existing_stale_file_sweep(camera):
+    # Exit a real subprocess without running finally blocks, as on a hard crash.
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """
+import asyncio
+import os
+import sys
+from pathlib import Path
+from pydoover.models import File
+from camera_app.engines import base
+
+base.OUTPUT_FILE_DIR = Path(sys.argv[1])
+base.ensure_ffmpeg = lambda: None
+camera = base.CameraBase(None)
+async def crash_during_extraction(cmd):
+    os._exit(17)
+camera.run_ffmpeg_cmd = crash_during_extraction
+asyncio.run(camera.get_video_thumbnail(
+    File(filename='video.mp4', data=b'clip', size=4, content_type='video/mp4')
+))
+""",
+            str(base.OUTPUT_FILE_DIR),
+        ],
+        capture_output=True,
+        timeout=30,
+    )
+    assert result.returncode == 17, result.stderr.decode()
+    leftovers = [path for path in base.OUTPUT_FILE_DIR.rglob("*") if path.is_file()]
+    assert len(leftovers) == 1
+    assert leftovers[0].read_bytes() == b"clip"
+    two_hours_ago = time.time() - 2 * 60 * 60
+    os.utime(leftovers[0], (two_hours_ago, two_hours_ago))
+    fresh = base.OUTPUT_FILE_DIR / "active.mp4"
+    fresh.write_bytes(b"active recording")
+
+    camera.ensure_output_dir()
+
+    assert list(base.OUTPUT_FILE_DIR.iterdir()) == [fresh]

@@ -5,7 +5,6 @@ import re
 import shlex
 import shutil
 import signal
-import tempfile
 from datetime import datetime, timedelta
 import logging
 import uuid
@@ -207,11 +206,12 @@ class CameraBase:
         """
         ensure_ffmpeg()
         self.ensure_output_dir()
-        with tempfile.TemporaryDirectory(
-            prefix="video-thumbnail-", dir=OUTPUT_FILE_DIR
-        ) as directory:
-            source = Path(directory) / "video.mp4"
-            thumbnail = Path(directory) / THUMBNAIL_FILENAME
+        # Keep files in the swept directory so a hard crash cannot leave an
+        # orphaned copy of a large clip in an unswept subdirectory.
+        task_id = f"{uuid.uuid4()}-thumbnail"
+        source = self.get_output_filepath(task_id, "mp4")
+        thumbnail = self.get_output_filepath(task_id, "jpg")
+        try:
             source.write_bytes(video.data)
             cmd = (
                 f"ffmpeg -y -i {shlex.quote(str(source))} "
@@ -221,6 +221,9 @@ class CameraBase:
             )
             await self.run_ffmpeg_cmd(cmd)
             return self._read_snapshot(thumbnail, THUMBNAIL_FILENAME, "image/jpeg")
+        finally:
+            source.unlink(missing_ok=True)
+            thumbnail.unlink(missing_ok=True)
 
     async def get_thumbnail(self) -> File:
         """A small preview image for the gallery / timeline, or None if we can't.
