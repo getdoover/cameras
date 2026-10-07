@@ -154,8 +154,9 @@ async def test_capture_uploads_small_first_frame_alongside_unchanged_video(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("thumbnail_fails", [False, True])
-async def test_event_video_uses_recorded_first_frame(
-    camera, video, tmp_path, thumbnail_fails
+@pytest.mark.parametrize("live_thumbnail_raises", [False, True])
+async def test_event_video_falls_back_to_recorded_first_frame(
+    camera, video, tmp_path, thumbnail_fails, live_thumbnail_raises
 ):
     app = application(camera)
     app.config = SimpleNamespace(
@@ -164,6 +165,12 @@ async def test_event_video_uses_recorded_first_frame(
     app.power_management = SimpleNamespace(acquire=AsyncMock())
     app.watch_for_event_end = AsyncMock()
     camera.record_event_video = AsyncMock(return_value=video)
+    camera.get_thumbnail = AsyncMock(
+        return_value=None,
+        side_effect=RuntimeError("camera preview unavailable")
+        if live_thumbnail_raises
+        else None,
+    )
     if thumbnail_fails:
         camera.run_ffmpeg_cmd = AsyncMock(side_effect=RuntimeError("ffmpeg failed"))
     await app.run_event_video()
@@ -182,8 +189,88 @@ async def test_event_video_uses_recorded_first_frame(
         ]
         assert files[0] is video
         assert_first_frame(files[1], tmp_path)
-    camera.get_thumbnail.assert_not_awaited()
+    camera.get_thumbnail.assert_awaited_once()
     assert list(base.OUTPUT_FILE_DIR.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_event_keeps_trigger_thumbnail_while_recording(camera, video):
+    app = application(camera)
+    app.config = SimpleNamespace(
+        alarm=SimpleNamespace(event_clip_max_secs=SimpleNamespace(value=30))
+    )
+    app.power_management = SimpleNamespace(acquire=AsyncMock())
+    app.watch_for_event_end = AsyncMock()
+    recording_started = asyncio.Event()
+    thumbnail_captured = asyncio.Event()
+    trigger_thumbnail = File(
+        filename="thumbnail.jpg", data=b"trigger", size=7, content_type="image/jpeg"
+    )
+
+    async def record(*args):
+        recording_started.set()
+        await thumbnail_captured.wait()
+        return video
+
+    async def live_thumbnail():
+        await recording_started.wait()
+        thumbnail_captured.set()
+        return trigger_thumbnail
+
+    camera.record_event_video = record
+    camera.get_thumbnail = live_thumbnail
+    camera.get_video_thumbnail = AsyncMock(
+        side_effect=AssertionError("must keep live preview")
+    )
+    await asyncio.wait_for(app.run_event_video(), timeout=1)
+
+    _, payload, files = app.device_agent.create_message.call_args.args
+    assert files == [video, trigger_thumbnail]
+    assert payload["media"] == [
+        {
+            "name": "event",
+            "file": "event.mp4",
+            "thumbnail": "event-thumbnail.jpg",
+        }
+    ]
+    camera.get_video_thumbnail.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cancelling_trigger_thumbnail_stops_event_recording(camera):
+    app = application(camera)
+    app.config = SimpleNamespace(
+        alarm=SimpleNamespace(event_clip_max_secs=SimpleNamespace(value=30))
+    )
+    app.power_management = SimpleNamespace(acquire=AsyncMock())
+    app.watch_for_event_end = AsyncMock()
+    recording_started = asyncio.Event()
+    recording_stopped = asyncio.Event()
+    thumbnail_started = asyncio.Event()
+
+    async def record(*args):
+        recording_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            recording_stopped.set()
+
+    async def live_thumbnail():
+        await recording_started.wait()
+        thumbnail_started.set()
+        await asyncio.Event().wait()
+
+    camera.record_event_video = record
+    camera.get_thumbnail = live_thumbnail
+    task = asyncio.create_task(app.run_event_video())
+    try:
+        await asyncio.wait_for(thumbnail_started.wait(), timeout=1)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert recording_stopped.is_set()
+    app.device_agent.create_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio

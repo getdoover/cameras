@@ -197,12 +197,16 @@ camera a visible and a thermal view. So `media` is always a list, even when ther
 | `detections` | Where the camera localised the targets that triggered the capture. **Only present when the event carried boxes** (see below) |
 | `media[].name` `event-frame` | The camera's **own** JPEG of the event, uploaded beside the fetched snapshot (see below) |
 
-Video thumbnails use the **first frame of the recorded clip**, including PTZ presets, thermal videos,
-and intruder events. FFmpeg creates a JPEG at up to **320 pixels wide**, preserving aspect ratio and
+Ordinary video thumbnails use the **first frame of the recorded clip**, including PTZ presets and
+thermal videos. FFmpeg creates a JPEG at up to **320 pixels wide**, preserving aspect ratio and
 using JPEG quality `-q:v 5`. The original video is unchanged. Both files upload in the same message,
 for example `snapshot.mp4` and `snapshot-thumbnail.jpg`, linked by `media[].thumbnail`.
 This requires the `full` image's ffmpeg. If extraction fails, the video still uploads without a thumbnail.
-For event clips with pre-recorded footage, the first frame can precede the detection trigger.
+
+Intruder events keep the **live thumbnail taken at the trigger**, while recording runs. If that request
+fails or returns no image, the app falls back to the recorded clip's first frame. This fallback can
+precede the detection trigger when the clip includes pre-recorded footage. If both preview methods
+fail, the video still uploads without a thumbnail.
 
 Still-image thumbnails are captured while the camera is still pointed at the same view. On Hikvision,
 the sub-stream picture is already thumbnail-sized (640×360, ~18KB vs 1920×1080/~117KB), so one extra HTTP

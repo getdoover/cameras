@@ -732,8 +732,8 @@ class CameraApplication(Application):
         """Capture the whole intruder event as one video and upload it.
 
         Recording runs until the event goes quiet (or hits the max-length cap), then
-        uploads the clip with a thumbnail of its first frame. How it's captured
-        is the engine's business (SD card vs ffmpeg).
+        uploads the clip with a live thumbnail taken at the trigger. If the live
+        preview fails, use the clip's first frame. The engine handles recording.
         """
         # The camera pre-records a few seconds before the trigger, so its recording of
         # the event starts before we do — look back far enough to catch that.
@@ -742,13 +742,23 @@ class CameraApplication(Application):
         )
         stop = asyncio.Event()
         watcher = asyncio.create_task(self.watch_for_event_end(stop))
+        recorder = None
         thumbnail = None
 
         try:
             await self.power_management.acquire()
-            video = await self.engine.record_event_video(
-                started_at, stop, self.config.alarm.event_clip_max_secs.value
+            recorder = asyncio.create_task(
+                self.engine.record_event_video(
+                    started_at, stop, self.config.alarm.event_clip_max_secs.value
+                )
             )
+            # Preserve the trigger-time view: an SD clip's first frame can be
+            # pre-roll from before the intruder appeared.
+            try:
+                thumbnail = await self.engine.get_thumbnail()
+            except Exception as e:
+                log.warning(f"Failed to get live event thumbnail: {e}", exc_info=e)
+            video = await recorder
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -756,15 +766,22 @@ class CameraApplication(Application):
             video = None
         finally:
             watcher.cancel()
+            if recorder is not None:
+                # Cancellation while fetching the live preview must also stop
+                # the recording task and let it clean up its ffmpeg process.
+                if not recorder.done():
+                    recorder.cancel()
+                await asyncio.gather(recorder, return_exceptions=True)
             self._intruder_clip_task = None
 
         if not video:
             return
 
-        try:
-            thumbnail = await self.engine.get_video_thumbnail(video)
-        except Exception as e:
-            log.warning(f"Failed to get event thumbnail: {e}", exc_info=e)
+        if thumbnail is None:
+            try:
+                thumbnail = await self.engine.get_video_thumbnail(video)
+            except Exception as e:
+                log.warning(f"Failed to get fallback event thumbnail: {e}", exc_info=e)
 
         log.info(f"Uploading event video ({video.size} bytes).")
         video.filename = "event.mp4"
