@@ -2,6 +2,7 @@ import asyncio
 import base64
 import os
 import re
+import shlex
 import shutil
 import signal
 from datetime import datetime, timedelta
@@ -20,6 +21,7 @@ MAX_MESSAGE_SIZE = 125_000
 THUMBNAIL_FILENAME = "thumbnail.jpg"
 THUMBNAIL_SUFFIX = "-thumbnail"
 THUMBNAIL_WIDTH = 640
+VIDEO_THUMBNAIL_WIDTH = 320
 
 RTSP_SOCKET_TIMEOUT_SECS = 15
 FFMPEG_TIMEOUT_SECS = 60
@@ -152,8 +154,8 @@ class CameraBase:
     ) -> Capture:
         """Name a captured file and pair it with a thumbnail of the same view.
 
-        Call this while the camera is still pointing where ``media`` was taken —
-        the thumbnail is grabbed here and now, not later.
+        Video thumbnails come from the recorded clip's first frame. For stills,
+        call this before moving the camera: their thumbnail uses the live view.
         """
         safe_name = re.sub(r"[^A-Za-z0-9_\-]", "_", name)
         media.filename = f"{safe_name}.{self.config.snapshot.mode_as_filetype}"
@@ -161,7 +163,10 @@ class CameraBase:
         thumbnail = None
         if with_thumbnail:
             try:
-                thumbnail = await self.get_thumbnail()
+                if media.content_type.startswith("video/"):
+                    thumbnail = await self.get_video_thumbnail(media)
+                else:
+                    thumbnail = await self.get_thumbnail()
             except Exception as e:
                 log.info(f"Couldn't build a thumbnail for {safe_name}: {e}")
             if thumbnail is not None:
@@ -192,6 +197,33 @@ class CameraBase:
         #     return None
 
         return [await self.build_capture("snapshot", data)]
+
+    async def get_video_thumbnail(self, video: File) -> File:
+        """Extract a small, compressed JPEG from the video's first frame.
+
+        Use the captured bytes so the preview matches the clip, including PTZ
+        presets and thermal channels. The original video is left unchanged.
+        """
+        ensure_ffmpeg()
+        self.ensure_output_dir()
+        # Keep files in the swept directory so a hard crash cannot leave an
+        # orphaned copy of a large clip in an unswept subdirectory.
+        task_id = f"{uuid.uuid4()}-thumbnail"
+        source = self.get_output_filepath(task_id, "mp4")
+        thumbnail = self.get_output_filepath(task_id, "jpg")
+        try:
+            source.write_bytes(video.data)
+            cmd = (
+                f"ffmpeg -y -i {shlex.quote(str(source))} "
+                f"-map 0:v:0 -frames:v 1 -an -update 1 "
+                f"-vf \"scale='min({VIDEO_THUMBNAIL_WIDTH},iw)':-2\" -q:v 5 "
+                f"{shlex.quote(str(thumbnail))}"
+            )
+            await self.run_ffmpeg_cmd(cmd)
+            return self._read_snapshot(thumbnail, THUMBNAIL_FILENAME, "image/jpeg")
+        finally:
+            source.unlink(missing_ok=True)
+            thumbnail.unlink(missing_ok=True)
 
     async def get_thumbnail(self) -> File:
         """A small preview image for the gallery / timeline, or None if we can't.

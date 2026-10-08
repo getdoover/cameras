@@ -191,20 +191,27 @@ camera a visible and a thermal view. So `media` is always a list, even when ther
 |---|---|
 | `media[].name` | The view — a preset name, or `snapshot` / `visible` / `thermal` / `event` |
 | `media[].file` | Filename of the full-size attachment |
-| `media[].thumbnail` | Filename of its preview. Absent if one couldn't be made, or wouldn't represent the view (the thermal channel gets none — a visible-stream preview would show a different image) |
+| `media[].thumbnail` | Filename of its preview. Absent if one couldn't be made. Thermal stills omit it because the live preview uses the visible channel; thermal videos have their own preview. |
 | `reason` | Why it was captured: `schedule`, `manual`, `intruder`, `person`, `vehicle`, `anpr` — matches the `camera_event` `kind` |
 | `night` | `true`/`false` — **only present when the camera states it outright** (see below) |
 | `detections` | Where the camera localised the targets that triggered the capture. **Only present when the event carried boxes** (see below) |
 | `media[].name` `event-frame` | The camera's **own** JPEG of the event, uploaded beside the fetched snapshot (see below) |
 
-Thumbnails sit beside their media (`Preset1.jpg` / `Preset1-thumbnail.jpg`) and are captured **at the same
-moment as the media** — on a PTZ camera that has to happen while it's still pointed at the preset.
+Ordinary video thumbnails use the **first frame of the recorded clip**, including PTZ presets and
+thermal videos. FFmpeg creates a JPEG at up to **320 pixels wide**, preserving aspect ratio and
+using JPEG quality `-q:v 5`. The original video is unchanged. Both files upload in the same message,
+for example `snapshot.mp4` and `snapshot-thumbnail.jpg`, linked by `media[].thumbnail`.
+This requires the `full` image's ffmpeg. If extraction fails, the video still uploads without a thumbnail.
 
-On Hikvision the thumbnail is free: the camera's **sub-stream** picture is already thumbnail-sized
-(640×360, ~18KB vs 1920×1080/~117KB), so it's one extra HTTP GET with **no ffmpeg** — thumbnails work on
-the `slim` image. Other camera types scale a frame with ffmpeg, and simply get no thumbnail if ffmpeg
-isn't present. For an intruder event the thumbnail is grabbed **at the trigger**, while the video is
-still recording, so it shows the intruder rather than an empty scene.
+Intruder events keep the **live thumbnail taken at the trigger**, while recording runs. If that request
+fails or returns no image, the app falls back to the recorded clip's first frame. This fallback can
+precede the detection trigger when the clip includes pre-recorded footage. If both preview methods
+fail, the video still uploads without a thumbnail.
+
+Still-image thumbnails are captured while the camera is still pointed at the same view. On Hikvision,
+the sub-stream picture is already thumbnail-sized (640×360, ~18KB vs 1920×1080/~117KB), so one extra HTTP
+GET provides the preview without ffmpeg, including on the `slim` image. Other camera types scale a live
+frame with ffmpeg and omit the thumbnail if ffmpeg is unavailable.
 
 **`night`** comes from the camera's IR-cut filter state (`ircutFilter`), which is ground truth — a
 grey/foggy *daylight* scene looks washed out too, so the image alone can mislead. The field is omitted
