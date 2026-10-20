@@ -406,7 +406,7 @@ class CameraBase:
         while datetime.now() - start < timedelta(seconds=timeout):
             try:
                 process = await asyncio.create_subprocess_exec(
-                    *["ping", "-c", "1", "-W", str(timeout), hostname],
+                    *["ping", "-c", "1", "-W", "2", hostname],
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
