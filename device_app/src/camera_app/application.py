@@ -423,12 +423,13 @@ class CameraApplication(Application):
             )
             return
 
-        min_gap = max(1, value_or(cfg.min_interval_hours, 12)) * 3600
-        since = datetime.now().timestamp() - (self.tags.last_onvif_reboot.value or 0)
-        if since < min_gap:
+        min_gap_hours = max(1, value_or(cfg.min_interval_hours, 12))
+        now_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
+        since_ms = now_ms - (self.tags.last_onvif_reboot.value or 0)
+        if since_ms < min_gap_hours * 3_600_000:
             log.info(
-                f"Camera stream still frozen, but it was rebooted {since / 3600:.1f}h ago; "
-                f"waiting for the {min_gap // 3600}h minimum."
+                f"Camera stream still frozen, but it was rebooted "
+                f"{since_ms / 3_600_000:.1f}h ago; waiting for the {min_gap_hours}h minimum."
             )
             return
 
@@ -437,7 +438,7 @@ class CameraApplication(Application):
         # Stamped before trying, so a camera that can't take the reboot is retried once
         # per interval rather than on every snapshot.
         self._frozen_stream_failures = 0
-        await self.tags.last_onvif_reboot.set(datetime.now().timestamp())
+        await self.tags.last_onvif_reboot.set(now_ms)
         try:
             reply = await onvif_reboot(
                 conn.address.value,

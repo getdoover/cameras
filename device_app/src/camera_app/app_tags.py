@@ -8,7 +8,7 @@ class CameraTags(Tags):
     presets = Tag("array[string]", [])
     active_preset = Tag("string", "")
     last_cam_snapshot = Tag("number", 0)
-    # When the stream watchdog last rebooted the camera over ONVIF; persists the rate limit.
+    # When the stream watchdog last rebooted the camera over ONVIF (epoch ms); persists the rate limit.
     last_onvif_reboot = Tag("number", 0)
     last_plate = Tag("string", "")
     # Timestamp of the most recent PPE (hard-hat) violation, DeepinView only.
