@@ -184,21 +184,24 @@ class DahuaCameraBase(CameraBase):
         log.info(f"Wrote {len(zones)} detection zone(s) to the camera.")
 
     async def get_thumbnail(self) -> File:
-        """The camera's sub-stream picture is already thumbnail-sized, so take that.
+        """A frame of the camera's MJPEG sub stream, already thumbnail-sized.
 
-        The base class grabs a frame with ffmpeg, which the slim image (what most
-        Dahua installs run) doesn't ship, so without this they publish no thumbnails
-        and every gallery tile loads the full-size snapshot.
+        The base class grabs and scales a frame with ffmpeg, which the slim image
+        doesn't ship, and snapshot.cgi only gives the full-size picture. Cameras
+        whose sub stream isn't MJPEG get no thumbnail, as before.
         """
         try:
-            snap = await self.client.get_snapshot(subtype=1)
+            frame = await self.client.get_substream_frame()
         except Exception as e:
             log.info(f"Couldn't fetch sub-stream thumbnail: {e}")
             return None
+        if not frame:
+            log.info("No MJPEG sub-stream frame for a thumbnail; skipping it.")
+            return None
         return File(
             filename=THUMBNAIL_FILENAME,
-            data=snap,
-            size=len(snap),
+            data=frame,
+            size=len(frame),
             content_type="image/jpeg",
         )
 

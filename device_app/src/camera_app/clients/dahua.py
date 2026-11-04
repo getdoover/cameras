@@ -247,17 +247,14 @@ class DahuaClient:
         """
         return f"rtsp://{self._username}:{self._password}@{self._address}:{self._rtsp_port}/cam/realmonitor?channel={channel}&subtype={subtype}"
 
-    async def get_snapshot(self, channel_number: int = 1, subtype: int | None = None) -> bytes:
+    async def get_snapshot(self, channel_number: int = 1) -> bytes:
         """
         Takes a snapshot of the camera and returns the binary jpeg data
         NOTE: channel_number is not the channel_index. channel_number is the index + 1
         so channel index 0 is channel number 1. Except for some older firmwares where channel
         and channel number are the same!
-
-        subtype=1 asks for the sub stream's (small) picture instead of the main stream's.
         """
-        query = f"channel={channel_number}" + (f"&subtype={subtype}" if subtype is not None else "")
-        return await self.get_bytes(f"/cgi-bin/snapshot.cgi?{query}")
+        return await self.get_bytes(f"/cgi-bin/snapshot.cgi?channel={channel_number}")
 
     async def get_status(self):
         try:
@@ -1207,6 +1204,46 @@ class DahuaClient:
                 # We didn't get a key=value. We just got a key. Just stick it in the dictionary and move on
                 data_dict[parts[0]] = line
         return data_dict
+
+    async def get_substream_frame(
+        self,
+        channel_number: int = 1,
+        subtype: int = 1,
+        timeout: float = 10,
+        max_bytes: int = 60_000,
+    ) -> bytes | None:
+        """One JPEG frame from the sub stream's MJPEG feed, or None.
+
+        snapshot.cgi always returns the main-stream picture (it ignores subtype), so
+        this is the only way to get a small image from a Dahua without decoding video.
+        Measured on a bench Dahua PTZ: 640x480 / ~12KB or 704x576 / ~19KB per frame,
+        against a 1280x720 / ~175KB snapshot. A camera that sends no JPEG here, or a
+        frame over max_bytes, gets None: a capture is uploaded as one message, and
+        full-size "thumbnails" doubled a 7-preset PTZ capture past what the device
+        agent could upload (see the revert of #7).
+        """
+        url = f"{self._base}/cgi-bin/mjpg/video.cgi?channel={channel_number}&subtype={subtype}"
+        response = None
+        try:
+            async with async_timeout.timeout(timeout):
+                auth = DigestAuth(self._username, self._password, self._session)
+                response = await auth.request("GET", url)
+                response.raise_for_status()
+                buffer = b""
+                async for chunk, _ in response.content.iter_chunks():
+                    buffer += chunk
+                    start = buffer.find(b"\xff\xd8")
+                    if start >= 0:
+                        end = buffer.find(b"\xff\xd9", start + 2)
+                        if end >= 0:
+                            frame = buffer[start : end + 2]
+                            return frame if len(frame) <= max_bytes else None
+                    if len(buffer) > max_bytes * 2:
+                        return None
+        finally:
+            if response is not None:
+                response.close()
+        return None
 
     async def get_bytes(self, url: str) -> bytes:
         """Get information from the API. This will return the raw response and not process it"""
