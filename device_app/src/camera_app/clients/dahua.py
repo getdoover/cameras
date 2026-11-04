@@ -247,14 +247,17 @@ class DahuaClient:
         """
         return f"rtsp://{self._username}:{self._password}@{self._address}:{self._rtsp_port}/cam/realmonitor?channel={channel}&subtype={subtype}"
 
-    async def get_snapshot(self, channel_number: int = 1) -> bytes:
+    async def get_snapshot(self, channel_number: int = 1, subtype: int | None = None) -> bytes:
         """
         Takes a snapshot of the camera and returns the binary jpeg data
         NOTE: channel_number is not the channel_index. channel_number is the index + 1
         so channel index 0 is channel number 1. Except for some older firmwares where channel
         and channel number are the same!
+
+        subtype=1 asks for the sub stream's (small) picture instead of the main stream's.
         """
-        return await self.get_bytes(f"/cgi-bin/snapshot.cgi?channel={channel_number}")
+        query = f"channel={channel_number}" + (f"&subtype={subtype}" if subtype is not None else "")
+        return await self.get_bytes(f"/cgi-bin/snapshot.cgi?{query}")
 
     async def get_status(self):
         try:
