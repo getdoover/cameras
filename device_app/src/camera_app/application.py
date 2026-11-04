@@ -70,8 +70,10 @@ ALARM_HOLD_TAG_PREFIX = "camera_alarm_output_"
 # Why a snapshot/video was captured, attached to the message payload so a gallery can
 # label or filter it. The detection reasons mirror the `camera_event` channel's
 # `kind`, so the media and the automation event agree on what happened.
-# The data API's per-message attachment limit (channels-rest MAX_ATTACHMENTS).
-MAX_MESSAGE_ATTACHMENTS = 10
+# The data API's per-message attachment limit. channels-rest's MAX_ATTACHMENTS is
+# 10, but it rejects any multipart field numbered >= 10 and pydoover numbers them
+# from 1, so the tenth file is always refused: 9 is the real limit.
+MAX_MESSAGE_ATTACHMENTS = 9
 
 REASON_SCHEDULE = "schedule"  # the periodic snapshot timer
 REASON_MANUAL = "manual"  # somebody asked for one
@@ -685,7 +687,7 @@ class CameraApplication(Application):
         # The data API rejects a message with more than MAX_MESSAGE_ATTACHMENTS files
         # outright, and the device agent then discards it, so the capture is lost. The
         # views always go; thumbnails take whatever room is left, in capture order. A
-        # 7-preset PTZ sends 7 views and 3 thumbnails rather than nothing at all.
+        # 7-preset PTZ sends 7 views and 2 thumbnails rather than nothing at all.
         thumbnail_room = max(0, MAX_MESSAGE_ATTACHMENTS - len(captures))
         files, media = [], []
         for capture in captures:
