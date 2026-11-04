@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 import aiohttp
 from pydoover.models import File
 
-from .base import CameraBase, MAX_MESSAGE_SIZE
+from .base import CameraBase, MAX_MESSAGE_SIZE, THUMBNAIL_FILENAME
 from ..clients import DahuaClient
 from ..events import (
     DetectionTarget,
@@ -182,6 +182,25 @@ class DahuaCameraBase(CameraBase):
             await self.client.set_ivs_rule(0, zone.id, zone.enabled)
 
         log.info(f"Wrote {len(zones)} detection zone(s) to the camera.")
+
+    async def get_thumbnail(self) -> File:
+        """The camera's sub-stream picture is already thumbnail-sized, so take that.
+
+        The base class grabs a frame with ffmpeg, which the slim image (what most
+        Dahua installs run) doesn't ship, so without this they publish no thumbnails
+        and every gallery tile loads the full-size snapshot.
+        """
+        try:
+            snap = await self.client.get_snapshot(subtype=1)
+        except Exception as e:
+            log.info(f"Couldn't fetch sub-stream thumbnail: {e}")
+            return None
+        return File(
+            filename=THUMBNAIL_FILENAME,
+            data=snap,
+            size=len(snap),
+            content_type="image/jpeg",
+        )
 
     async def get_still_snapshot(self, rtsp_uri: str) -> File:
         # we don't need to use ffmpeg on this, just use the camera's built-in stuff
