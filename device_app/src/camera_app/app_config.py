@@ -127,6 +127,31 @@ class CameraPowerConfig(config.Object):
     )
 
 
+class CameraStreamWatchdogConfig(config.Object):
+    enabled = config.Boolean(
+        "Reboot On Frozen Stream",
+        description="Reboot the camera over ONVIF when it answers pings but its stream "
+        "carries no video. Some cameras (e.g. GPI360) hang their encoder this way and "
+        "only recover on a reboot.",
+        default=False,
+    )
+    failures = config.Integer(
+        "Reboot After Failed Snapshots",
+        description="Consecutive snapshot runs that must fail (after their retries) "
+        "while the camera answers pings before it is rebooted.",
+        default=2,
+        minimum=1,
+        advanced=True,
+    )
+    min_interval_hours = config.Integer(
+        "Minimum Hours Between Reboots",
+        description="Never reboot the camera more often than this.",
+        default=12,
+        minimum=1,
+        advanced=True,
+    )
+
+
 class Mode(Enum):
     video = "Video"
     image = "Image"
@@ -454,6 +479,9 @@ class CameraConfig(config.Schema):
     connection = CameraConnectionConfig("Camera Connection Config")
     power = CameraPowerConfig("Camera Power Config")
     snapshot = CameraSnapshotConfig("Camera Snapshot Config")
+    stream_watchdog = CameraStreamWatchdogConfig(
+        "Stream Watchdog Config", advanced=True
+    )
     rtsp_server = CameraRTSPServerConfig(
         "Camera RTSP Server Config",
         advanced=True,

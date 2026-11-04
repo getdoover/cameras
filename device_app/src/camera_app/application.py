@@ -14,7 +14,7 @@ from pydoover.models import (
     NotificationSeverity,
 )
 
-from .app_config import CameraConfig, CameraType
+from .app_config import CameraConfig, CameraType, value_or
 from .app_tags import CameraTags
 from .app_ui import CameraUI
 from .engines import DahuaPTZCamera
@@ -42,6 +42,7 @@ from .events import (
     CAMERA_CONTROL_CHANNEL,
     SET_ZONES_CMD,
 )
+from .onvif_reboot import onvif_reboot
 from .power_management import CameraPowerManagement
 
 log = logging.getLogger()
@@ -121,6 +122,7 @@ class CameraApplication(Application):
 
         self.snapshot_running = None
         self._snapshot_started_at = None
+        self._frozen_stream_failures = 0
         self._shutdown_at = None
 
         # When a motion snapshot was last taken, per zone, for the capture cooldown.
@@ -405,6 +407,51 @@ class CameraApplication(Application):
         await self.sync_presets()
         return published
 
+    async def _on_frozen_stream(self):
+        """Reboot over ONVIF once the camera has answered pings but given no frames
+        for enough consecutive snapshot runs, at most once per min_interval_hours."""
+        cfg = self.config.stream_watchdog
+        if not value_or(cfg.enabled, False):
+            return
+
+        self._frozen_stream_failures += 1
+        threshold = max(1, value_or(cfg.failures, 2))
+        if self._frozen_stream_failures < threshold:
+            log.info(
+                f"Camera pings but gave no frames "
+                f"({self._frozen_stream_failures}/{threshold} before an ONVIF reboot)."
+            )
+            return
+
+        min_gap_hours = max(1, value_or(cfg.min_interval_hours, 12))
+        now_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
+        since_ms = now_ms - (self.tags.last_onvif_reboot.value or 0)
+        if since_ms < min_gap_hours * 3_600_000:
+            log.info(
+                f"Camera stream still frozen, but it was rebooted "
+                f"{since_ms / 3_600_000:.1f}h ago; waiting for the {min_gap_hours}h minimum."
+            )
+            return
+
+        conn = self.config.connection
+        log.warning(f"Camera stream frozen; rebooting {conn.address.value} over ONVIF.")
+        # Stamped before trying, so a camera that can't take the reboot is retried once
+        # per interval rather than on every snapshot.
+        self._frozen_stream_failures = 0
+        await self.tags.last_onvif_reboot.set(now_ms)
+        try:
+            reply = await onvif_reboot(
+                conn.address.value,
+                conn.control_port.value,
+                conn.username.value,
+                conn.password.value,
+            )
+        except Exception as e:
+            log.error(f"ONVIF reboot failed: {e}")
+            return
+
+        log.info(f"ONVIF reboot sent: {reply}")
+
     async def run_snapshot(
         self,
         reason: str = REASON_SCHEDULE,
@@ -466,6 +513,7 @@ class CameraApplication(Application):
 
         if files is None:
             log.info("Failed to get snapshot after retries")
+            await self._on_frozen_stream()
             if event_frame:
                 log.info("Publishing the camera's own event frame anyway.")
                 await self.upload_media(
@@ -473,6 +521,8 @@ class CameraApplication(Application):
                 )
                 return True
             return False
+
+        self._frozen_stream_failures = 0
 
         # The camera's frame goes up beside ours rather than instead of it: ours is clean
         # and full resolution, theirs is the moment the target was actually in the zone.
