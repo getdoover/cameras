@@ -431,13 +431,71 @@
                     "x-collapsible": true,
                     "x-defaultCollapsed": false
                 },
+                "stream_watchdog_config": {
+                    "title": "Stream Watchdog Config",
+                    "x-name": "stream_watchdog_config",
+                    "x-hidden": false,
+                    "type": "object",
+                    "x-required": true,
+                    "x-position": 5,
+                    "x-advanced": true,
+                    "properties": {
+                        "reboot_on_frozen_stream": {
+                            "title": "Reboot On Frozen Stream",
+                            "x-name": "reboot_on_frozen_stream",
+                            "x-hidden": false,
+                            "type": [
+                                "boolean",
+                                "null"
+                            ],
+                            "x-required": false,
+                            "description": "Reboot the camera over ONVIF when it answers pings but its stream carries no video. Some cameras (e.g. GPI360) hang their encoder this way and only recover on a reboot.",
+                            "default": false,
+                            "x-position": 1
+                        },
+                        "reboot_after_failed_snapshots": {
+                            "title": "Reboot After Failed Snapshots",
+                            "x-name": "reboot_after_failed_snapshots",
+                            "x-hidden": false,
+                            "type": [
+                                "integer",
+                                "null"
+                            ],
+                            "x-required": false,
+                            "description": "Consecutive snapshot runs that must fail (after their retries) while the camera answers pings before it is rebooted.",
+                            "default": 2,
+                            "x-position": 2,
+                            "x-advanced": true,
+                            "minimum": 1
+                        },
+                        "minimum_hours_between_reboots": {
+                            "title": "Minimum Hours Between Reboots",
+                            "x-name": "minimum_hours_between_reboots",
+                            "x-hidden": false,
+                            "type": [
+                                "integer",
+                                "null"
+                            ],
+                            "x-required": false,
+                            "description": "Never reboot the camera more often than this.",
+                            "default": 12,
+                            "x-position": 3,
+                            "x-advanced": true,
+                            "minimum": 1
+                        }
+                    },
+                    "additionalElements": true,
+                    "required": [],
+                    "x-collapsible": true,
+                    "x-defaultCollapsed": false
+                },
                 "camera_rtsp_server_config": {
                     "title": "Camera RTSP Server Config",
                     "x-name": "camera_rtsp_server_config",
                     "x-hidden": false,
                     "type": "object",
                     "x-required": true,
-                    "x-position": 5,
+                    "x-position": 6,
                     "x-advanced": true,
                     "properties": {
                         "enabled": {
@@ -502,7 +560,7 @@
                     "type": "array",
                     "x-required": true,
                     "description": "Objects to detect. Leave blank to disable object detection.",
-                    "x-position": 6,
+                    "x-position": 7,
                     "items": {
                         "enum": [
                             "Person",
@@ -531,7 +589,7 @@
                     "x-required": false,
                     "description": "On-camera intrusion (field) detection sensitivity (0-100). Higher detects smaller/further/faster targets but risks more false alarms. Hikvision AcuSense only.",
                     "default": 50,
-                    "x-position": 7,
+                    "x-position": 8,
                     "x-advanced": true
                 },
                 "control_enabled": {
@@ -545,7 +603,7 @@
                     "x-required": false,
                     "description": "Allow control (movement) of PTZ cameras.",
                     "default": true,
-                    "x-position": 8
+                    "x-position": 9
                 },
                 "thermal_config": {
                     "title": "Thermal Config",
@@ -553,7 +611,7 @@
                     "x-hidden": false,
                     "type": "object",
                     "x-required": true,
-                    "x-position": 9,
+                    "x-position": 10,
                     "properties": {
                         "enabled": {
                             "title": "Enabled",
@@ -594,7 +652,7 @@
                     "x-hidden": false,
                     "type": "object",
                     "x-required": true,
-                    "x-position": 10,
+                    "x-position": 11,
                     "properties": {
                         "enabled": {
                             "title": "Enabled",
@@ -635,7 +693,7 @@
                     "x-hidden": false,
                     "type": "object",
                     "x-required": true,
-                    "x-position": 11,
+                    "x-position": 12,
                     "properties": {
                         "enabled": {
                             "title": "Enabled",
@@ -690,7 +748,7 @@
                     "x-hidden": false,
                     "type": "object",
                     "x-required": true,
-                    "x-position": 12,
+                    "x-position": 13,
                     "properties": {
                         "intruder_alarm_enabled": {
                             "title": "Intruder Alarm Enabled",
@@ -881,7 +939,7 @@
                     "x-hidden": false,
                     "type": "object",
                     "x-required": true,
-                    "x-position": 13,
+                    "x-position": 14,
                     "properties": {
                         "only_capture_during_hours": {
                             "title": "Only Capture During Hours",
@@ -966,6 +1024,7 @@
                 "camera_connection_config",
                 "camera_power_config",
                 "camera_snapshot_config",
+                "stream_watchdog_config",
                 "camera_rtsp_server_config",
                 "object_detection",
                 "thermal_config",
