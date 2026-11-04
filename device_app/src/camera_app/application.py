@@ -70,6 +70,9 @@ ALARM_HOLD_TAG_PREFIX = "camera_alarm_output_"
 # Why a snapshot/video was captured, attached to the message payload so a gallery can
 # label or filter it. The detection reasons mirror the `camera_event` channel's
 # `kind`, so the media and the automation event agree on what happened.
+# The data API's per-message attachment limit (channels-rest MAX_ATTACHMENTS).
+MAX_MESSAGE_ATTACHMENTS = 10
+
 REASON_SCHEDULE = "schedule"  # the periodic snapshot timer
 REASON_MANUAL = "manual"  # somebody asked for one
 REASON_INTRUDER = "intruder"  # a detection inside the night alarm window
@@ -679,13 +682,25 @@ class CameraApplication(Application):
         when the event carried none, so a consumer can tell "the camera reported no
         boxes" from "this camera doesn't report boxes at all".
         """
+        # The data API rejects a message with more than MAX_MESSAGE_ATTACHMENTS files
+        # outright, and the device agent then discards it, so the capture is lost. The
+        # views always go; thumbnails take whatever room is left, in capture order. A
+        # 7-preset PTZ sends 7 views and 3 thumbnails rather than nothing at all.
+        thumbnail_room = max(0, MAX_MESSAGE_ATTACHMENTS - len(captures))
         files, media = [], []
         for capture in captures:
-            files.extend(capture.files())
+            files.append(capture.media)
             entry = {"name": capture.name, "file": capture.media.filename}
-            if capture.thumbnail:
+            if capture.thumbnail and thumbnail_room > 0:
+                files.append(capture.thumbnail)
                 entry["thumbnail"] = capture.thumbnail.filename
+                thumbnail_room -= 1
             media.append(entry)
+        if len(captures) > MAX_MESSAGE_ATTACHMENTS:
+            log.warning(
+                f"{len(captures)} views is over the {MAX_MESSAGE_ATTACHMENTS}-attachment "
+                "limit of a message; the data API will reject this capture."
+            )
 
         payload = {"reason": reason, "media": media}
 
