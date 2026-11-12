@@ -230,14 +230,15 @@ class CameraApplication(Application):
         await self.publish_detection_zones(log_update=False)
 
     async def close(self):
-        if self._intruder_clip_task:
-            self._intruder_clip_task.cancel()
-        if self._external_alarm_task:
-            self._external_alarm_task.cancel()
-        if self._alarm_pulse_task:
-            self._alarm_pulse_task.cancel()
-        if self.engine:
-            await self.engine.close()
+        # Also runs when setup() never did (a config that fails to load), so
+        # nothing set in setup() can be assumed to exist.
+        for name in ("_intruder_clip_task", "_external_alarm_task", "_alarm_pulse_task"):
+            task = getattr(self, name, None)
+            if task:
+                task.cancel()
+        engine = getattr(self, "engine", None)
+        if engine:
+            await engine.close()
 
     async def on_aggregate_update(self, event: AggregateUpdateEvent):
         if event.channel.name != "doover_ui_fastmode":

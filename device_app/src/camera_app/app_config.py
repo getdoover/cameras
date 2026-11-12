@@ -479,8 +479,10 @@ class CameraConfig(config.Schema):
     connection = CameraConnectionConfig("Camera Connection Config")
     power = CameraPowerConfig("Camera Power Config")
     snapshot = CameraSnapshotConfig("Camera Snapshot Config")
+    # Optional: added after most cameras were installed, and their deployment
+    # configs don't carry it. Missing means the defaults (watchdog off).
     stream_watchdog = CameraStreamWatchdogConfig(
-        "Stream Watchdog Config", advanced=True
+        "Stream Watchdog Config", advanced=True, required=False, default={}
     )
     rtsp_server = CameraRTSPServerConfig(
         "Camera RTSP Server Config",

@@ -1,0 +1,75 @@
+{
+  "anpr_config": {
+    "enabled": false,
+    "minimum_confidence": 0
+  },
+  "camera_connection_config": {
+    "camera_password": "password",
+    "camera_username": "admin",
+    "control_port": 80,
+    "ip_address": "192.0.2.10",
+    "rtsp_channel": "cam/realmonitor?channel=1&subtype=1",
+    "rtsp_port": 554,
+    "rtsp_substream_channel": null
+  },
+  "camera_power_config": {
+    "always_on": false,
+    "enabled": false,
+    "off_after": 900,
+    "power_cycle_after_failed_pings": 3,
+    "power_cycle_off_duration": 15,
+    "power_pin": 0,
+    "wake_delay": 60
+  },
+  "camera_rtsp_server_config": {
+    "address": "http://localhost:8083",
+    "enabled": true,
+    "password": "demo",
+    "username": "demo"
+  },
+  "camera_snapshot_config": {
+    "duration": 6,
+    "enabled": true,
+    "fps": 10,
+    "mode": "Image",
+    "native_h264": true,
+    "period": 14400,
+    "scale": "720:-1"
+  },
+  "camera_type": "Dahua (Fixed)",
+  "control_enabled": true,
+  "detection_sensitivity": 50,
+  "dv_app_position": 100,
+  "intruder_alarm_config": {
+    "alarm_output_port": 1,
+    "alarm_pulse_duration": 10,
+    "audible_alarm": true,
+    "camera_buzzer": true,
+    "event_video": false,
+    "event_video_cooldown": 15,
+    "event_video_max_length": 120,
+    "external_horn_output_pin": null,
+    "external_strobe_light_output_pin": null,
+    "flash_light": true,
+    "intruder_alarm_enabled": false,
+    "night_end_hour": 6,
+    "night_start_hour": 18
+  },
+  "motion_snapshot_config": {
+    "end_hour": 18,
+    "minimum_seconds_between_snapshots": 15,
+    "object_detection": false,
+    "only_capture_during_hours": false,
+    "start_hour": 6
+  },
+  "object_detection": [],
+  "ppe_detection_config": {
+    "enabled": false,
+    "notify_on_violation": true,
+    "ppe_detection_sensitivity": 50
+  },
+  "thermal_config": {
+    "channel": "Streaming/Channels/201",
+    "enabled": false
+  }
+}
