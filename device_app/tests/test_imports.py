@@ -2310,3 +2310,60 @@ def test_nvr_channel_filters_events_and_read_only_skips_writes():
     asyncio.run(cam.arm_night_deterrent(True))
     with pytest.raises(RuntimeError):
         asyncio.run(cam.set_detection_zones([]))
+
+
+# --------------------------------------------------------------------------
+# stream_watchdog_config was added after most cameras were installed. Their
+# deployment configs don't carry it, and the app crash-looped on
+# "Required config element stream_watchdog_config not found" (Porgerra
+# Station 3, 2026-11-12). It is optional and falls back to the defaults.
+# --------------------------------------------------------------------------
+
+def _install_config(**extra):
+    import json
+    import pathlib
+
+    path = pathlib.Path(__file__).parent / "fixtures" / "config_without_stream_watchdog.json"
+    data = json.loads(path.read_text())
+    data.update(extra)
+    return data
+
+
+def test_config_without_stream_watchdog_loads_with_it_off():
+    from camera_app.app_config import CameraConfig, value_or
+
+    config = CameraConfig()
+    config._inject_deployment_config(_install_config())
+    w = config.stream_watchdog
+    assert value_or(w.enabled, False) is False
+    assert value_or(w.failures, 2) == 2
+    assert value_or(w.min_interval_hours, 12) == 12
+
+
+def test_explicit_stream_watchdog_values_are_used():
+    from camera_app.app_config import CameraConfig, value_or
+
+    config = CameraConfig()
+    config._inject_deployment_config(
+        _install_config(
+            stream_watchdog_config={
+                "reboot_on_frozen_stream": True,
+                "reboot_after_failed_snapshots": 3,
+                "minimum_hours_between_reboots": 24,
+            }
+        )
+    )
+    w = config.stream_watchdog
+    assert value_or(w.enabled, False) is True
+    assert value_or(w.failures, 2) == 3
+    assert value_or(w.min_interval_hours, 12) == 24
+
+
+def test_close_before_setup_does_not_raise():
+    """pydoover calls close() when the config fails to load, before setup()."""
+    import asyncio
+
+    from camera_app.application import CameraApplication
+
+    app = CameraApplication.__new__(CameraApplication)
+    asyncio.run(app.close())
