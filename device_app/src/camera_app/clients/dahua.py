@@ -1205,14 +1205,31 @@ class DahuaClient:
                 data_dict[parts[0]] = line
         return data_dict
 
+    async def get_mjpeg_extra_stream(self, channel_number: int = 1) -> int | None:
+        """The subtype of an enabled extra stream already encoding MJPEG, or None.
+
+        Asking mjpg/video.cgi for a stream that isn't MJPEG makes the camera
+        re-encode that stream as MJPEG and save it (the camera's log shows a
+        "Save Config: Encode" by user System). On a sub stream that RTSPtoWeb
+        plays over WebRTC, which needs H.264, that silently kills the live view,
+        so the codec is checked here and the feed is never asked for otherwise.
+        """
+        encode = await self.get_config("Encode")
+        prefix = f"table.Encode[{channel_number - 1}].ExtraFormat"
+        for index in range(3):
+            if encode.get(f"{prefix}[{index}].VideoEnable", "true") != "true":
+                continue
+            if encode.get(f"{prefix}[{index}].Video.Compression") == "MJPG":
+                return index + 1
+        return None
+
     async def get_substream_frame(
         self,
         channel_number: int = 1,
-        subtype: int = 1,
         timeout: float = 10,
         max_bytes: int = 60_000,
     ) -> bytes | None:
-        """One JPEG frame from the sub stream's MJPEG feed, or None.
+        """One JPEG frame from an extra stream's MJPEG feed, or None.
 
         snapshot.cgi always returns the main-stream picture (it ignores subtype), so
         this is the only way to get a small image from a Dahua without decoding video.
@@ -1221,7 +1238,14 @@ class DahuaClient:
         frame over max_bytes, gets None: a capture is uploaded as one message, and
         full-size "thumbnails" doubled a 7-preset PTZ capture past what the device
         agent could upload (see the revert of #7).
+
+        Only a stream the camera already encodes as MJPEG is used; see
+        get_mjpeg_extra_stream for why. A camera with none gets None, and its
+        streams are left as configured.
         """
+        subtype = await self.get_mjpeg_extra_stream(channel_number)
+        if subtype is None:
+            return None
         url = f"{self._base}/cgi-bin/mjpg/video.cgi?channel={channel_number}&subtype={subtype}"
         response = None
         try:
