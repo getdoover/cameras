@@ -420,3 +420,24 @@ class CameraBase:
                     return True
 
                 await asyncio.sleep(1)
+
+    async def wait_for_rtsp(self, timeout: int) -> bool:
+        # A camera answers ping well before its RTSP server is listening, so a
+        # snapshot taken straight after a cold power-on gets "connection refused".
+        host = self.config.connection.address.value
+        port = self.config.connection.rtsp_port.value
+        start = datetime.now()
+
+        while datetime.now() - start < timedelta(seconds=timeout):
+            try:
+                _, writer = await asyncio.wait_for(
+                    asyncio.open_connection(host, port), timeout=2
+                )
+            except (OSError, asyncio.TimeoutError):
+                await asyncio.sleep(1)
+                continue
+
+            writer.close()
+            return True
+
+        return False
