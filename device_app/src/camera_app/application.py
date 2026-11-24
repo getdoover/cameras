@@ -495,6 +495,10 @@ class CameraApplication(Application):
 
         # at this point, dahua cameras will be ready to take a snapshot, but unifi / generic ones
         # will potentially need to wait a bit longer - they may be 'pingable' but may not be 'ready'.
+        if not await self.engine.wait_for_rtsp(ping_timeout + wake_delay):
+            # Try anyway: the retries below still log why it failed.
+            log.info("RTSP port not open yet, trying snapshot anyway.")
+
         log.info("Ping succeeded, getting snapshot.")
 
         ## attempt to take a snapshot
